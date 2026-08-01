@@ -10,14 +10,19 @@ on:
 jobs:
   ping:
     runs-on: ubuntu-latest
+    env:
+      # Not a secret — this is in the app's HTML. Keeping it visible
+      # means a typo here is something you can actually see.
+      URL: https://hgnzignikbpdbbyubahu.supabase.co
+      KEY: ${{ secrets.SUPABASE_ANON_KEY }}
     steps:
       - name: Query the database
-        env:
-          KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
-          code=$(curl -s -o /dev/null -w '%{http_code}' \
-            "${{ secrets.SUPABASE_URL }}/rest/v1/heartbeat?select=ok&limit=1" \
-            -H "apikey: $KEY" \
-            -H "Authorization: Bearer $KEY")
+          echo "Calling: $URL/rest/v1/heartbeat?select=ok&limit=1"
+          body=$(curl -s -w '\n%{http_code}' \
+            "$URL/rest/v1/heartbeat?select=ok&limit=1" \
+            -H "apikey: $KEY" -H "Authorization: Bearer $KEY")
+          code=$(echo "$body" | tail -1)
           echo "HTTP $code"
+          echo "Response: $(echo "$body" | head -n -1)"
           [ "$code" = "200" ] || exit 1
