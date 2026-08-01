@@ -1,0 +1,14 @@
+{
+  "name": "Buloke Farm",
+  "short_name": "Buloke",
+  "description": "Cattle records for Buloke Farm",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F2F2EE",
+  "theme_color": "#12564F",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

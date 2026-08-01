@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Paddocks — Buloke Farm</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+:root{
+  --paper:#F2F2EE;--card:#FFF;--ink:#16150F;--ink2:#5A574E;--rule:#D9D6CC;
+  --accent:#12564F;--accent-soft:#E2EDEA;--danger:#8C2F2A;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;font-family:var(--sans);color:var(--ink);background:var(--paper)}
+#wrap{display:grid;grid-template-columns:320px 1fr;height:100dvh}
+aside{background:var(--card);border-right:1px solid var(--rule);display:flex;flex-direction:column;overflow:hidden}
+aside header{padding:15px 16px;border-bottom:1px solid var(--rule)}
+aside h1{margin:0;font-size:14px;font-weight:700;letter-spacing:.14em;text-transform:uppercase}
+aside header p{margin:4px 0 0;font-size:12.5px;color:var(--ink2)}
+#map{height:100%;background:#2A2E28}
+.scroll{flex:1;overflow-y:auto}
+
+.pk{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--rule);
+  cursor:pointer;font-size:14px}
+.pk:hover{background:var(--accent-soft)}
+.pk .sw{width:15px;height:15px;border-radius:4px;flex:none;border:1px solid rgba(0,0,0,.25)}
+.pk .nm{flex:1;font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pk .ha{font-family:var(--mono);font-size:12px;color:var(--ink2)}
+.pk.on{background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--accent)}
+
+.panel{padding:14px 16px;border-top:1px solid var(--rule);background:var(--card)}
+label{display:block;margin-bottom:10px}
+label span{display:block;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--ink2);margin-bottom:4px}
+input[type=text],textarea{width:100%;border:1px solid var(--rule);border-radius:8px;padding:9px 11px;
+  font:inherit;font-size:14px;background:var(--card)}
+input:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color:transparent}
+.swatches{display:flex;gap:6px;flex-wrap:wrap}
+.sw-btn{width:26px;height:26px;border-radius:6px;border:2px solid transparent;cursor:pointer;padding:0}
+.sw-btn[aria-pressed="true"]{border-color:var(--ink);box-shadow:0 0 0 2px var(--card) inset}
+button.act{width:100%;min-height:42px;border:0;border-radius:9px;background:var(--accent);color:#fff;
+  font-weight:700;font-size:14px;cursor:pointer;margin-top:8px}
+button.act.ghost{background:none;color:var(--ink);border:1px solid var(--rule)}
+button.act.warn{background:none;color:var(--danger);border:1px solid var(--rule)}
+button.act:disabled{opacity:.45;cursor:default}
+.hint{font-size:12.5px;color:var(--ink2);line-height:1.5;margin:0 0 10px}
+.stat{font-family:var(--mono);font-size:13px;background:var(--accent-soft);border-radius:8px;
+  padding:8px 11px;margin-bottom:10px}
+.msg{margin:10px 16px;padding:10px;border-radius:8px;font-size:13px}
+.msg.err{background:#F7E4E2;color:var(--danger)}
+.msg.ok{background:var(--accent-soft);color:var(--accent)}
+.lbl{background:none;border:0;box-shadow:none;font-weight:700;color:#fff;
+  text-shadow:0 1px 3px rgba(0,0,0,.9);font-size:12px;white-space:nowrap;text-align:center}
+.leaflet-container{font-family:var(--sans)}
+@media(max-width:820px){#wrap{grid-template-columns:1fr;grid-template-rows:auto 1fr}
+  aside{border-right:0;border-bottom:1px solid var(--rule);max-height:46dvh}}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <aside>
+    <header>
+      <h1>Paddocks</h1>
+      <p>267 North Canal Rd, Trafalgar</p>
+    </header>
+    <div class="scroll" id="list"></div>
+    <div class="panel" id="panel"></div>
+  </aside>
+  <div id="map"></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script type="module">
+const SUPABASE_URL  = "https://hgnzignikbpdbbyubahu.supabase.co";
+const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhnbnppZ25pa2JwZGJieXViYWh1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU1NTgzNTcsImV4cCI6MjEwMTEzNDM1N30.U5vvmmZfSP0SOXsvLaxpjJ6LjWjOvaOYwTZ9VKyfFs0";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+const db = createClient(SUPABASE_URL, SUPABASE_ANON);
+
+const HOME = [-38.1837289, 146.1161005];
+const PALETTE = ["#4F7A1F","#1F6FB2","#A8760D","#B4552A","#0E7C6B","#6B4E9E",
+                 "#96324B","#14708A","#7A5C12","#54595E"];
+
+const $  = s => document.querySelector(s);
+const el = h => { const t=document.createElement("template"); t.innerHTML=h.trim(); return t.content.firstChild; };
+const esc = s => String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+// ── map ─────────────────────────────────────────────────────────
+const map = L.map("map",{zoomControl:true}).setView(HOME, 16);
+L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+  {maxZoom:20, attribution:"Imagery &copy; Esri"}).addTo(map);
+L.marker(HOME).addTo(map).bindTooltip("267 North Canal Rd");
+
+// ── local-plane area, hectares ──────────────────────────────────
+// Projecting to a tangent plane is accurate to well under 1% at
+// paddock scale, and avoids pulling in a geodesy library.
+function areaHa(ring){
+  if(ring.length < 3) return 0;
+  const lat0 = ring.reduce((s,p)=>s+p[1],0)/ring.length * Math.PI/180;
+  const pts = ring.map(([lng,lat]) => [lng*111320*Math.cos(lat0), lat*110540]);
+  let a = 0;
+  for(let i=0, n=pts.length; i<n; i++){
+    const [x1,y1]=pts[i], [x2,y2]=pts[(i+1)%n];
+    a += x1*y2 - x2*y1;
+  }
+  return Math.abs(a/2)/10000;
+}
+
+// ── state ───────────────────────────────────────────────────────
+const S = { user:null, paddocks:[], layers:new Map(), sel:null,
+            drawing:null, pts:[], colour:PALETTE[0] };
+
+function say(kind, text){
+  document.querySelectorAll(".msg").forEach(m=>m.remove());
+  $("#panel").before(el(`<div class="msg ${kind}">${esc(text)}</div>`));
+  if(kind==="ok") setTimeout(()=>document.querySelectorAll(".msg.ok").forEach(m=>m.remove()), 2600);
+}
+
+// ── load & draw ─────────────────────────────────────────────────
+async function load(){
+  const { data, error } = await db.from("v_paddock_current").select("*").order("sort_order").order("name");
+  if(error){ say("err", error.message); return; }
+  S.paddocks = data || [];
+  S.layers.forEach(l => map.removeLayer(l));
+  S.layers.clear();
+
+  const bounds = [];
+  for(const p of S.paddocks){
+    if(!p.geometry?.coordinates?.[0]) continue;
+    const latlngs = p.geometry.coordinates[0].map(([lng,lat]) => [lat,lng]);
+    bounds.push(...latlngs);
+    const poly = L.polygon(latlngs, {color:p.colour, weight:2, fillOpacity:.32, opacity:.95})
+      .addTo(map).on("click", () => select(p.id));
+    poly.bindTooltip(`${p.code||p.name}${p.head?` · ${p.head}`:""}`,
+      {permanent:true, direction:"center", className:"lbl"});
+    S.layers.set(p.id, poly);
+  }
+  if(bounds.length && !S.sel) map.fitBounds(bounds, {padding:[36,36]});
+  renderList(); renderPanel();
+}
+
+function renderList(){
+  const box = $("#list"); box.replaceChildren();
+  if(!S.paddocks.length){
+    box.appendChild(el(`<div style="padding:22px 16px;color:var(--ink2);font-size:13.5px">
+      No paddocks yet. Hit <b>Draw a paddock</b> and click around a fence line on the imagery.</div>`));
+    return;
+  }
+  for(const p of S.paddocks){
+    const row = el(`<div class="pk ${S.sel===p.id?"on":""}">
+      <span class="sw" style="background:${esc(p.colour)}"></span>
+      <span class="nm">${esc(p.name)}</span>
+      <span class="ha">${p.area_ha??"—"} ha${p.head?` · ${p.head}hd`:""}</span></div>`);
+    row.onclick = () => select(p.id);
+    box.appendChild(row);
+  }
+}
+
+function select(id){
+  S.sel = S.sel===id ? null : id;
+  const l = S.layers.get(S.sel);
+  if(l) map.fitBounds(l.getBounds(), {padding:[60,60]});
+  S.layers.forEach((lay,k) => lay.setStyle({weight: k===S.sel?4:2, fillOpacity: k===S.sel?.5:.32}));
+  renderList(); renderPanel();
+}
+
+// ── drawing ─────────────────────────────────────────────────────
+function startDraw(){
+  S.pts = []; S.sel = null;
+  S.drawing = L.polygon([], {color:S.colour, weight:3, dashArray:"6 5", fillOpacity:.2}).addTo(map);
+  map.on("click", addPt);
+  map.getContainer().style.cursor = "crosshair";
+  renderList(); renderPanel();
+}
+function addPt(e){
+  S.pts.push([e.latlng.lng, e.latlng.lat]);
+  S.drawing.setLatLngs(S.pts.map(([lng,lat])=>[lat,lng]));
+  renderPanel();
+}
+function undoPt(){ S.pts.pop(); S.drawing.setLatLngs(S.pts.map(([lng,lat])=>[lat,lng])); renderPanel(); }
+function cancelDraw(){
+  map.off("click", addPt);
+  map.getContainer().style.cursor = "";
+  if(S.drawing) map.removeLayer(S.drawing);
+  S.drawing = null; S.pts = [];
+  renderPanel();
+}
+
+async function saveNew(){
+  const name = $("#f-name").value.trim();
+  if(!name) return say("err","Give the paddock a name.");
+  if(S.pts.length < 3) return say("err","A paddock needs at least three corners.");
+  const ring = [...S.pts, S.pts[0]];                     // GeoJSON rings close
+  const { data:prop } = await db.from("property").select("id").eq("pic","3BWWY089").maybeSingle();
+  const { error } = await db.from("paddock").insert({
+    property_id: prop?.id ?? null,
+    name, code: $("#f-code").value.trim() || null,
+    colour: S.colour, notes: $("#f-notes").value.trim() || null,
+    geometry: { type:"Polygon", coordinates:[ring] },
+    area_ha: Math.round(areaHa(ring)*100)/100
+  });
+  if(error) return say("err", error.code==="23505" ? "There's already a paddock with that name." : error.message);
+
+  const parents = [...document.querySelectorAll('#f-replaces [aria-pressed="true"]')].map(b=>b.dataset.id);
+  if(parents.length){
+    const { data:kid } = await db.from("paddock").select("id")
+      .eq("name", name).is("retired_on", null).maybeSingle();
+    if(kid){
+      await db.from("paddock_lineage").insert(parents.map(pid => ({
+        parent_id: pid, child_id: kid.id,
+        change: parents.length > 1 ? "merge" : "split"
+      })));
+    }
+  }
+  cancelDraw();
+  say("ok", parents.length
+    ? `${name} saved. Retire the old paddock once you've drawn the rest of it.`
+    : `${name} saved.`);
+  await load();
+}
+
+async function updateSel(){
+  const p = S.paddocks.find(x=>x.id===S.sel); if(!p) return;
+  const { error } = await db.from("paddock").update({
+    name: $("#f-name").value.trim(), code: $("#f-code").value.trim()||null,
+    colour: S.colour, notes: $("#f-notes").value.trim()||null
+  }).eq("id", p.id);
+  if(error) return say("err", error.message);
+  say("ok","Saved."); await load();
+}
+
+async function removeSel(){
+  const p = S.paddocks.find(x=>x.id===S.sel); if(!p) return;
+  if(!confirm(`Delete ${p.name}? Any grazing history for it goes too.`)) return;
+  const { error } = await db.from("paddock").delete().eq("id", p.id);
+  if(error) return say("err", error.message);
+  S.sel = null; say("ok","Deleted."); await load();
+}
+
+async function retireSel(){
+  const p = S.paddocks.find(x=>x.id===S.sel); if(!p) return;
+  const why = prompt(`Retire ${p.name}?\n\nIt disappears from the map and the phone app, but its
+grazing history and boundary are kept. Reason:`, "Subdivided");
+  if(why===null) return;
+  if(p.head) return say("err", `${p.head} head are still in ${p.name}. Move them out first.`);
+  const { error } = await db.from("paddock")
+    .update({retired_on:new Date().toISOString().slice(0,10), retired_reason:why||null}).eq("id",p.id);
+  if(error) return say("err", error.message);
+  S.sel=null; say("ok",`${p.name} retired.`); await load();
+}
+
+// ── panel ───────────────────────────────────────────────────────
+function swatches(){
+  const box = el(`<div class="swatches"></div>`);
+  PALETTE.forEach(c => {
+    const b = el(`<button type="button" class="sw-btn" style="background:${c}" aria-pressed="${S.colour===c}"></button>`);
+    b.onclick = () => { S.colour=c; if(S.drawing) S.drawing.setStyle({color:c}); renderPanel(); };
+    box.appendChild(b);
+  });
+  return box;
+}
+
+function renderPanel(){
+  const box = $("#panel"); box.replaceChildren();
+
+  if(S.drawing){
+    const ha = areaHa([...S.pts, S.pts[0]||[0,0]]);
+    box.appendChild(el(`<p class="hint">Click each corner of the paddock. Three corners minimum —
+      it closes itself.</p>`));
+    box.appendChild(el(`<div class="stat">${S.pts.length} corners · ${ha.toFixed(2)} ha</div>`));
+    box.appendChild(el(`<label><span>Name</span><input type="text" id="f-name" placeholder="Back gully"></label>`));
+    box.appendChild(el(`<label><span>Map label</span><input type="text" id="f-code" placeholder="BG" maxlength="6"></label>`));
+    box.appendChild(el(`<label><span>Colour</span></label>`));
+    box.appendChild(swatches());
+    box.appendChild(el(`<label style="margin-top:12px"><span>Notes</span><textarea id="f-notes" rows="2" placeholder="Creek along the south fence"></textarea></label>`));
+    if(S.paddocks.length){
+      box.appendChild(el(`<label><span>Replaces (for a split or merge)</span></label>`));
+      const rep = el(`<div class="swatches" id="f-replaces" style="flex-direction:column;gap:4px"></div>`);
+      for(const q of S.paddocks){
+        const b = el(`<button type="button" class="pk" data-id="${q.id}" aria-pressed="false"
+          style="width:100%;border:1px solid var(--rule);border-radius:8px;background:var(--card)">
+          <span class="sw" style="background:${esc(q.colour)}"></span>
+          <span class="nm">${esc(q.name)}</span></button>`);
+        b.onclick = () => b.setAttribute("aria-pressed", b.getAttribute("aria-pressed")!=="true");
+        rep.appendChild(b);
+      }
+      box.appendChild(rep);
+      box.appendChild(el(`<p class="hint">Tick the old paddock this one came out of. It gets retired
+        automatically once every replacement has been drawn.</p>`));
+    }
+    const save = el(`<button class="act" ${S.pts.length<3?"disabled":""}>Save paddock</button>`);
+    save.onclick = saveNew; box.appendChild(save);
+    const undo = el(`<button class="act ghost" ${!S.pts.length?"disabled":""}>Undo last corner</button>`);
+    undo.onclick = undoPt; box.appendChild(undo);
+    const can = el(`<button class="act ghost">Cancel</button>`); can.onclick = cancelDraw; box.appendChild(can);
+    return;
+  }
+
+  const p = S.paddocks.find(x=>x.id===S.sel);
+  if(p){
+    S.colour = p.colour;
+    box.appendChild(el(`<div class="stat">${p.area_ha??"—"} ha · ${p.head||0} head${
+      p.head_per_ha?` · ${p.head_per_ha}/ha`:""}</div>`));
+    if(p.has_history) box.appendChild(el(`<p class="hint">This paddock has grazing history,
+      so it can be retired but not deleted.</p>`));
+    box.appendChild(el(`<label><span>Name</span><input type="text" id="f-name" value="${esc(p.name)}"></label>`));
+    box.appendChild(el(`<label><span>Map label</span><input type="text" id="f-code" value="${esc(p.code||"")}" maxlength="6"></label>`));
+    box.appendChild(el(`<label><span>Colour</span></label>`));
+    box.appendChild(swatches());
+    box.appendChild(el(`<label style="margin-top:12px"><span>Notes</span><textarea id="f-notes" rows="2">${esc(p.notes||"")}</textarea></label>`));
+    const s = el(`<button class="act">Save changes</button>`); s.onclick = updateSel; box.appendChild(s);
+    const r = el(`<button class="act warn">Retire paddock</button>`); r.onclick = retireSel; box.appendChild(r);
+    if(!p.has_history){
+      const d = el(`<button class="act warn">Delete paddock</button>`); d.onclick = removeSel; box.appendChild(d);
+    }
+    const c = el(`<button class="act ghost">Done</button>`); c.onclick = () => select(p.id); box.appendChild(c);
+    return;
+  }
+
+  box.appendChild(el(`<p class="hint">Trace your fence lines on the satellite imagery. You only need to do
+    this once — the phone app draws from the saved coordinates and never loads a tile.</p>`));
+  const b = el(`<button class="act">Draw a paddock</button>`); b.onclick = startDraw; box.appendChild(b);
+}
+
+// ── boot ────────────────────────────────────────────────────────
+(async () => {
+  const { data:{ session } } = await db.auth.getSession();
+  if(!session){
+    const email = prompt("Email"); const pw = email && prompt("Password");
+    if(!pw){ document.body.innerHTML = "<p style='padding:40px;font-family:system-ui'>Sign in required.</p>"; return; }
+    const { error } = await db.auth.signInWithPassword({email, password:pw});
+    if(error){ alert(error.message); location.reload(); return; }
+  }
+  renderPanel();
+  await load();
+})();
+</script>
+</body>
+</html>

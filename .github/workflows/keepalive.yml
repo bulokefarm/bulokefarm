@@ -1,0 +1,20 @@
+# Supabase pauses a free project after a week without database activity.
+# A farm app goes quiet between musters, so this pokes it on weekdays.
+# Delete this workflow if you move to the paid plan.
+name: Keep database awake
+on:
+  schedule:
+    - cron: "17 21 * * 1-5"   # 21:17 UTC ≈ 08:17 AEDT next day
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Query the database
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+            "${{ secrets.SUPABASE_URL }}/rest/v1/heartbeat?select=ok&limit=1" \
+            -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}")
+          echo "HTTP $code"
+          [ "$code" = "200" ] || exit 1

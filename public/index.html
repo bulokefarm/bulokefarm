@@ -1,0 +1,1778 @@
+<!DOCTYPE html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#12564F">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Buloke">
+<title>Buloke Farm</title>
+<style>
+:root{
+  --paper:#F2F2EE; --card:#FFF; --ink:#16150F; --ink2:#5A574E;
+  --rule:#D9D6CC; --accent:#12564F; --accent-soft:#E2EDEA;
+  --warn:#8F5A0C; --danger:#8C2F2A;
+  --tap:48px;
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%}
+body{
+  background:var(--paper); color:var(--ink); font-family:var(--sans);
+  font-size:16px; line-height:1.45; overscroll-behavior-y:none;
+}
+button,input,select,textarea{font:inherit;color:inherit}
+
+/* ---------- shell ---------- */
+#app{display:flex;flex-direction:column;height:100dvh}
+header{
+  display:flex;align-items:center;gap:10px;
+  padding:calc(env(safe-area-inset-top) + 10px) 14px 10px;
+  background:var(--card);border-bottom:1px solid var(--rule);
+}
+header h1{
+  margin:0;font-size:15px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;
+}
+header .who{margin-left:auto;font-size:12px;color:var(--ink2)}
+main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:12px}
+nav{
+  display:grid;grid-template-columns:repeat(4,1fr);
+  background:var(--card);border-top:1px solid var(--rule);
+  padding-bottom:env(safe-area-inset-bottom);
+}
+nav button{
+  border:0;background:none;padding:11px 4px 13px;font-size:11px;font-weight:600;
+  letter-spacing:.08em;text-transform:uppercase;color:var(--ink2);cursor:pointer;
+  border-top:3px solid transparent;margin-top:-1px;
+}
+nav button[aria-current="true"]{color:var(--accent);border-top-color:var(--accent)}
+nav button b{display:block;font-size:19px;font-weight:600;letter-spacing:0;margin-bottom:1px}
+
+/* ---------- ear tag: the signature ---------- */
+.tag{
+  display:inline-grid;grid-template-columns:auto auto;align-items:stretch;
+  border-radius:7px;overflow:hidden;font-family:var(--mono);
+  line-height:1;flex:none;position:relative;
+}
+.tag i{
+  display:grid;place-items:center;font-style:normal;font-weight:700;
+  color:#fff;padding:0 .5em;
+}
+.tag b{
+  display:grid;place-items:center;font-weight:600;background:#fff;
+  color:var(--ink);padding:0 .55em;border:1px solid var(--rule);border-left:0;
+  border-radius:0 7px 7px 0;
+}
+.tag::before{ /* the punch hole — it's an ear tag */
+  content:"";position:absolute;top:3px;left:50%;width:5px;height:5px;
+  border-radius:50%;background:rgba(255,255,255,.55);transform:translateX(-50%);
+  pointer-events:none;
+}
+.tag.sm{font-size:15px;height:34px}
+.tag.lg{font-size:27px;height:58px}
+.tag.lg::before{width:7px;height:7px;top:5px}
+
+/* ---------- lists ---------- */
+.pad{padding:12px 14px}
+.search{
+  position:sticky;top:0;z-index:5;background:var(--paper);
+  padding:10px 14px;border-bottom:1px solid var(--rule);
+}
+.search input{
+  width:100%;height:var(--tap);border:1px solid var(--rule);border-radius:10px;
+  padding:0 14px;background:var(--card);font-size:17px; /* 17px stops iOS zoom */
+}
+.search input:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color:transparent}
+.seg{display:flex;gap:0;margin-bottom:9px;border:1px solid var(--rule);border-radius:9px;overflow:hidden}
+.seg button{flex:1;border:0;background:var(--card);padding:9px 6px;font-size:13px;font-weight:600;cursor:pointer;color:var(--ink2)}
+.seg button[aria-pressed="true"]{background:var(--accent);color:#fff}
+.treewrap{overflow-x:auto;overflow-y:hidden;background:var(--card);border-bottom:1px solid var(--rule);
+  -webkit-overflow-scrolling:touch}
+.treewrap svg{display:block}
+.tnode{cursor:pointer}
+.chips{display:flex;gap:7px;overflow-x:auto;padding:9px 14px 3px;scrollbar-width:none}
+.chips::-webkit-scrollbar{display:none}
+.chip{
+  flex:none;border:1px solid var(--rule);background:var(--card);border-radius:99px;
+  padding:7px 13px;font-size:13px;font-weight:600;cursor:pointer;
+}
+.chip[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
+
+ul.rows{list-style:none;margin:0;padding:0}
+ul.rows li{border-bottom:1px solid var(--rule)}
+.row{
+  width:100%;display:flex;align-items:center;gap:12px;background:var(--card);
+  border:0;padding:11px 14px;text-align:left;cursor:pointer;min-height:var(--tap);
+}
+.row:active{background:var(--accent-soft)}
+.row .meta{min-width:0;flex:1}
+.row .nm{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .sub{font-size:13px;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px;vertical-align:baseline}
+.row .rt{font-family:var(--mono);font-size:13px;color:var(--ink2);text-align:right;flex:none}
+
+/* ---------- detail ---------- */
+.hero{background:var(--card);padding:16px 14px;border-bottom:1px solid var(--rule);
+  display:flex;align-items:center;gap:14px}
+.hero h2{margin:0 0 3px;font-size:21px;line-height:1.15}
+.hero .sub{font-size:13px;color:var(--ink2)}
+.facts{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--rule);
+  border-bottom:1px solid var(--rule)}
+.fact{background:var(--card);padding:10px 14px;min-width:0}
+.fact dt{font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--ink2)}
+.fact dd{margin:2px 0 0;font-weight:600;word-break:break-word}
+.fact dd.mono{font-family:var(--mono);font-size:14px;font-weight:500}
+h3.sec{
+  margin:0;padding:16px 14px 7px;font-size:11px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--ink2);font-weight:700;
+}
+.tl{list-style:none;margin:0;padding:0 14px 4px}
+.tl li{display:flex;gap:11px;padding:9px 0;border-bottom:1px solid var(--rule)}
+.tl time{font-family:var(--mono);font-size:12px;color:var(--ink2);flex:none;width:74px;padding-top:2px}
+.tl .what{min-width:0}
+.tl .what b{display:block;font-weight:600}
+.tl .what span{font-size:13px;color:var(--ink2)}
+
+/* ---------- forms ---------- */
+form{padding:4px 14px 20px}
+label{display:block;margin:13px 0 0}
+label span{display:block;font-size:12px;font-weight:700;letter-spacing:.05em;
+  text-transform:uppercase;color:var(--ink2);margin-bottom:5px}
+input[type=text],input[type=number],input[type=date],input[type=email],
+input[type=password],select,textarea{
+  width:100%;min-height:var(--tap);border:1px solid var(--rule);border-radius:10px;
+  padding:11px 13px;background:var(--card);font-size:17px;
+}
+textarea{min-height:76px;resize:vertical}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color:transparent}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:11px}
+.btn{
+  width:100%;min-height:52px;margin-top:20px;border:0;border-radius:11px;
+  background:var(--accent);color:#fff;font-size:17px;font-weight:700;cursor:pointer;
+}
+.btn:disabled{opacity:.5}
+.btn.ghost{background:none;color:var(--accent);border:1px solid var(--rule);margin-top:11px}
+.picker{display:flex;flex-wrap:wrap;gap:7px;margin-top:6px}
+.pick{border:1px solid var(--rule);background:var(--card);border-radius:9px;padding:0;cursor:pointer}
+.pick[aria-pressed="true"]{outline:2.5px solid var(--accent);outline-offset:1px}
+.hint{font-size:12.5px;color:var(--ink2);margin:6px 0 0}
+.note{background:var(--accent-soft);border-radius:10px;padding:11px 13px;font-size:13.5px;margin:14px 0 0}
+
+.msg{margin:12px 14px;padding:12px 13px;border-radius:10px;font-size:14px}
+.msg.err{background:#F7E4E2;color:var(--danger)}
+.msg.ok{background:var(--accent-soft);color:var(--accent)}
+.empty{padding:40px 24px;text-align:center;color:var(--ink2)}
+.empty b{display:block;color:var(--ink);margin-bottom:5px;font-size:17px}
+
+/* ---------- login ---------- */
+.login{max-width:380px;margin:0 auto;padding:14vh 22px}
+.login .mark{font-size:15px;font-weight:700;letter-spacing:.2em;text-transform:uppercase;
+  text-align:center;margin-bottom:4px}
+.login .tagline{text-align:center;color:var(--ink2);font-size:13.5px;margin-bottom:26px}
+
+@media (prefers-reduced-motion:no-preference){
+  main>*{animation:in .16s ease-out}
+  @keyframes in{from{opacity:0;transform:translateY(5px)}}
+}
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script type="module">
+// ═══════════════════════════════════════════════════════════════
+//  CONFIG — paste your two values from Supabase:
+//  Project Settings → Data API → Project URL and anon public key.
+//  The anon key is safe to publish; RLS is what protects the data.
+// ═══════════════════════════════════════════════════════════════
+const SUPABASE_URL  = "https://hgnzignikbpdbbyubahu.supabase.co";
+const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhnbnppZ25pa2JwZGJieXViYWh1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU1NTgzNTcsImV4cCI6MjEwMTEzNDM1N30.U5vvmmZfSP0SOXsvLaxpjJ6LjWjOvaOYwTZ9VKyfFs0";
+
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+const db = createClient(SUPABASE_URL, SUPABASE_ANON);
+
+// ─── year-letter colours ────────────────────────────────────────
+// The letter is the birth year. Same letter, same colour, everywhere —
+// so a mob reads at a glance once you've learnt three of them.
+const LETTER = {L:"#6B4E9E",M:"#7A4B2A",N:"#1F6FB2",O:"#4A6B8A",P:"#8A4E6B",
+  Q:"#0E7C6B",R:"#4F7A1F",S:"#A8760D",T:"#B4552A",U:"#96324B",V:"#5A4A9C",
+  W:"#14708A",X:"#3C6E2F",Y:"#7A5C12",Z:"#54595E"};
+const hue = l => LETTER[(l||"").toUpperCase()] || "#54595E";
+
+const el   = (h) => { const t=document.createElement("template"); t.innerHTML=h.trim(); return t.content.firstChild; };
+const esc  = (s) => String(s??"").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const today= () => new Date().toISOString().slice(0,10);
+const fmt  = (d) => d ? new Date(d+"T00:00:00").toLocaleDateString("en-AU",{day:"2-digit",month:"short",year:"2-digit"}) : "—";
+const age  = (y) => y==null ? "—" : (y<1 ? Math.round(y*12)+" mo" : (Math.round(y*10)/10)+" yr");
+
+function tagHTML(code, size="sm"){
+  const [l,n] = (code||"? ?").split(" ");
+  return `<span class="tag ${size}"><i style="background:${hue(l)}">${esc(l)}</i><b>${esc(n||"")}</b></span>`;
+}
+
+// ─── animal fields ──────────────────────────────────────────────
+// One registry drives the detail screen, the edit form, the bulk
+// editor and the settings toggles. Add a field here and it appears
+// in all four.
+const AF = [
+  // key, label, type, group, on by default, bulk-editable
+  ["stock_code","Tag","text","Identity",1,0],
+  ["name","Name","text","Identity",1,0],
+  ["nlis_tag","NLIS tag","text","Identity",1,0],
+  ["sex","Sex","pick:female|male|steer|unknown","Identity",1,1],
+  ["dob","Born","date","Identity",1,0],
+  ["breed","Breed","text","Breeding",1,1],
+  ["grade","Grade","text","Breeding",0,1],
+  ["dam_id","Dam","ref:dam","Breeding",1,0],
+  ["sire_id","Sire","ref:sire","Breeding",1,0],
+  ["birth_weight_kg","Birth weight (kg)","number","Breeding",0,0],
+  ["weaned_on","Weaned","date","Breeding",0,1],
+  ["coat_colour","Coat colour","text","Markings",0,1],
+  ["polled","Polled","bool","Markings",0,1],
+  ["marking_code","Marking code","text","Markings",0,1],
+  ["heritage_id","Heritage line","ref:heritage","Provenance",0,1],
+  ["property_id","PIC","ref:property","Provenance",0,1],
+  ["origin_property_id","Original PIC","ref:property","Provenance",0,1],
+  ["purchased_on","Purchased","date","Provenance",0,0],
+  ["purchase_note","Purchase note","text","Provenance",0,0],
+  ["notes","Notes","area","Notes",1,0],
+];
+const DERIVED = [
+  ["age_years","Age",1],["life_state","Status",1],["class","Class",1],
+  ["paddock_name","Paddock",1],["last_weight_kg","Last weight",1],
+  ["adg_kg_per_day","Growth",0],["clear_domestic","Slaughter clear",0],
+  ["heritage_name","Heritage",0],["pic","PIC",0],["origin_pic","Original PIC",0],
+];
+const defaultPrefs = () => ({
+  fields: Object.fromEntries([...AF.map(f=>[f[0],!!f[4]]), ...DERIVED.map(d=>[d[0],!!d[2]])])
+});
+// An animal with no status row has never been through a transition,
+// so it's still here. Sold and died are gone; they stay in the
+// pedigree but never in a head count.
+const isActive = a => !a.life_state || a.life_state === "alive";
+const shown = k => S.prefs?.fields?.[k] !== false;
+
+// ─── state ──────────────────────────────────────────────────────
+const S = { me:null, animals:[], herdMode:"list", pending:[], treeFam:undefined, treePend:false, paddocks:[], feeds:[], refs:{}, prefs:null, selFeed:null, view:"herd", filter:"all", q:"", sel:null, selPk:null, busy:false };
+
+// ═══ data ═══════════════════════════════════════════════════════
+async function loadHerd(){
+  const { data, error } = await db.from("v_animal_current").select("*").order("dob",{ascending:false});
+  if(error) throw error;
+  S.animals = data || [];
+}
+async function loadPending(){
+  const { data } = await db.from("expected_calving")
+    .select("id,dam_id,due_on,season,sire:sire_id(name)")
+    .is("resolved_calving_id", null).order("due_on");
+  S.pending = data || [];
+}
+async function loadPaddocks(){
+  const [p,f] = await Promise.all([
+    db.from("v_paddock_current").select("*").order("name"),
+    db.from("v_feed_store").select("*")
+      .is("exhausted_on", null).order("feedstuff")
+  ]);
+  S.paddocks = p.data || [];
+  S.feeds    = f.data || [];
+}
+async function loadRefs(){
+  const [h,p,b] = await Promise.all([
+    db.from("heritage").select("id,name").order("name"),
+    db.from("property").select("id,pic").order("pic"),
+    db.from("v_breeding_stock").select("id,label,sex,origin").order("label")
+  ]);
+  S.refs = {
+    heritage: h.data||[], property: (p.data||[]).map(x=>({id:x.id,label:x.pic})),
+    sire: (b.data||[]).filter(x=>x.origin==="reference"||x.sex==="male"),
+    dam:  (b.data||[]).filter(x=>x.origin==="reference"||x.sex==="female")
+  };
+}
+async function loadPrefs(){
+  const { data } = await db.from("user_pref").select("prefs").eq("user_id", S.me.id).maybeSingle();
+  S.prefs = data?.prefs?.fields ? data.prefs : defaultPrefs();
+}
+async function savePrefs(){
+  await db.from("user_pref").upsert({user_id:S.me.id, prefs:S.prefs, updated_at:new Date().toISOString()});
+}
+async function loadMe(){
+  const { data:{ user } } = await db.auth.getUser();
+  if(!user) return null;
+  const { data } = await db.from("farm_user").select("*").eq("id", user.id).maybeSingle();
+  S.me = data ? {...data, email:user.email} : {id:user.id, email:user.email, role:null, active:false};
+  return S.me;
+}
+const canWrite = () => S.me && S.me.active && (S.me.role==="owner" || S.me.role==="manager");
+
+// ═══ views ══════════════════════════════════════════════════════
+function viewHerd(){
+  const wrap = el(`<div></div>`);
+  const bar = el(`<div class="search">
+    <div class="seg">
+      <button aria-pressed="${S.herdMode!=="tree"}">List</button>
+      <button aria-pressed="${S.herdMode==="tree"}">Family tree</button>
+    </div>
+    <input type="search" placeholder="Tag, name or breed" value="${esc(S.q)}" autocomplete="off"></div>`);
+  const [bL,bT] = bar.querySelectorAll(".seg button");
+  bL.onclick = () => { S.herdMode="list"; render(); };
+  bT.onclick = () => { S.herdMode="tree"; render(); };
+  wrap.appendChild(bar);
+
+  const live = S.animals.filter(isActive);
+  const past = S.animals.filter(a => !isActive(a));
+  const counts = { all: live.length, past: past.length };
+  for(const a of live) counts[a.class] = (counts[a.class]||0)+1;
+  const cats = [["all","On hand"],["breeder","Breeders"],["harvest","Harvest"],
+                ["yearling","Yearlings"],["weaner","Weaners"],["calf","Calves"],
+                ["protector","Protector"],["bull","Bulls"]]
+                .filter(([k]) => k==="all" || counts[k]);
+  if(counts.past) cats.push(["past","Sold & died"]);
+  const chips = el(`<div class="chips"></div>`);
+  for(const [k,label] of cats){
+    const b = el(`<button class="chip" aria-pressed="${S.filter===k}">${label} ${counts[k]||0}</button>`);
+    b.onclick = () => { S.filter=k; render(); };
+    chips.appendChild(b);
+  }
+  wrap.appendChild(chips);
+
+  const q = S.q.trim().toLowerCase();
+  const inScope = a => S.filter==="past" ? !isActive(a)
+                     : isActive(a) && (S.filter==="all" || a.class===S.filter);
+  const match = a => inScope(a) &&
+    (!q || [a.stock_code,a.name,a.breed,a.nlis_tag].some(v => (v||"").toLowerCase().includes(q)));
+
+  if(S.herdMode==="tree"){
+    wrap.appendChild(treeControls());
+    wrap.appendChild(treeSVG(match));
+    const inp0 = wrap.querySelector("input");
+    inp0.oninput = e => {
+      S.q = e.target.value; const at = e.target.selectionStart;
+      render();
+      const n = document.querySelector(".search input"); n.focus(); n.setSelectionRange(at,at);
+    };
+    return wrap;
+  }
+
+  const list = S.animals.filter(match);
+
+  if(!list.length){
+    wrap.appendChild(el(`<div class="empty"><b>Nothing matches</b>Try a tag like N 84, or clear the search.</div>`));
+  } else {
+    const ul = el(`<ul class="rows"></ul>`);
+    for(const a of list){
+      const li = el(`<li><button class="row"${isActive(a)?"":' style="opacity:.62"'}>
+        ${tagHTML(a.stock_code)}
+        <span class="meta">
+          <span class="nm">${esc(a.name||"Unnamed")}</span>
+          <span class="sub">${!isActive(a)
+              ? `<span style="opacity:.75">${esc(a.life_state)}</span> · ${esc(a.breed||"")}`
+              : (a.paddock_name
+                  ? `<span class="dot" style="background:${esc(a.paddock_colour||"#999")}"></span>`+esc(a.paddock_name)
+                  : "<span style='opacity:.6'>no paddock</span>") + ` · ${esc(a.breed||"")}`}</span>
+        </span>
+        <span class="rt">${age(a.age_years)}${a.last_weight_kg?"<br>"+Math.round(a.last_weight_kg)+" kg":""}</span>
+      </button></li>`);
+      li.querySelector("button").onclick = () => { S.sel=a.id; S.view="detail"; render(); };
+      ul.appendChild(li);
+    }
+    wrap.appendChild(ul);
+  }
+
+  const input = wrap.querySelector("input");
+  input.oninput = e => {
+    S.q = e.target.value;
+    const at = e.target.selectionStart;
+    render();
+    const n = document.querySelector(".search input");
+    n.focus(); n.setSelectionRange(at,at);
+  };
+  return wrap;
+}
+
+async function viewDue(){
+  const wrap = el(`<div></div>`);
+  const { data, error } = await db.from("expected_calving")
+    .select("id,due_on,season,cycle,dam:dam_id(stock_code,name),sire:sire_id(name)")
+    .is("resolved_calving_id", null).order("due_on");
+  if(error){ wrap.appendChild(el(`<div class="msg err">${esc(error.message)}</div>`)); return wrap; }
+
+  if(!data.length){
+    wrap.appendChild(el(`<div class="empty"><b>Nothing due</b>Expected calvings appear here once joinings are recorded.</div>`));
+    return wrap;
+  }
+  const groups = {};
+  for(const r of data) (groups[`${r.season} ${r.cycle||""}`.trim()] ||= []).push(r);
+  for(const [head, rows] of Object.entries(groups)){
+    wrap.appendChild(el(`<h3 class="sec">${esc(head)} — ${rows.length} head</h3>`));
+    const ul = el(`<ul class="rows"></ul>`);
+    for(const r of rows){
+      const days = Math.round((new Date(r.due_on) - new Date())/864e5);
+      ul.appendChild(el(`<li><div class="row" style="cursor:default">
+        ${tagHTML(r.dam?.stock_code)}
+        <span class="meta">
+          <span class="nm">${esc(r.dam?.name||"")}</span>
+          <span class="sub">${r.sire?.name?"to "+esc(r.sire.name):"sire not recorded"}</span>
+        </span>
+        <span class="rt">${fmt(r.due_on)}<br>${days>0?"in "+days+"d":"overdue"}</span>
+      </div></li>`));
+    }
+    wrap.appendChild(ul);
+  }
+  return wrap;
+}
+
+async function viewDetail(){
+  const a = S.animals.find(x => x.id===S.sel);
+  const wrap = el(`<div></div>`);
+  if(!a){ wrap.appendChild(el(`<div class="empty">Animal not found.</div>`)); return wrap; }
+
+  wrap.appendChild(el(`<div class="hero">${tagHTML(a.stock_code,"lg")}
+    <div><h2>${esc(a.name||"Unnamed")}</h2>
+    <div class="sub">${esc(a.breed||"")} · ${esc(a.sex||"")} · ${age(a.age_years)}</div></div></div>`));
+
+  const facts = [];
+  const F = (label, val, wide, mono) => facts.push(
+    `<div class="fact"${wide?' style="grid-column:1/-1"':""}><dt>${label}</dt>
+     <dd${mono?' class="mono"':""}>${val}</dd></div>`);
+
+  if(shown("dob"))        F("Born", fmt(a.dob));
+  if(shown("life_state")||shown("class"))
+    F("Status", `${esc(a.life_state||"—")}${shown("class")?" · "+esc(a.class||"—"):""}`);
+  if(shown("paddock_name")) F("Paddock", a.paddock_name
+      ? `<span class="dot" style="background:${esc(a.paddock_colour||"#999")}"></span>`+esc(a.paddock_name)
+        +`<span style="font-weight:400;color:var(--ink2)"> · since ${fmt(a.in_paddock_since)}</span>`
+      : "Not assigned", true);
+  if(shown("dam_id"))  F("Dam", esc(a.dam_code||a.dam_name||"—"));
+  if(shown("sire_id")) F("Sire", esc(a.sire_name||"—"));
+  if(shown("last_weight_kg")) F("Last weight",
+      `${a.last_weight_kg?Math.round(a.last_weight_kg)+" kg":"—"}${
+        a.last_weighed_on?`<span style="font-weight:400;color:var(--ink2)"><br>${fmt(a.last_weighed_on)}</span>`:""}`);
+  if(shown("adg_kg_per_day")) F("Growth", a.adg_kg_per_day?(Math.round(a.adg_kg_per_day*1000)/1000)+" kg/day":"—");
+  if(shown("breed"))        F("Breed", esc(a.breed||"—"));
+  if(shown("grade"))        F("Grade", esc(a.grade||"—"));
+  if(shown("coat_colour"))  F("Coat colour", esc(a.coat_colour||"—"));
+  if(shown("polled"))       F("Polled", a.polled===true?"Polled":a.polled===false?"Horned":"—");
+  if(shown("marking_code")) F("Marking code", esc(a.marking_code||"—"), false, true);
+  if(shown("birth_weight_kg")) F("Birth weight", a.birth_weight_kg?a.birth_weight_kg+" kg":"—");
+  if(shown("weaned_on"))    F("Weaned", fmt(a.weaned_on));
+  if(shown("heritage_name"))F("Heritage", esc(a.heritage_name||"—"));
+  if(shown("pic"))          F("PIC", esc(a.pic||"—"), false, true);
+  if(shown("origin_pic"))   F("Original PIC", esc(a.origin_pic||"—"), false, true);
+  if(shown("purchased_on")) F("Purchased", fmt(a.purchased_on));
+  if(shown("purchase_note"))F("Purchase note", esc(a.purchase_note||"—"), true);
+  if(shown("clear_domestic")) F("Slaughter clear",
+      a.clear_domestic ? `${fmt(a.clear_domestic)}${a.within_whp?' <span style="color:var(--danger)">— within WHP</span>':""}` : "—", true);
+  if(shown("nlis_tag"))     F("NLIS tag", esc(a.nlis_tag||"not recorded"), true, true);
+  if(shown("notes") && a.notes) F("Notes", esc(a.notes), true);
+  wrap.appendChild(el(`<dl class="facts">${facts.join("")}</dl>`));
+
+  const [w, t, c] = await Promise.all([
+    db.from("weight_event").select("weighed_on,weight_kg,method").eq("animal_id",a.id).order("weighed_on",{ascending:false}),
+    db.from("treatment_animal").select("treatment:treatment_id(treated_on,product_name,batch_number,withholding_days,safe_for_slaughter)").eq("animal_id",a.id),
+    db.from("calving").select("calved_on,outcome,assisted,notes,calf:calf_id(stock_code,name)").eq("dam_id",a.id).order("calved_on",{ascending:false})
+  ]);
+
+  const timeline = (title, rows, empty) => {
+    wrap.appendChild(el(`<h3 class="sec">${title}</h3>`));
+    if(!rows.length){ wrap.appendChild(el(`<p class="hint" style="padding:0 14px 6px">${empty}</p>`)); return; }
+    const ul = el(`<ul class="tl"></ul>`);
+    rows.forEach(r => ul.appendChild(el(`<li><time>${fmt(r.d)}</time>
+      <span class="what"><b>${esc(r.t)}</b>${r.s?`<span>${esc(r.s)}</span>`:""}</span></li>`)));
+    wrap.appendChild(ul);
+  };
+
+  timeline("Weights", (w.data||[]).map(r => ({d:r.weighed_on, t:`${r.weight_kg} kg`, s:r.method||""})),
+           "No weights recorded yet.");
+
+  const treats = (t.data||[]).map(r => r.treatment).filter(Boolean)
+    .sort((x,y) => y.treated_on.localeCompare(x.treated_on));
+  timeline("Treatments", treats.map(r => ({
+      d:r.treated_on, t:r.product_name,
+      s:[r.batch_number && "batch "+r.batch_number,
+         r.safe_for_slaughter && "clear "+fmt(r.safe_for_slaughter)].filter(Boolean).join(" · ")
+    })), "No treatments recorded yet.");
+
+  if(a.sex==="female"){
+    const { data:js } = await db.from("v_joining_result").select("*")
+      .eq("dam_id", a.id).order("season", {ascending:false});
+    const LBL = {in_calf:"In calf", empty:"Empty — didn't hold", calved:"Calved",
+                 aborted:"Aborted", lost:"Lost the calf", unknown:"Not tested"};
+    timeline("Joinings", (js||[]).map(j => ({
+        d: j.joined_on || j.due_on,
+        t: `${LBL[j.outcome]||j.outcome}${j.sire_name?" — "+j.sire_name:""}`,
+        s: [j.season, j.attempt>1?`attempt ${j.attempt}`:null,
+            j.due_on&&j.outcome!=="empty"?"due "+fmt(j.due_on):null].filter(Boolean).join(" · ")
+      })), "No joinings recorded yet.");
+  }
+
+  if(a.sex==="female")
+    timeline("Calvings", (c.data||[]).map(r => ({
+      d:r.calved_on, t:r.calf?.stock_code ? `${r.calf.stock_code} ${r.calf.name||""}`.trim() : (r.outcome||"Calved"),
+      s:[r.assisted?"assisted":"unassisted", r.notes].filter(Boolean).join(" · ")
+    })), "No calvings recorded yet.");
+
+  if(canWrite()){
+    const b = el(`<div class="pad"><button class="btn">Record something for ${esc(a.stock_code)}</button>
+      <button class="btn ghost" id="edit-a">Edit ${esc(a.stock_code)}'s details</button></div>`);
+    b.querySelector(".btn").onclick = () => { S.view="record"; render(); };
+    b.querySelector("#edit-a").onclick = () => { S.view="editAnimal"; render(); };
+    wrap.appendChild(b);
+  }
+  const back = el(`<div class="pad" style="padding-top:0"><button class="btn ghost">Back to herd</button></div>`);
+  back.querySelector("button").onclick = () => { S.view="herd"; S.sel=null; render(); };
+  wrap.appendChild(back);
+  return wrap;
+}
+
+// ─── family tree ────────────────────────────────────────────────
+// Descent runs through the dam. Sires are mostly external AI bulls
+// that change every season, so they annotate a node rather than
+// forming their own branch — which is how a cow family actually
+// persists on the ground.
+function buildForest(){
+  const byId = new Map(S.animals.map(a => [a.id, a]));
+  const kids = new Map();                 // parent key -> [node]
+  const nodes = new Map();                // key -> node
+  const push = (p,c) => { if(!kids.has(p)) kids.set(p,[]); kids.get(p).push(c); };
+
+  for(const a of S.animals){
+    const n = {key:a.id, animal:a, kind:"animal"};
+    nodes.set(a.id, n);
+  }
+  const roots = [];
+  for(const a of S.animals){
+    if(a.dam_id && byId.has(a.dam_id))      push(a.dam_id, nodes.get(a.id));
+    else if(a.dam_id){                       // dam known but not in the herd
+      const gk = "g:"+a.dam_id;
+      if(!nodes.has(gk)){
+        const g = {key:gk, kind:"ghost", label:a.dam_name||a.dam_code||"Unknown dam"};
+        nodes.set(gk,g); roots.push(g);
+      }
+      push(gk, nodes.get(a.id));
+    } else roots.push(nodes.get(a.id));
+  }
+  // Expected calvings hang off their dam as pending.
+  for(const e of (S.treePend ? S.pending : [])){
+    if(!byId.has(e.dam_id)) continue;
+    const k = "e:"+e.id;
+    const n = {key:k, kind:"pending", label:e.due_on, sire:e.sire?.name, season:e.season};
+    nodes.set(k,n); push(e.dam_id, n);
+  }
+  return {roots, kids, nodes};
+}
+
+// A whole-herd tree runs to thousands of pixels wide, which is
+// unusable on a phone and illegible if you scale it to fit. One cow
+// family at a time is both narrower and closer to how you'd ask the
+// question: "show me what's come out of L 74."
+function treeControls(){
+  const {roots, kids} = buildForest();
+  const size = (n) => { const ch = kids.get(n.key)||[];
+    return ch.length ? ch.reduce((t,c)=>t+size(c),0) : 1; };
+  if(S.treeFam === undefined)
+    S.treeFam = (roots.length > 3 && window.innerWidth < 760) ? roots[0].key : null;
+
+  const box = el(`<div class="chips" style="padding-top:10px"></div>`);
+  const chip = (label, active, fn) => {
+    const b = el(`<button class="chip" aria-pressed="${active}">${esc(label)}</button>`);
+    b.onclick = fn; box.appendChild(b);
+  };
+  chip(`All families`, S.treeFam===null, () => { S.treeFam=null; render(); });
+  for(const r of roots)
+    chip(`${r.kind==="ghost" ? r.label : r.animal.stock_code} · ${size(r)}`,
+         S.treeFam===r.key, () => { S.treeFam=r.key; render(); });
+
+  const wrap = el(`<div></div>`);
+  wrap.appendChild(box);
+  const t = el(`<div class="chips" style="padding-top:4px;padding-bottom:2px"></div>`);
+  const p = el(`<button class="chip" aria-pressed="${S.treePend}">Upcoming calvings</button>`);
+  p.onclick = () => { S.treePend = !S.treePend; render(); };
+  t.appendChild(p);
+  wrap.appendChild(t);
+  return wrap;
+}
+
+function treeSVG(match){
+  const all = buildForest();
+  const kids = all.kids;
+  const roots = S.treeFam ? all.roots.filter(r => r.key===S.treeFam) : all.roots;
+  if(!roots.length)
+    return el(`<div class="empty"><b>No pedigree yet</b>Dams need recording before a tree can be drawn.</div>`);
+
+  const NW=158, NH=54, GAPX=14, GAPY=48;
+  let leaf = 0, maxD = 0;
+  const seen = new Set();
+  const place = (n, d) => {
+    if(seen.has(n.key)) return n;         // guard against a bad loop
+    seen.add(n.key);
+    n.d = d; maxD = Math.max(maxD, d);
+    const ch = kids.get(n.key) || [];
+    if(!ch.length){ n.x = leaf++; return n; }
+    ch.forEach(c => place(c, d+1));
+    const placed = ch.filter(c => c.x !== undefined);
+    n.x = placed.length ? (placed[0].x + placed[placed.length-1].x)/2 : leaf++;
+    return n;
+  };
+  roots.forEach(r => { place(r, 0); leaf += 0.6; });
+
+  const W = Math.max(340, Math.ceil(leaf * (NW+GAPX)) + 20);
+  const H = (maxD+1) * (NH+GAPY) + 20;
+  const px = n => 10 + n.x * (NW+GAPX);
+  const py = n => 10 + n.d * (NH+GAPY);
+
+  let edges = "", boxes = "";
+  const walk = (n) => {
+    const ch = kids.get(n.key) || [];
+    for(const c of ch){
+      const x1 = px(n)+NW/2, y1 = py(n)+NH, x2 = px(c)+NW/2, y2 = py(c);
+      const mid = y1 + GAPY/2;
+      edges += `<path d="M${x1} ${y1} V${mid} H${x2} V${y2}" fill="none"
+        stroke="var(--rule)" stroke-width="1.6"/>`;
+      walk(c);
+    }
+    boxes += box(n);
+  };
+
+  function box(n){
+    const x = px(n), y = py(n);
+    if(n.kind==="ghost")
+      return `<g><rect x="${x}" y="${y}" width="${NW}" height="${NH}" rx="9"
+        fill="#F2F2EE" stroke="var(--rule)" stroke-width="1.5" stroke-dasharray="4 3"/>
+        <text x="${x+12}" y="${y+23}" font-size="13" font-weight="700" fill="#5A574E">${esc(n.label)}</text>
+        <text x="${x+12}" y="${y+40}" font-size="11" fill="#5A574E">not in the herd</text></g>`;
+    if(n.kind==="pending")
+      return `<g><rect x="${x}" y="${y}" width="${NW}" height="${NH}" rx="9"
+        fill="#FFF" stroke="#8F5A0C" stroke-width="1.5" stroke-dasharray="5 4"/>
+        <text x="${x+12}" y="${y+23}" font-size="13" font-weight="700" fill="#8F5A0C">Due ${fmt(n.label)}</text>
+        <text x="${x+12}" y="${y+40}" font-size="11" fill="#5A574E">${esc(n.sire||n.season||"")}</text></g>`;
+
+    const a = n.animal, on = match(a), col = hue(a.year_letter);
+    const gone = !isActive(a);
+    const dim = on ? (gone ? .72 : 1) : .28;
+    return `<g class="tnode" data-id="${a.id}" opacity="${dim}">
+      <rect x="${x}" y="${y}" width="${NW}" height="${NH}" rx="9" fill="#FFF"
+        stroke="${on?col:"var(--rule)"}" stroke-width="${on?2.2:1.4}"
+        stroke-dasharray="${gone?"5 3":"none"}"/>
+      <rect x="${x}" y="${y}" width="7" height="${NH}" rx="3.5" fill="${col}"/>
+      <text x="${x+16}" y="${y+22}" font-size="14" font-weight="700"
+        font-family="ui-monospace,Menlo,monospace" fill="#16150F">${esc(a.stock_code)}</text>
+      <text x="${x+68}" y="${y+22}" font-size="12.5" fill="#16150F">${esc((a.name||"").slice(0,13))}</text>
+      <text x="${x+16}" y="${y+40}" font-size="10.5" fill="#5A574E">${
+        esc(a.sex==="female"?"♀":"♂")} ${esc(age(a.age_years))}${
+        a.sire_name?" · "+esc(a.sire_name.slice(0,16)):""}</text>
+    </g>`;
+  }
+  roots.forEach(walk);
+
+  const wrap = el(`<div></div>`);
+  const box2 = el(`<div class="treewrap">
+    <svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img"
+      aria-label="Herd family tree">${edges}${boxes}</svg></div>`);
+  box2.querySelectorAll(".tnode").forEach(g => {
+    g.onclick = () => { S.sel = g.dataset.id; S.view="detail"; render(); };
+  });
+  wrap.appendChild(box2);
+
+  const inTree = [];
+  const collect = n => { if(n.kind==="animal") inTree.push(n.animal);
+                         (kids.get(n.key)||[]).forEach(collect); };
+  roots.forEach(collect);
+  const hits = inTree.filter(match).length;
+  wrap.appendChild(el(`<p class="hint" style="padding:11px 14px 14px">
+    Descent follows the dam; the sire is named on each animal. Dashed grey is a cow that was never
+    on the place${S.treePend?", amber is a calving still to come":""}. Filters dim rather than hide,
+    so the line stays whole — ${hits} of ${inTree.length} shown here match.${
+    W > 400 ? " Scroll sideways for the rest." : ""}</p>`));
+  return wrap;
+}
+
+// ─── map ────────────────────────────────────────────────────────
+// Renders the saved boundaries as flat SVG. No tile server, no map
+// library — the expensive part was done once in the editor.
+function viewMap(){
+  const wrap = el(`<div></div>`);
+  const drawn = S.paddocks.filter(p => p.geometry?.coordinates?.[0]?.length > 2);
+
+  if(!drawn.length){
+    wrap.appendChild(el(`<div class="empty"><b>No boundaries yet</b>
+      Trace your fence lines in the paddock editor on a laptop, then they'll show up here.</div>`));
+    return wrap;
+  }
+
+  // Equirectangular with a cos(lat) correction — at paddock scale the
+  // distortion is far below what you could see on a phone.
+  let minX=1e9, maxX=-1e9, minY=1e9, maxY=-1e9;
+  const mid = drawn[0].geometry.coordinates[0][0][1] * Math.PI/180;
+  const k = Math.cos(mid);
+  const proj = ([lng,lat]) => [lng*k, -lat];
+  for(const p of drawn) for(const c of p.geometry.coordinates[0]){
+    const [x,y] = proj(c);
+    minX=Math.min(minX,x); maxX=Math.max(maxX,x);
+    minY=Math.min(minY,y); maxY=Math.max(maxY,y);
+  }
+  const pad = Math.max(maxX-minX, maxY-minY) * 0.04 || 0.0001;
+  minX-=pad; maxX+=pad; minY-=pad; maxY+=pad;
+  const W = 1000, H = Math.max(360, Math.round(W * (maxY-minY)/(maxX-minX)));
+  const sx = v => (v-minX)/(maxX-minX)*W;
+  const sy = v => (v-minY)/(maxY-minY)*H;
+
+  let svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img"
+    aria-label="Paddock map" style="display:block;background:#EBEAE3">`;
+  for(const p of drawn){
+    const pts = p.geometry.coordinates[0].map(c => { const [x,y]=proj(c); return `${sx(x).toFixed(1)},${sy(y).toFixed(1)}`; }).join(" ");
+    const on = S.selPk===p.id;
+    svg += `<polygon data-id="${p.id}" points="${pts}" fill="${esc(p.colour)}"
+      fill-opacity="${p.head ? (on?.62:.42) : (on?.34:.16)}"
+      stroke="${esc(p.colour)}" stroke-width="${on?5:2.5}" stroke-linejoin="round"
+      style="cursor:pointer"></polygon>`;
+  }
+  for(const p of drawn){
+    const ring = p.geometry.coordinates[0].map(proj);
+    const cx = sx(ring.reduce((s,r)=>s+r[0],0)/ring.length);
+    const cy = sy(ring.reduce((s,r)=>s+r[1],0)/ring.length);
+    svg += `<text x="${cx.toFixed(1)}" y="${cy.toFixed(1)}" text-anchor="middle"
+      font-size="26" font-weight="700" fill="#16150F" paint-order="stroke"
+      stroke="#fff" stroke-width="5" style="pointer-events:none">${esc(p.code||p.name)}</text>`;
+    if(p.head) svg += `<text x="${cx.toFixed(1)}" y="${(cy+27).toFixed(1)}" text-anchor="middle"
+      font-size="21" font-weight="600" fill="#16150F" paint-order="stroke"
+      stroke="#fff" stroke-width="4.5" style="pointer-events:none">${p.head} hd</text>`;
+  }
+  svg += `</svg>`;
+
+  const box = el(`<div style="background:#EBEAE3;border-bottom:1px solid var(--rule)">${svg}</div>`);
+  box.querySelectorAll("polygon").forEach(poly => {
+    poly.onclick = () => { S.selPk = S.selPk===poly.dataset.id ? null : poly.dataset.id; render(); };
+  });
+  wrap.appendChild(box);
+
+  const unplaced = S.animals.filter(a => !a.paddock_id && isActive(a));
+  const sel = S.paddocks.find(p => p.id===S.selPk);
+
+  if(sel){
+    wrap.appendChild(el(`<h3 class="sec">${esc(sel.name)} — ${sel.area_ha??"—"} ha${
+      sel.head_per_ha?` · ${sel.head_per_ha}/ha`:""}</h3>`));
+    const inIt = S.animals.filter(a => a.paddock_id===sel.id);
+    if(!inIt.length){
+      wrap.appendChild(el(`<p class="hint" style="padding:0 14px 10px">Empty since ${
+        sel.grazing_since?fmt(sel.grazing_since):"—"}.</p>`));
+    } else {
+      const ul = el(`<ul class="rows"></ul>`);
+      for(const a of inIt){
+        const li = el(`<li><button class="row">${tagHTML(a.stock_code)}
+          <span class="meta"><span class="nm">${esc(a.name||"Unnamed")}</span>
+          <span class="sub">${esc(a.class||"")} · in since ${fmt(a.in_paddock_since)}</span></span>
+          <span class="rt">${age(a.age_years)}</span></button></li>`);
+        li.querySelector("button").onclick = () => { S.sel=a.id; S.view="detail"; render(); };
+        ul.appendChild(li);
+      }
+      wrap.appendChild(ul);
+    }
+  } else {
+    wrap.appendChild(el(`<h3 class="sec">Paddocks</h3>`));
+    const ul = el(`<ul class="rows"></ul>`);
+    for(const p of S.paddocks){
+      const li = el(`<li><button class="row">
+        <span class="dot" style="background:${esc(p.colour)};width:14px;height:14px"></span>
+        <span class="meta"><span class="nm">${esc(p.name)}</span>
+        <span class="sub">${p.area_ha??"—"} ha${p.grazing_since?` · grazing since ${fmt(p.grazing_since)}`:""}</span></span>
+        <span class="rt">${p.head||0} hd</span></button></li>`);
+      li.querySelector("button").onclick = () => { S.selPk=p.id; render(); };
+      ul.appendChild(li);
+    }
+    wrap.appendChild(ul);
+  }
+
+  if(unplaced.length){
+    const b = el(`<div class="pad"><div class="note"><b>${unplaced.length} head not in a paddock.</b>
+      Assign them under Record → Move mob.</div></div>`);
+    wrap.appendChild(b);
+  }
+  return wrap;
+}
+
+// ─── recording ──────────────────────────────────────────────────
+function viewRecord(){
+  const wrap = el(`<div></div>`);
+  if(!canWrite()){
+    wrap.appendChild(el(`<div class="empty"><b>Read-only access</b>
+      You can look at everything, but recording needs manager access. Ask an owner to change your role.</div>`));
+    return wrap;
+  }
+  const group = (title, kinds) => {
+    wrap.appendChild(el(`<h3 class="sec">${title}</h3>`));
+    const ul = el(`<ul class="rows"></ul>`);
+    for(const [k,t,sub] of kinds){
+      const li = el(`<li><button class="row"><span class="meta">
+        <span class="nm">${t}</span><span class="sub">${sub}</span></span>
+        <span class="rt">›</span></button></li>`);
+      li.querySelector("button").onclick = () => { S.view="rec:"+k; render(); };
+      ul.appendChild(li);
+    }
+    wrap.appendChild(ul);
+  };
+  group("What are you recording?", [
+    ["feed","Feed out","Hay or grain to a paddock"],
+    ["move","Move mob","Shift stock to another paddock"],
+    ["weight","Weights","Scale or tape, one or many head"],
+    ["treatment","Treatment","Vaccination, drench — full LPA detail"],
+    ["joining","Joining","Mating, pregnancy test, empty result"],
+    ["calving","Calving","A calf on the ground"],
+    ["sell","Sell / consign","NVD, waybill, off the property"]]);
+  const low = S.feeds.filter(f => f.pct_left != null && f.pct_left <= 20).length;
+  group("Manage", [
+    ["store","Feed store", low ? `${low} low on stock` : `${S.feeds.length} in the shed`],
+    ["bulk","Bulk update","Change a field across many animals"],
+    ["settings","Which fields to show","Turn animal details on or off"]]);
+  return wrap;
+}
+
+function animalPicker(multi=true, preset=[]){
+  const chosen = new Set(preset);
+  const box = el(`<div class="picker"></div>`);
+  const list = S.animals.filter(isActive);
+  box.list = list;
+  for(const a of list){
+    const b = el(`<button type="button" class="pick" aria-pressed="${chosen.has(a.id)}"
+      title="${esc(a.name||"")}">${tagHTML(a.stock_code)}</button>`);
+    b.onclick = () => {
+      if(!multi){ chosen.clear(); box.querySelectorAll(".pick").forEach(x => x.setAttribute("aria-pressed","false")); }
+      chosen.has(a.id) ? chosen.delete(a.id) : chosen.add(a.id);
+      b.setAttribute("aria-pressed", chosen.has(a.id));
+      box.dispatchEvent(new CustomEvent("pick",{detail:chosen.size}));
+    };
+    box.appendChild(b);
+  }
+  box.chosen = chosen;
+  return box;
+}
+
+function say(node, kind, text){
+  node.querySelectorAll(".msg").forEach(m => m.remove());
+  node.prepend(el(`<div class="msg ${kind}">${esc(text)}</div>`));
+  node.scrollIntoView({block:"start",behavior:"smooth"});
+}
+
+function formShell(title, inner, onSave){
+  const wrap = el(`<div></div>`);
+  wrap.appendChild(el(`<h3 class="sec">${title}</h3>`));
+  const form = el(`<form></form>`);
+  form.appendChild(inner);
+  const save = el(`<button type="submit" class="btn">Save</button>`);
+  form.appendChild(save);
+  const cancel = el(`<button type="button" class="btn ghost">Cancel</button>`);
+  cancel.onclick = () => { S.view = S.sel ? "detail" : "record"; render(); };
+  form.appendChild(cancel);
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    if(S.busy) return;
+    S.busy = true; save.disabled = true; save.textContent = "Saving…";
+    try{
+      const n = await onSave(new FormData(form));
+      say(wrap,"ok", n);
+      form.reset();
+      await Promise.all([loadHerd(), loadPaddocks()]);
+      setTimeout(() => {
+        if(!["detail","record","rec:store"].includes(S.view))
+          S.view = S.view.startsWith("rec:stock") || S.view==="rec:newfeed"
+            ? "rec:store" : (S.sel ? "detail" : "record");
+        render();
+      }, 900);
+    }catch(err){
+      say(wrap,"err", err.message || "Could not save. Check your connection and try again.");
+      S.busy=false; save.disabled=false; save.textContent="Save";
+    }
+  };
+  wrap.appendChild(form);
+  return wrap;
+}
+
+function recWeight(){
+  const inner = el(`<div>
+    <label><span>Date</span><input type="date" name="on" value="${today()}" required></label>
+    <label><span>Weight (kg)</span><input type="number" name="kg" step="0.5" min="1" inputmode="decimal" required></label>
+    <label><span>Method</span><select name="method">
+      <option value="scale">Scale</option><option value="tape">Tape</option><option value="estimate">Estimate</option>
+    </select></label>
+    <label><span>Animal</span></label></div>`);
+  const pick = animalPicker(false, S.sel?[S.sel]:[]);
+  inner.appendChild(pick);
+  inner.appendChild(el(`<p class="hint">Tap a tag to choose the animal.</p>`));
+  return formShell("Record a weight", inner, async (f) => {
+    const ids = [...pick.chosen];
+    if(!ids.length) throw new Error("Choose an animal first.");
+    const { error } = await db.from("weight_event").insert({
+      animal_id: ids[0], weighed_on: f.get("on"),
+      weight_kg: Number(f.get("kg")), method: f.get("method")
+    });
+    if(error) throw new Error(error.code==="23505" ? "That animal already has a weight on that date." : error.message);
+    return "Weight saved.";
+  });
+}
+
+function recTreatment(){
+  const inner = el(`<div>
+    <label><span>Date</span><input type="date" name="on" value="${today()}" required></label>
+    <label><span>Product</span><input type="text" name="product" placeholder="e.g. Dectomax pour-on" required></label>
+    <div class="two">
+      <label><span>Batch no.</span><input type="text" name="batch" inputmode="text"></label>
+      <label><span>Product expiry</span><input type="date" name="expiry"></label>
+    </div>
+    <label><span>Dose rate</span><input type="text" name="dose" placeholder="1 mL / 10 kg"></label>
+    <div class="two">
+      <label><span>Withholding (days)</span><input type="number" name="whp" min="0" inputmode="numeric"></label>
+      <label><span>ESI (days)</span><input type="number" name="esi" min="0" inputmode="numeric"></label>
+    </div>
+    <label><span>Where / which mob</span><input type="text" name="desc" placeholder="Back gully, breeders"></label>
+    <label><span>Adverse reactions</span><input type="text" name="adverse" placeholder="Nil noted"></label>
+    <label style="display:flex;align-items:center;gap:10px;margin-top:16px">
+      <input type="checkbox" name="needle" style="width:22px;height:22px;min-height:0;flex:none">
+      <span style="margin:0;text-transform:none;letter-spacing:0;font-size:15px;font-weight:500;color:var(--ink)">Broken needle left in an animal</span>
+    </label>
+    <div class="note"><b>LPA Section 2.</b> Batch number, expiry, dose rate and withholding period are
+      required on your records. Your name and phone are filled in from your login.</div>
+    <label><span>Animals treated</span></label></div>`);
+  const pick = animalPicker(true, S.sel?[S.sel]:[]);
+  inner.appendChild(pick);
+  const count = el(`<p class="hint">No animals selected.</p>`);
+  pick.addEventListener("pick", e => count.textContent = e.detail===1 ? "1 head selected." : `${e.detail} head selected.`);
+  if(S.sel) count.textContent = "1 head selected.";
+  inner.appendChild(count);
+
+  return formShell("Record a treatment", inner, async (f) => {
+    const ids = [...pick.chosen];
+    if(!ids.length) throw new Error("Choose at least one animal.");
+    const { data, error } = await db.from("treatment").insert({
+      treated_on:f.get("on"), product_name:f.get("product"),
+      batch_number:f.get("batch")||null, product_expiry:f.get("expiry")||null,
+      dose_rate:f.get("dose")||null,
+      withholding_days:f.get("whp")?Number(f.get("whp")):null,
+      esi_days:f.get("esi")?Number(f.get("esi")):null,
+      description:f.get("desc")||null, adverse_reaction:f.get("adverse")||null,
+      broken_needle: f.get("needle")==="on"
+    }).select("id").single();
+    if(error) throw error;
+    const { error:e2 } = await db.from("treatment_animal")
+      .insert(ids.map(id => ({treatment_id:data.id, animal_id:id})));
+    if(e2) throw e2;
+    return `Treatment saved for ${ids.length} head.`;
+  });
+}
+
+function recJoining(){
+  const cows = S.animals.filter(a => a.sex==="female" && isActive(a));
+  if(!cows.length) return el(`<div class="empty"><b>No cows on record</b></div>`);
+
+  const inner = el(`<div>
+    <label><span>Cow</span><select name="dam" required>
+      <option value="">Which cow…</option>
+      ${cows.map(a=>`<option value="${a.id}"${S.sel===a.id?" selected":""}>${
+        esc(a.stock_code)}${a.name?" · "+esc(a.name):""}</option>`).join("")}
+    </select></label>
+    <label><span>Joined to</span><select name="sire">
+      <option value="">Not recorded</option>
+      ${(S.refs.sire||[]).map(o=>`<option value="${o.id}">${esc(o.label)}</option>`).join("")}
+    </select></label>
+    <div class="two">
+      <label><span>Season</span><input type="text" name="season" placeholder="2026-2027" required></label>
+      <label><span>Cycle</span><select name="cycle">
+        <option value="spring">Spring</option><option value="autumn">Autumn</option></select></label>
+    </div>
+    <div class="two">
+      <label><span>Joined on</span><input type="date" name="on"></label>
+      <label><span>Bull out</span><input type="date" name="out"></label>
+    </div>
+    <label><span>Attempt</span><select name="attempt">
+      <option value="1">First join</option><option value="2">Second join</option>
+      <option value="3">Third join</option></select></label>
+
+    <h3 class="sec" style="padding-left:0">Result</h3>
+    <label><span>Outcome</span><select name="outcome">
+      <option value="unknown">Not tested yet</option>
+      <option value="in_calf">In calf</option>
+      <option value="empty">Empty — didn't hold</option>
+      <option value="aborted">Aborted</option>
+      <option value="lost">Lost the calf</option>
+    </select></label>
+    <label><span>Tested on</span><input type="date" name="tested"></label>
+    <div class="two">
+      <label><span>Gestation days</span><input type="number" name="gest" value="285" min="250" max="310" inputmode="numeric"></label>
+      <label><span>Due</span><input type="date" name="due"></label>
+    </div>
+    <label><span>Notes</span><input type="text" name="notes" placeholder="Optional"></label>
+    <div class="note">Recording an empty matters as much as an in-calf. Conception rate can only
+      be worked out if the failures are on file too.</div>
+  </div>`);
+
+  // Due date follows from the join date unless you override it.
+  const on = inner.querySelector('[name=on]'), gest = inner.querySelector('[name=gest]'),
+        due = inner.querySelector('[name=due]');
+  const calc = () => {
+    if(!on.value || due.dataset.touched) return;
+    const d = new Date(on.value); d.setDate(d.getDate() + (Number(gest.value)||285));
+    due.value = d.toISOString().slice(0,10);
+  };
+  on.onchange = calc; gest.onchange = calc;
+  due.oninput = () => due.dataset.touched = "1";
+
+  const season = inner.querySelector('[name=season]');
+  const y = new Date().getFullYear();
+  season.value = `${y}-${y+1}`;
+
+  return formShell("Record a joining", inner, async (f) => {
+    if(!f.get("dam")) throw new Error("Choose the cow.");
+    const row = {
+      dam_id:f.get("dam"), sire_id:f.get("sire")||null,
+      season:(f.get("season")||"").trim(), cycle:f.get("cycle"),
+      attempt:Number(f.get("attempt")||1),
+      joined_on:f.get("on")||null, bull_out:f.get("out")||null,
+      gestation_days:Number(f.get("gest")||285), due_on:f.get("due")||null,
+      outcome:f.get("outcome"), tested_on:f.get("tested")||null,
+      notes:(f.get("notes")||"").trim()||null
+    };
+    const { error } = await db.from("joining")
+      .upsert(row, {onConflict:"dam_id,season,attempt"});
+    if(error) throw error;
+    const cow = cows.find(c=>c.id===row.dam_id);
+    return row.outcome==="empty"
+      ? `${cow?.stock_code} recorded empty for ${row.season}.`
+      : `Joining saved for ${cow?.stock_code}.`;
+  });
+}
+
+function recCalving(){
+  const inner = el(`<div>
+    <label><span>Date calved</span><input type="date" name="on" value="${today()}" required></label>
+    <label><span>Outcome</span><select name="outcome">
+      <option value="live">Live calf</option><option value="stillborn">Stillborn</option>
+      <option value="died">Died soon after</option></select></label>
+    <label style="display:flex;align-items:center;gap:10px;margin-top:16px">
+      <input type="checkbox" name="assisted" style="width:22px;height:22px;min-height:0;flex:none">
+      <span style="margin:0;text-transform:none;letter-spacing:0;font-size:15px;font-weight:500;color:var(--ink)">Assisted</span>
+    </label>
+    <label><span>Notes</span><textarea name="notes" placeholder="unassisted, quick"></textarea></label>
+    <div class="note">This records the calving against the cow. Give the calf its own tag later,
+      once you've decided on a number.</div>
+    <label><span>Cow</span></label></div>`);
+  const pick = animalPicker(false, S.sel?[S.sel]:[]);
+  inner.appendChild(pick);
+  return formShell("Record a calving", inner, async (f) => {
+    const ids = [...pick.chosen];
+    if(!ids.length) throw new Error("Choose the cow that calved.");
+    const { error } = await db.from("calving").insert({
+      dam_id: ids[0], calved_on: f.get("on"), outcome: f.get("outcome"),
+      assisted: f.get("assisted")==="on", notes: f.get("notes")||null
+    });
+    if(error) throw error;
+    return "Calving saved.";
+  });
+}
+
+function recSell(){
+  const alive = S.animals.filter(isActive);
+  const inner = el(`<div>
+    <label><span>Date leaving</span><input type="date" name="on" value="${today()}" required></label>
+    <label><span>Going to</span><select name="kind" required>
+      <option value="saleyard">Saleyard</option><option value="abattoir">Abattoir — direct</option>
+      <option value="property">Another property</option><option value="agent">Agent</option>
+      <option value="other">Other</option></select></label>
+    <label><span>Where</span><input type="text" name="dest" placeholder="Pakenham saleyards" required></label>
+    <label><span>Destination PIC</span><input type="text" name="destpic" placeholder="If known" autocapitalize="characters"></label>
+    <label><span>Buyer or agent</span><input type="text" name="party" placeholder="Optional"></label>
+
+    <h3 class="sec" style="padding-left:0">Paperwork</h3>
+    <label><span>NVD from</span><select name="nvdkind">
+      <option value="book">Manual book</option><option value="envd">eNVD — online</option>
+    </select></label>
+    <label><span>NVD serial</span><input type="text" name="nvd" placeholder="Serial or eNVD number" autocapitalize="characters"></label>
+    <label><span>Waybill number</span><input type="text" name="waybill" placeholder="If separate"></label>
+    <div class="two">
+      <label><span>Carrier</span><input type="text" name="carrier"></label>
+      <label><span>Truck rego</span><input type="text" name="rego" autocapitalize="characters"></label>
+    </div>
+
+    <h3 class="sec" style="padding-left:0">Which animals</h3>
+  </div>`);
+
+  const pick = animalPicker(true, S.sel && alive.some(a=>a.id===S.sel) ? [S.sel] : []);
+  const setAll = (ids,on) => {
+    pick.querySelectorAll(".pick").forEach((b,i) => {
+      const a = pick.list[i]; if(!ids.includes(a.id)) return;
+      on ? pick.chosen.add(a.id) : pick.chosen.delete(a.id);
+      b.setAttribute("aria-pressed", on);
+    });
+    pick.dispatchEvent(new CustomEvent("pick",{detail:pick.chosen.size}));
+  };
+  const quick = el(`<div class="chips" style="padding:8px 0 2px"></div>`);
+  const groups = [["Harvest", () => S.animals.filter(a=>isActive(a)&&a.class==="harvest").map(a=>a.id)],
+                  ["Yearlings", () => S.animals.filter(a=>isActive(a)&&a.class==="yearling").map(a=>a.id)],
+                  ["None", () => []]];
+  for(const p of S.paddocks.filter(p=>p.head))
+    groups.splice(2,0,[`All in ${p.name}`, () => S.animals.filter(a=>a.paddock_id===p.id).map(a=>a.id)]);
+  for(const [label,fn] of groups){
+    const b = el(`<button type="button" class="chip">${esc(label)}</button>`);
+    b.onclick = () => { setAll(S.animals.map(a=>a.id), false); if(label!=="None") setAll(fn(), true); };
+    quick.appendChild(b);
+  }
+  inner.appendChild(quick);
+  inner.appendChild(pick);
+
+  const status = el(`<p class="hint">No animals selected.</p>`);
+  inner.appendChild(status);
+  const warn = el(`<div class="msg err" hidden></div>`);
+  inner.appendChild(warn);
+
+  // The NVD asks whether anything is inside a withholding period.
+  // The treatment records already know, so check as they pick.
+  let clearance = [];
+  db.from("v_animal_clearance").select("*").then(({data}) => { clearance = data||[]; check(); });
+  function check(){
+    const ids = [...pick.chosen];
+    status.textContent = ids.length===1 ? "1 head selected." : `${ids.length} head selected.`;
+    const on = inner.querySelector('[name=on]').value || today();
+    const bad = clearance.filter(c => ids.includes(c.animal_id) && c.clear_domestic && c.clear_domestic > on);
+    const esi = clearance.filter(c => ids.includes(c.animal_id) && c.clear_export && c.clear_export > on);
+    if(bad.length){
+      warn.hidden = false;
+      warn.innerHTML = `<b>Inside a withholding period:</b> ${
+        bad.map(b=>esc(b.stock_code)+" until "+fmt(b.clear_domestic)).join(", ")}.
+        These can't go for slaughter yet.`;
+    } else if(esi.length){
+      warn.hidden = false;
+      warn.className = "msg";
+      warn.style.background = "#FCF3E3"; warn.style.color = "#8F5A0C";
+      warn.innerHTML = `<b>Inside the export slaughter interval:</b> ${
+        esi.map(b=>esc(b.stock_code)+" until "+fmt(b.clear_export)).join(", ")}.
+        Fine domestically, not for export.`;
+    } else { warn.hidden = true; }
+  }
+  pick.addEventListener("pick", check);
+  inner.querySelector('[name=on]').addEventListener("change", check);
+
+  inner.appendChild(el(`<div class="note">The NVD declarations are pre-filled from your records
+    on the next screen — check them before you sign.</div>`));
+
+  return formShell("Consign stock", inner, async (f) => {
+    const ids = [...pick.chosen];
+    if(!ids.length) throw new Error("Choose the animals going.");
+    if(!f.get("dest")) throw new Error("Say where they're going.");
+
+    const { data:c, error } = await db.from("consignment").insert({
+      direction:"out", consigned_on:f.get("on"),
+      destination_kind:f.get("kind"), destination:f.get("dest").trim(),
+      destination_pic:(f.get("destpic")||"").trim().toUpperCase()||null,
+      counterparty:(f.get("party")||"").trim()||null,
+      nvd_kind:f.get("nvdkind"),
+      nvd_serial:(f.get("nvd")||"").trim().toUpperCase()||null,
+      waybill_no:(f.get("waybill")||"").trim()||null,
+      carrier:(f.get("carrier")||"").trim()||null,
+      vehicle_rego:(f.get("rego")||"").trim().toUpperCase()||null,
+      q_ram_fed:false, q_hgp_treated:false,
+      q_within_whp: clearance.some(c2 => ids.includes(c2.animal_id)
+                      && c2.clear_domestic && c2.clear_domestic > f.get("on")),
+      declared_by: S.me?.display_name || null, declared_on: f.get("on")
+    }).select("id").single();
+    if(error) throw new Error(error.code==="23505"
+      ? "That NVD serial has already been used on another consignment." : error.message);
+
+    const { error:e2 } = await db.rpc("consign_animals", {
+      p_consignment: c.id, p_animal_ids: ids, p_override_whp: false });
+    if(e2){
+      await db.from("consignment").delete().eq("id", c.id);
+      throw new Error(e2.message.replace("Still inside a withholding period:",
+        "Can't consign — still inside a withholding period:"));
+    }
+    return `${ids.length} head consigned to ${f.get("dest")}.`;
+  });
+}
+
+function recStore(){
+  const wrap = el(`<div></div>`);
+  wrap.appendChild(el(`<h3 class="sec">Feed store</h3>`));
+
+  if(!S.feeds.length){
+    wrap.appendChild(el(`<div class="empty"><b>Nothing in the shed</b>
+      Add a cut of hay or a load of grain and it becomes a one-tap choice when you feed out.</div>`));
+  } else {
+    const ul = el(`<ul class="rows"></ul>`);
+    for(const f of S.feeds){
+      const pct = f.pct_left;
+      const bar = pct==null ? "" :
+        `<span style="display:block;height:5px;border-radius:3px;background:var(--rule);margin-top:5px">
+           <span style="display:block;height:100%;border-radius:3px;width:${Math.max(0,Math.min(100,pct))}%;
+             background:${pct<=20?"var(--danger)":pct<=50?"#8F5A0C":"var(--accent)"}"></span></span>`;
+      const li = el(`<li><button class="row">
+        <span class="meta">
+          <span class="nm">${esc(f.feedstuff)}</span>
+          <span class="sub">${esc(f.feed_type||"")}${f.batch_ref?" · "+esc(f.batch_ref):""}${
+            f.last_fed?" · last fed "+fmt(f.last_fed):""}</span>
+          ${bar}
+        </span>
+        <span class="rt">${f.remaining!=null
+          ? `${f.remaining} ${esc(f.unit||"")}<br><span style="font-size:11px">of ${
+              (Number(f.quantity)+Number(f.adjusted||0))}</span>`
+          : "—"}</span></button></li>`);
+      li.querySelector("button").onclick = () => { S.selFeed = f.id; S.view="rec:stockadj"; render(); };
+      ul.appendChild(li);
+    }
+    wrap.appendChild(ul);
+  }
+
+  const add = el(`<div class="pad"><button class="btn">Add feed to the store</button></div>`);
+  add.querySelector("button").onclick = () => { S.selFeed=null; S.view="rec:newfeed"; render(); };
+  wrap.appendChild(add);
+  const back = el(`<div class="pad" style="padding-top:0"><button class="btn ghost">Back</button></div>`);
+  back.querySelector("button").onclick = () => { S.view="record"; render(); };
+  wrap.appendChild(back);
+  return wrap;
+}
+
+function recNewFeed(){
+  const inner = el(`<div>
+    <label><span>What is it</span><input type="text" name="name" placeholder="Lucerne hay, round" required></label>
+    <label><span>Type</span><select name="type">
+      <option value="fodder">Fodder — hay, silage, straw</option>
+      <option value="grain">Grain</option><option value="pellet">Pellets</option>
+      <option value="supplement">Supplement</option><option value="mineral">Mineral</option>
+    </select></label>
+    <div class="two">
+      <label><span>How much</span><input type="number" name="qty" step="0.1" min="0" inputmode="decimal" placeholder="40"></label>
+      <label><span>Unit</span><select name="unit">
+        <option>rolls</option><option>bales</option><option>tonnes</option>
+        <option>kg</option><option>litres</option></select></label>
+    </div>
+    <label><span>Received or cut</span><input type="date" name="on" value="${today()}"></label>
+    <label><span>Batch, silo or cut</span><input type="text" name="batch" placeholder="River paddock, first cut"></label>
+    <label><span>Stored where</span><input type="text" name="storage" placeholder="Hay shed 1"></label>
+    <label style="display:flex;align-items:center;gap:10px;margin-top:16px">
+      <input type="checkbox" name="home" style="width:22px;height:22px;min-height:0;flex:none" checked>
+      <span style="margin:0;text-transform:none;letter-spacing:0;font-size:15px;font-weight:500;color:var(--ink)">Home grown</span>
+    </label>
+    <div id="bought" hidden>
+      <label><span>Bought from</span><input type="text" name="origin" placeholder="Supplier and district"></label>
+      <label><span>CVD reference</span><input type="text" name="cvd" placeholder="Commodity vendor declaration no."></label>
+      <div class="note">Bought-in feed needs a vendor declaration on file. That's the document
+        a processor asks for, so record the number now while you have it in your hand.</div>
+    </div>
+  </div>`);
+  const home = inner.querySelector('[name=home]'), bought = inner.querySelector('#bought');
+  const sync = () => bought.hidden = home.checked;
+  home.onchange = sync; sync();
+
+  return formShell("Add feed to the store", inner, async (f) => {
+    const name = (f.get("name")||"").trim();
+    if(!name) throw new Error("Give the feed a name.");
+    const type = f.get("type");
+    const { error } = await db.from("feed_source").insert({
+      feedstuff:name, feed_type:type,
+      quantity: f.get("qty") ? Number(f.get("qty")) : null,
+      unit: f.get("unit")||null, received_on: f.get("on")||null,
+      batch_ref:(f.get("batch")||"").trim()||null,
+      storage:(f.get("storage")||"").trim()||null,
+      home_grown: f.get("home")==="on",
+      origin:(f.get("origin")||"").trim()||null,
+      cvd_ref:(f.get("cvd")||"").trim()||null,
+      ram_free: type==="fodder" ? true : null
+    });
+    if(error) throw error;
+    return `${name} added to the store.`;
+  });
+}
+
+function recStockAdj(){
+  const f = S.feeds.find(x => x.id===S.selFeed);
+  if(!f) return el(`<div class="empty">Feed not found.</div>`);
+
+  const inner = el(`<div>
+    <div class="note"><b>${esc(f.feedstuff)}</b><br>
+      Came in: ${f.quantity??"—"} ${esc(f.unit||"")} · fed out: ${f.used||0} ·
+      adjusted: ${f.adjusted||0}<br>
+      <b>On hand: ${f.remaining??"—"} ${esc(f.unit||"")}</b></div>
+    <label><span>What happened</span><select name="reason">
+      <option>Recount</option><option>Weather damage</option><option>Spoiled</option>
+      <option>More delivered</option><option>Sold or given away</option><option>Other</option>
+    </select></label>
+    <label><span>Counted / changed to</span>
+      <input type="number" name="actual" step="0.1" min="0" inputmode="decimal"
+             placeholder="${f.remaining??""}"></label>
+    <p class="hint">Put in what's actually there now. The difference is recorded as the adjustment,
+      so the original load quantity stays untouched.</p>
+    <label><span>Note</span><input type="text" name="notes" placeholder="Optional"></label>
+    <button type="button" class="btn ghost" id="usedup">Mark as all used up</button>
+  </div>`);
+
+  inner.querySelector("#usedup").onclick = async () => {
+    if(!confirm(`Mark ${f.feedstuff} as finished? It comes off the feed-out list.`)) return;
+    await db.from("feed_source").update({exhausted_on: today()}).eq("id", f.id);
+    await loadPaddocks(); S.view="rec:store"; render();
+  };
+
+  return formShell("Adjust stock", inner, async (fd) => {
+    const actual = fd.get("actual");
+    if(actual==="") throw new Error("Put in the count.");
+    if(f.remaining==null) throw new Error("This feed has no starting quantity to adjust against.");
+    const delta = Math.round((Number(actual) - Number(f.remaining)) * 100) / 100;
+    if(!delta) throw new Error("That's the same as the current figure — nothing to record.");
+    const { error } = await db.from("feed_adjustment").insert({
+      feed_source_id: f.id, qty_delta: delta,
+      reason: fd.get("reason"), notes: (fd.get("notes")||"").trim()||null
+    });
+    if(error) throw error;
+    S.view = "rec:store";
+    return `${delta>0?"+":""}${delta} ${f.unit||""} recorded.`;
+  });
+}
+
+function recFeed(){
+  if(!S.paddocks.length)
+    return el(`<div class="empty"><b>No paddocks yet</b>
+      Feeding is recorded against a paddock, so draw your fence lines first.</div>`);
+
+  const inner = el(`<div>
+    <label><span>Paddock</span><select name="paddock" required>
+      <option value="">Which paddock…</option>
+      ${S.paddocks.map(p => `<option value="${p.id}"${S.selPk===p.id?" selected":""}>${
+        esc(p.name)} — ${p.head||0} head</option>`).join("")}
+    </select></label>
+    <label><span>Date</span><input type="date" name="on" value="${today()}" required></label>
+    <label><span>Feed</span><select name="source">
+      ${S.feeds.map(f => `<option value="${f.id}">${esc(f.feedstuff)}${
+        f.batch_ref?` · ${esc(f.batch_ref)}`:""}${
+        f.remaining!=null?` · ${f.remaining} ${esc(f.unit||"")} left`:""}</option>`).join("")}
+      <option value="__new">+ Add feed to the store…</option>
+      <option value="">One-off, not in the store</option>
+    </select></label>
+
+    <div id="newfeed" hidden style="border:1px solid var(--rule);border-radius:11px;padding:2px 12px 12px;margin-top:6px">
+      <label><span>What is it</span><input type="text" name="nf_name" placeholder="Lucerne hay, round"></label>
+      <label><span>Type</span><select name="nf_type">
+        <option value="fodder">Fodder — hay, silage, straw</option>
+        <option value="grain">Grain</option><option value="pellet">Pellets</option>
+        <option value="supplement">Supplement</option><option value="mineral">Mineral</option>
+      </select></label>
+      <div class="two">
+        <label><span>How much</span><input type="number" name="nf_qty" step="0.1" min="0" inputmode="decimal" placeholder="40"></label>
+        <label><span>Unit</span><select name="nf_unit">
+          <option>rolls</option><option>bales</option><option>tonnes</option>
+          <option>kg</option><option>litres</option></select></label>
+      </div>
+      <label><span>Batch, silo or cut</span><input type="text" name="nf_batch" placeholder="Home cut, river paddock"></label>
+      <label style="display:flex;align-items:center;gap:10px;margin-top:14px">
+        <input type="checkbox" name="nf_home" style="width:22px;height:22px;min-height:0;flex:none" checked>
+        <span style="margin:0;text-transform:none;letter-spacing:0;font-size:15px;font-weight:500;color:var(--ink)">Home grown</span>
+      </label>
+      <label><span>Bought from / origin</span><input type="text" name="nf_origin" placeholder="Only if bought in"></label>
+      <p class="hint">Straight fodder is recorded as free of restricted animal material.
+        Change it on the report if that isn't right for this load.</p>
+    </div>
+
+    <label id="l-other" hidden><span>What did you feed</span>
+      <input type="text" name="ration" placeholder="Lucerne hay"></label>
+    <label><span>How much did you put out</span>
+      <input type="number" name="qty" step="0.1" min="0" inputmode="decimal" placeholder="2"></label>
+    <label><span>Method</span><select name="method">
+      <option>Rolled out</option><option>Ring feeder</option>
+      <option>Self feeder</option><option>Trough</option><option>Bale in paddock</option>
+    </select></label>
+    <label><span>Notes</span><input type="text" name="notes" placeholder="Optional"></label>
+    <div class="note">Who ate it is worked out from what's in the paddock that day —
+      no need to pick animals.</div>
+  </div>`);
+
+  const sel   = inner.querySelector('[name=source]'),
+        other = inner.querySelector('#l-other'),
+        nf    = inner.querySelector('#newfeed');
+  const sync = () => {
+    nf.hidden    = sel.value !== "__new";
+    other.hidden = sel.value !== "";
+  };
+  sel.onchange = sync;
+  if(!S.feeds.length) sel.value = "__new";
+  sync();
+
+  return formShell("Feed out", inner, async (f) => {
+    if(!f.get("paddock")) throw new Error("Choose a paddock.");
+    let src = f.get("source") || null;
+    const ration = (f.get("ration")||"").trim();
+
+    if(src === "__new"){
+      const name = (f.get("nf_name")||"").trim();
+      if(!name) throw new Error("Give the new feed a name.");
+      const type = f.get("nf_type");
+      const { data, error } = await db.from("feed_source").insert({
+        feedstuff: name, feed_type: type,
+        quantity: f.get("nf_qty") ? Number(f.get("nf_qty")) : null,
+        unit: f.get("nf_unit") || null,
+        batch_ref: (f.get("nf_batch")||"").trim() || null,
+        home_grown: f.get("nf_home") === "on",
+        origin: (f.get("nf_origin")||"").trim() || null,
+        ram_free: type === "fodder" ? true : null,
+        received_on: f.get("on")
+      }).select("id").single();
+      if(error) throw error;
+      src = data.id;
+    }
+    if(!src && !ration) throw new Error("Say what you fed.");
+
+    const { error } = await db.from("feed_event").insert({
+      fed_on: f.get("on"), paddock_id: f.get("paddock"),
+      feed_source_id: src, ration: src ? null : ration,
+      qty: f.get("qty") ? Number(f.get("qty")) : null,
+      method: f.get("method")||null, notes: f.get("notes")||null
+    });
+    if(error) throw error;
+    const p = S.paddocks.find(x => x.id===f.get("paddock"));
+    return `Feed recorded for ${p?.name||"the paddock"}${p?.head?` — ${p.head} head`:""}.`;
+  });
+}
+
+function recMove(){
+  if(!S.paddocks.length){
+    const w = el(`<div class="empty"><b>No paddocks yet</b>
+      Draw your fence lines in the paddock editor first.</div>`);
+    return w;
+  }
+  const inner = el(`<div>
+    <label><span>Moving to</span><select name="to" required>
+      <option value="">Choose a paddock…</option>
+      ${S.paddocks.map(p => `<option value="${p.id}">${esc(p.name)} — ${p.area_ha??"?"} ha, ${p.head||0} head</option>`).join("")}
+    </select></label>
+    <label><span>Date</span><input type="date" name="on" value="${today()}" required></label>
+    <label><span>Reason</span><input type="text" name="reason" placeholder="Rotation, feed, calving"></label>
+    <label><span>Which animals</span></label></div>`);
+
+  const pick = animalPicker(true, S.sel?[S.sel]:[]);
+  const setAll = (ids, on) => {
+    pick.querySelectorAll(".pick").forEach((b,i) => {
+      const a = pick.list[i];
+      if(!ids.includes(a.id)) return;
+      on ? pick.chosen.add(a.id) : pick.chosen.delete(a.id);
+      b.setAttribute("aria-pressed", on);
+    });
+    pick.dispatchEvent(new CustomEvent("pick",{detail:pick.chosen.size}));
+  };
+
+  // Mobs move together, so bulk selection is the common case, not the exception.
+  const quick = el(`<div class="chips" style="padding:8px 0 2px"></div>`);
+  const groups = [["Everything", () => S.animals.filter(isActive).map(a=>a.id)],
+                  ["Unassigned", () => S.animals.filter(a=>isActive(a)&&!a.paddock_id).map(a=>a.id)],
+                  ["None", () => []]];
+  for(const p of S.paddocks.filter(p=>p.head))
+    groups.splice(2, 0, [`All in ${p.name}`, () => S.animals.filter(a=>a.paddock_id===p.id).map(a=>a.id)]);
+  for(const [label, fn] of groups){
+    const b = el(`<button type="button" class="chip">${esc(label)}</button>`);
+    b.onclick = () => {
+      if(label==="None"){ setAll(S.animals.map(a=>a.id), false); return; }
+      setAll(S.animals.map(a=>a.id), false); setAll(fn(), true);
+    };
+    quick.appendChild(b);
+  }
+  inner.appendChild(quick);
+  inner.appendChild(pick);
+  const count = el(`<p class="hint">${S.sel?"1 head selected.":"No animals selected."}</p>`);
+  pick.addEventListener("pick", e => count.textContent = e.detail===1 ? "1 head selected." : `${e.detail} head selected.`);
+  inner.appendChild(count);
+
+  return formShell("Move stock", inner, async (f) => {
+    const ids = [...pick.chosen];
+    if(!ids.length) throw new Error("Choose at least one animal.");
+    if(!f.get("to"))  throw new Error("Choose a paddock to move them to.");
+    const { error } = await db.rpc("move_animals", {
+      p_animal_ids: ids, p_paddock_id: f.get("to"),
+      p_on: f.get("on"), p_reason: f.get("reason") || null
+    });
+    if(error) throw error;
+    const name = S.paddocks.find(p => p.id===f.get("to"))?.name || "the paddock";
+    return `${ids.length} head moved to ${name}.`;
+  });
+}
+
+// ─── shared field input ─────────────────────────────────────────
+function fieldInput(f, value, prefix=""){
+  const [k,label,type] = f, n = prefix+k, v = value;
+  if(type==="bool")
+    return `<label><span>${label}</span><select name="${n}">
+      <option value="">—</option>
+      <option value="1"${v===true?" selected":""}>Yes</option>
+      <option value="0"${v===false?" selected":""}>No</option></select></label>`;
+  if(type.startsWith("pick:"))
+    return `<label><span>${label}</span><select name="${n}"><option value="">—</option>
+      ${type.slice(5).split("|").map(o=>`<option ${v===o?"selected":""}>${o}</option>`).join("")}
+    </select></label>`;
+  if(type.startsWith("ref:")){
+    const list = S.refs[type.slice(4)]||[];
+    return `<label><span>${label}</span><select name="${n}"><option value="">—</option>
+      ${list.map(o=>`<option value="${o.id}"${v===o.id?" selected":""}>${esc(o.label||o.name)}</option>`).join("")}
+    </select></label>`;
+  }
+  if(type==="area")
+    return `<label><span>${label}</span><textarea name="${n}" rows="3">${esc(v||"")}</textarea></label>`;
+  const t = type==="number" ? "number" : type==="date" ? "date" : "text";
+  return `<label><span>${label}</span><input type="${t}" name="${n}"
+    ${type==="number"?'step="0.1" inputmode="decimal"':""} value="${esc(v??"")}"></label>`;
+}
+function readField(fd, f, prefix=""){
+  const [k,,type] = f, raw = fd.get(prefix+k);
+  if(raw===null || raw==="") return null;
+  if(type==="bool")   return raw==="1";
+  if(type==="number") return Number(raw);
+  return String(raw).trim() || null;
+}
+
+// ─── edit one animal ────────────────────────────────────────────
+function editAnimal(){
+  const a = S.animals.find(x => x.id===S.sel);
+  if(!a) return el(`<div class="empty">Animal not found.</div>`);
+
+  const inner = el(`<div></div>`);
+  inner.appendChild(el(`<div class="hero" style="padding:10px 0;border:0">${tagHTML(a.stock_code,"lg")}
+    <div><h2 style="font-size:18px">${esc(a.name||"Unnamed")}</h2>
+    <div class="sub">Only the fields you've switched on are shown.</div></div></div>`));
+
+  const groups = [...new Set(AF.map(f=>f[3]))];
+  for(const g of groups){
+    const fs = AF.filter(f => f[3]===g && shown(f[0]));
+    if(!fs.length) continue;
+    inner.appendChild(el(`<h3 class="sec" style="padding-left:0">${g}</h3>`));
+    for(const f of fs) inner.appendChild(el(fieldInput(f, a[f[0]])));
+  }
+
+  inner.appendChild(el(`<h3 class="sec" style="padding-left:0">Status</h3>`));
+  inner.appendChild(el(`<div class="two">
+    <label><span>State</span><select name="_life">
+      ${["alive","sold","died","slaughtered"].map(o=>`<option ${a.life_state===o?"selected":""}>${o}</option>`).join("")}
+    </select></label>
+    <label><span>Class</span><select name="_class"><option value="">—</option>
+      ${["calf","weaner","yearling","harvest","breeder","protector","bull"]
+        .map(o=>`<option ${a.class===o?"selected":""}>${o}</option>`).join("")}
+    </select></label></div>
+    <p class="hint">Changing these adds a dated transition — the old status stays in the animal's history.</p>`));
+
+  return formShell(`Edit ${a.stock_code}`, inner, async (fd) => {
+    const patch = {};
+    for(const f of AF) if(shown(f[0])) patch[f[0]] = readField(fd, f);
+    const { error } = await db.from("animal").update(patch).eq("id", a.id);
+    if(error) throw new Error(error.code==="23505" ? "Another animal already has that tag." : error.message);
+
+    const life = fd.get("_life"), cls = fd.get("_class")||null;
+    if(life !== a.life_state || cls !== (a.class||null)){
+      const { error:e2 } = await db.rpc("set_animal_status", {
+        p_animal_ids:[a.id], p_life_state:life, p_class:cls,
+        p_on: today(), p_reason:"Edited" });
+      if(e2) throw e2;
+    }
+    S.view = "detail";
+    return "Saved.";
+  });
+}
+
+// ─── bulk update ────────────────────────────────────────────────
+function bulkEdit(){
+  const bulkable = AF.filter(f => f[5]);
+  const inner = el(`<div>
+    <p class="hint" style="margin-top:0">Set a value once and apply it to as many animals as you like.
+      Anything left blank is untouched.</p>
+    <h3 class="sec" style="padding-left:0">What to change</h3>
+  </div>`);
+  for(const f of bulkable) inner.appendChild(el(fieldInput(f, null, "b_")));
+
+  inner.appendChild(el(`<h3 class="sec" style="padding-left:0">Status</h3>
+    <div class="two">
+      <label><span>State</span><select name="b_life"><option value="">—</option>
+        ${["alive","sold","died","slaughtered"].map(o=>`<option>${o}</option>`).join("")}</select></label>
+      <label><span>Class</span><select name="b_class"><option value="">—</option>
+        ${["calf","weaner","yearling","harvest","breeder","protector","bull"]
+          .map(o=>`<option>${o}</option>`).join("")}</select></label>
+    </div>
+    <label><span>Effective from</span><input type="date" name="b_on" value="${today()}"></label>
+    <h3 class="sec" style="padding-left:0">Which animals</h3>`));
+
+  const pick = animalPicker(true, []);
+  const setAll = (ids,on) => {
+    pick.querySelectorAll(".pick").forEach((b,i) => {
+      const a = pick.list[i]; if(!ids.includes(a.id)) return;
+      on ? pick.chosen.add(a.id) : pick.chosen.delete(a.id);
+      b.setAttribute("aria-pressed", on);
+    });
+    pick.dispatchEvent(new CustomEvent("pick",{detail:pick.chosen.size}));
+  };
+  const quick = el(`<div class="chips" style="padding:8px 0 2px"></div>`);
+  const groups = [["Everything", () => S.animals.filter(isActive).map(a=>a.id)],["None", () => []]];
+  for(const c of [...new Set(S.animals.filter(isActive).map(a=>a.class).filter(Boolean))])
+    groups.splice(1,0,[c, () => S.animals.filter(a=>isActive(a)&&a.class===c).map(a=>a.id)]);
+  for(const l of [...new Set(S.animals.filter(isActive).map(a=>a.year_letter).filter(Boolean))].sort())
+    groups.splice(groups.length-1,0,[`${l} drop`, () => S.animals.filter(a=>isActive(a)&&a.year_letter===l).map(a=>a.id)]);
+  for(const [label,fn] of groups){
+    const b = el(`<button type="button" class="chip">${esc(label)}</button>`);
+    b.onclick = () => { setAll(S.animals.map(a=>a.id), false); if(label!=="None") setAll(fn(), true); };
+    quick.appendChild(b);
+  }
+  inner.appendChild(quick);
+  inner.appendChild(pick);
+  const count = el(`<p class="hint">No animals selected.</p>`);
+  pick.addEventListener("pick", e => count.textContent =
+    e.detail===1 ? "1 head selected." : `${e.detail} head selected.`);
+  inner.appendChild(count);
+
+  return formShell("Bulk update", inner, async (fd) => {
+    const ids = [...pick.chosen];
+    if(!ids.length) throw new Error("Choose some animals.");
+
+    const patch = {};
+    for(const f of bulkable){
+      const v = readField(fd, f, "b_");
+      if(v !== null) patch[f[0]] = v;
+    }
+    const life = fd.get("b_life")||null, cls = fd.get("b_class")||null;
+    if(!Object.keys(patch).length && !life && !cls)
+      throw new Error("Nothing filled in to change.");
+
+    const changed = [];
+    if(Object.keys(patch).length){
+      const { error } = await db.from("animal").update(patch).in("id", ids);
+      if(error) throw error;
+      changed.push(Object.keys(patch).length + " field" + (Object.keys(patch).length===1?"":"s"));
+    }
+    if(life || cls){
+      const { error } = await db.rpc("set_animal_status", {
+        p_animal_ids:ids, p_life_state:life, p_class:cls,
+        p_on: fd.get("b_on")||today(), p_reason:"Bulk update" });
+      if(error) throw error;
+      changed.push("status");
+    }
+    S.view = "record";
+    return `${changed.join(" and ")} updated on ${ids.length} head.`;
+  });
+}
+
+// ─── settings ───────────────────────────────────────────────────
+function viewSettings(){
+  const wrap = el(`<div></div>`);
+  wrap.appendChild(el(`<p class="hint" style="padding:14px 14px 0">Switch fields on to see them on an
+    animal's page and in the edit form. Off just hides them — nothing is deleted.</p>`));
+
+  const rows = [
+    ["Recorded fields", AF.map(f=>[f[0],f[1]])],
+    ["Worked out from records", DERIVED.map(d=>[d[0],d[1]])]
+  ];
+  for(const [title, items] of rows){
+    wrap.appendChild(el(`<h3 class="sec">${title}</h3>`));
+    const ul = el(`<ul class="rows"></ul>`);
+    for(const [k,label] of items){
+      const li = el(`<li><button class="row">
+        <span class="meta"><span class="nm">${esc(label)}</span></span>
+        <span class="rt" style="font-size:22px;color:${shown(k)?"var(--accent)":"var(--rule)"}">${
+          shown(k)?"●":"○"}</span></button></li>`);
+      li.querySelector("button").onclick = async () => {
+        S.prefs.fields[k] = !shown(k);
+        await savePrefs(); render();
+      };
+      ul.appendChild(li);
+    }
+    wrap.appendChild(ul);
+  }
+
+  const reset = el(`<div class="pad"><button class="btn ghost">Back to the standard set</button></div>`);
+  reset.querySelector("button").onclick = async () => {
+    S.prefs = defaultPrefs(); await savePrefs(); render();
+  };
+  wrap.appendChild(reset);
+  const back = el(`<div class="pad" style="padding-top:0"><button class="btn ghost">Back</button></div>`);
+  back.querySelector("button").onclick = () => { S.view="record"; render(); };
+  wrap.appendChild(back);
+  return wrap;
+}
+
+// ═══ login ══════════════════════════════════════════════════════
+function viewLogin(msg){
+  const wrap = el(`<div class="login">
+    <div class="mark">Buloke Farm</div>
+    <p class="tagline">Cattle records</p>
+    <form>
+      <label><span>Email</span><input type="email" name="email" autocomplete="username" required></label>
+      <label><span>Password</span><input type="password" name="pw" autocomplete="current-password" required></label>
+      <button type="submit" class="btn">Sign in</button>
+    </form></div>`);
+  if(msg) wrap.querySelector("form").before(el(`<div class="msg err">${esc(msg)}</div>`));
+  wrap.querySelector("form").onsubmit = async (e) => {
+    e.preventDefault();
+    const b = e.target.querySelector("button"); b.disabled=true; b.textContent="Signing in…";
+    const f = new FormData(e.target);
+    const { error } = await db.auth.signInWithPassword({ email:f.get("email"), password:f.get("pw") });
+    if(error){ boot(error.message); return; }
+    boot();
+  };
+  return wrap;
+}
+
+// ═══ shell ══════════════════════════════════════════════════════
+async function render(){
+  S.busy = false;
+  const app = document.getElementById("app");
+  const main = el(`<main></main>`);
+
+  let body;
+  if(S.view==="herd")            body = viewHerd();
+  else if(S.view==="map")        body = viewMap();
+  else if(S.view==="due")        body = await viewDue();
+  else if(S.view==="detail")     body = await viewDetail();
+  else if(S.view==="record")     body = viewRecord();
+  else if(S.view==="rec:weight") body = recWeight();
+  else if(S.view==="rec:treatment") body = recTreatment();
+  else if(S.view==="rec:calving")   body = recCalving();
+  else if(S.view==="rec:joining")   body = recJoining();
+  else if(S.view==="rec:move")      body = recMove();
+  else if(S.view==="rec:feed")      body = recFeed();
+  else if(S.view==="rec:sell")      body = recSell();
+  else if(S.view==="rec:bulk")      body = bulkEdit();
+  else if(S.view==="rec:settings")  body = viewSettings();
+  else if(S.view==="editAnimal")    body = editAnimal();
+  else if(S.view==="rec:store")     body = recStore();
+  else if(S.view==="rec:newfeed")   body = recNewFeed();
+  else if(S.view==="rec:stockadj")  body = recStockAdj();
+  main.appendChild(body);
+
+  const onHand = S.animals.filter(isActive).length;
+  const header = el(`<header><h1>Buloke Farm</h1>
+    <span class="who">${onHand} head${
+      S.me?.display_name ? " · "+esc(S.me.display_name.split(" ")[0]) : ""}</span></header>`);
+
+  const nav = el(`<nav>
+    <button aria-current="${S.view==="herd"||S.view==="detail"}"><b>◉</b>Herd</button>
+    <button aria-current="${S.view==="map"}"><b>▦</b>Map</button>
+    <button aria-current="${S.view==="due"}"><b>◐</b>Due</button>
+    <button aria-current="${S.view.startsWith("rec")}"><b>✎</b>Record</button></nav>`);
+  const [bH,bM,bD,bR] = nav.querySelectorAll("button");
+  bH.onclick = () => { S.view="herd"; S.sel=null; render(); };
+  bM.onclick = () => { S.view="map"; S.selPk=null; render(); };
+  bD.onclick = () => { S.view="due"; render(); };
+  bR.onclick = () => { S.view="record"; render(); };
+
+  app.replaceChildren(header, main, nav);
+}
+
+async function boot(loginErr){
+  const app = document.getElementById("app");
+  const { data:{ session } } = await db.auth.getSession();
+  if(!session){ app.replaceChildren(viewLogin(loginErr)); return; }
+  await loadMe();
+  if(!S.me?.active){
+    app.replaceChildren(el(`<div class="login"><div class="mark">Buloke Farm</div>
+      <div class="msg err" style="margin:20px 0">Your account isn't switched on yet.
+      An owner needs to activate it before you can see the herd.</div>
+      <button class="btn ghost" onclick="location.reload()">Try again</button></div>`));
+    return;
+  }
+  await loadPrefs();
+  try{ await Promise.all([loadHerd(), loadPaddocks(), loadRefs(), loadPending()]); }
+  catch(e){ app.replaceChildren(el(`<div class="empty"><b>Couldn't load the herd</b>${esc(e.message)}</div>`)); return; }
+  render();
+}
+
+db.auth.onAuthStateChange((evt) => { if(evt==="SIGNED_OUT") location.reload(); });
+boot();
+</script>
+</body>
+</html>
