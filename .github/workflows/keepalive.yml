@@ -12,9 +12,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Query the database
+        env:
+          KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
           code=$(curl -s -o /dev/null -w '%{http_code}' \
             "${{ secrets.SUPABASE_URL }}/rest/v1/heartbeat?select=ok&limit=1" \
-            -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}")
+            -H "apikey: $KEY" \
+            -H "Authorization: Bearer $KEY")
           echo "HTTP $code"
           [ "$code" = "200" ] || exit 1
