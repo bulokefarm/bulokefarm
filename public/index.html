@@ -4,10 +4,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#12564F">
-<link rel="manifest" href="/manifest.webmanifest">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="default">
-<meta name="apple-mobile-web-app-title" content="Buloke">
 <title>Buloke Farm</title>
 <style>
 :root{
@@ -89,6 +85,22 @@ nav button b{display:block;font-size:19px;font-weight:600;letter-spacing:0;margi
 .seg{display:flex;gap:0;margin-bottom:9px;border:1px solid var(--rule);border-radius:9px;overflow:hidden}
 .seg button{flex:1;border:0;background:var(--card);padding:9px 6px;font-size:13px;font-weight:600;cursor:pointer;color:var(--ink2)}
 .seg button[aria-pressed="true"]{background:var(--accent);color:#fff}
+.mapbox{background:#EBEAE3;border-bottom:1px solid var(--rule);
+  height:clamp(170px,34dvh,380px);position:relative}
+.mapbox svg{width:100%;height:100%;display:block}
+.maphint{position:absolute;left:0;right:0;bottom:8px;text-align:center;font-size:12px;
+  color:var(--ink2);pointer-events:none}
+.pkcard{background:var(--card);border-bottom:1px solid var(--rule);padding:12px 14px}
+.pkcard .top{display:flex;align-items:center;gap:10px}
+.pkcard .nm{font-size:17px;font-weight:700;flex:1;min-width:0}
+.pkcard .close{border:0;background:none;font-size:21px;line-height:1;color:var(--ink2);
+  cursor:pointer;padding:2px 6px}
+.pkstats{display:flex;gap:14px;margin-top:6px;font-size:13px;color:var(--ink2);flex-wrap:wrap}
+.pkstats b{color:var(--ink);font-family:var(--mono);font-weight:600}
+.pkacts{display:flex;gap:8px;margin-top:11px}
+.pkacts button{flex:1;min-height:42px;border:1px solid var(--rule);border-radius:9px;
+  background:var(--card);font-size:14px;font-weight:600;cursor:pointer}
+.pkacts button.pri{background:var(--accent);border-color:var(--accent);color:#fff}
 .treewrap{overflow-x:auto;overflow-y:hidden;background:var(--card);border-bottom:1px solid var(--rule);
   -webkit-overflow-scrolling:touch}
 .treewrap svg{display:block}
@@ -329,18 +341,29 @@ function viewHerd(){
                 ["yearling","Yearlings"],["weaner","Weaners"],["calf","Calves"],
                 ["protector","Protector"],["bull","Bulls"]]
                 .filter(([k]) => k==="all" || counts[k]);
+  for(const p of S.paddocks){
+    const n = live.filter(a => a.paddock_id===p.id).length;
+    if(n) { counts["pk:"+p.id] = n; cats.push(["pk:"+p.id, p.name]); }
+  }
+  const noPk = live.filter(a => !a.paddock_id).length;
+  if(noPk){ counts["pk:none"] = noPk; cats.push(["pk:none","No paddock"]); }
   if(counts.past) cats.push(["past","Sold & died"]);
   const chips = el(`<div class="chips"></div>`);
   for(const [k,label] of cats){
-    const b = el(`<button class="chip" aria-pressed="${S.filter===k}">${label} ${counts[k]||0}</button>`);
+    const pk = k.startsWith("pk:") ? S.paddocks.find(p=>p.id===k.slice(3)) : null;
+    const b = el(`<button class="chip" aria-pressed="${S.filter===k}">${
+      pk ? `<span class="dot" style="background:${esc(pk.colour)}"></span>` : ""}${label} ${counts[k]||0}</button>`);
     b.onclick = () => { S.filter=k; render(); };
     chips.appendChild(b);
   }
   wrap.appendChild(chips);
 
   const q = S.q.trim().toLowerCase();
-  const inScope = a => S.filter==="past" ? !isActive(a)
-                     : isActive(a) && (S.filter==="all" || a.class===S.filter);
+  const inScope = a =>
+      S.filter==="past"      ? !isActive(a)
+    : S.filter==="pk:none"   ? isActive(a) && !a.paddock_id
+    : S.filter.startsWith("pk:") ? isActive(a) && a.paddock_id===S.filter.slice(3)
+    : isActive(a) && (S.filter==="all" || a.class===S.filter);
   const match = a => inScope(a) &&
     (!q || [a.stock_code,a.name,a.breed,a.nlis_tag].some(v => (v||"").toLowerCase().includes(q)));
 
@@ -713,51 +736,79 @@ function viewMap(){
     minX=Math.min(minX,x); maxX=Math.max(maxX,x);
     minY=Math.min(minY,y); maxY=Math.max(maxY,y);
   }
-  const pad = Math.max(maxX-minX, maxY-minY) * 0.04 || 0.0001;
+  const pad = Math.max(maxX-minX, maxY-minY) * 0.05 || 0.0001;
   minX-=pad; maxX+=pad; minY-=pad; maxY+=pad;
-  const W = 1000, H = Math.max(360, Math.round(W * (maxY-minY)/(maxX-minX)));
+  const W = 1000, H = Math.round(W * (maxY-minY)/(maxX-minX)) || 600;
   const sx = v => (v-minX)/(maxX-minX)*W;
   const sy = v => (v-minY)/(maxY-minY)*H;
+  // Labels scale with the viewBox so they stay legible however the
+  // box is squeezed.
+  const fs = Math.max(18, Math.round(Math.max(W,H)/34));
 
-  let svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img"
-    aria-label="Paddock map" style="display:block;background:#EBEAE3">`;
+  let svg = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet"
+    role="img" aria-label="Paddock map">`;
   for(const p of drawn){
-    const pts = p.geometry.coordinates[0].map(c => { const [x,y]=proj(c); return `${sx(x).toFixed(1)},${sy(y).toFixed(1)}`; }).join(" ");
-    const on = S.selPk===p.id;
+    const pts = p.geometry.coordinates[0]
+      .map(c => { const [x,y]=proj(c); return `${sx(x).toFixed(1)},${sy(y).toFixed(1)}`; }).join(" ");
+    const on = S.selPk===p.id, any = !!S.selPk;
     svg += `<polygon data-id="${p.id}" points="${pts}" fill="${esc(p.colour)}"
-      fill-opacity="${p.head ? (on?.62:.42) : (on?.34:.16)}"
-      stroke="${esc(p.colour)}" stroke-width="${on?5:2.5}" stroke-linejoin="round"
-      style="cursor:pointer"></polygon>`;
+      fill-opacity="${on ? .66 : any ? .12 : (p.head ? .42 : .16)}"
+      stroke="${esc(p.colour)}" stroke-width="${on?6:2.5}"
+      stroke-opacity="${any && !on ? .4 : 1}"
+      stroke-linejoin="round" style="cursor:pointer"></polygon>`;
   }
   for(const p of drawn){
     const ring = p.geometry.coordinates[0].map(proj);
     const cx = sx(ring.reduce((s,r)=>s+r[0],0)/ring.length);
     const cy = sy(ring.reduce((s,r)=>s+r[1],0)/ring.length);
-    svg += `<text x="${cx.toFixed(1)}" y="${cy.toFixed(1)}" text-anchor="middle"
-      font-size="26" font-weight="700" fill="#16150F" paint-order="stroke"
-      stroke="#fff" stroke-width="5" style="pointer-events:none">${esc(p.code||p.name)}</text>`;
-    if(p.head) svg += `<text x="${cx.toFixed(1)}" y="${(cy+27).toFixed(1)}" text-anchor="middle"
-      font-size="21" font-weight="600" fill="#16150F" paint-order="stroke"
-      stroke="#fff" stroke-width="4.5" style="pointer-events:none">${p.head} hd</text>`;
+    const fade = S.selPk && S.selPk!==p.id ? .45 : 1;
+    svg += `<text x="${cx.toFixed(1)}" y="${cy.toFixed(1)}" text-anchor="middle" opacity="${fade}"
+      font-size="${fs}" font-weight="700" fill="#16150F" paint-order="stroke"
+      stroke="#fff" stroke-width="${fs/5}" style="pointer-events:none">${esc(p.code||p.name)}</text>`;
+    if(p.head) svg += `<text x="${cx.toFixed(1)}" y="${(cy+fs*1.05).toFixed(1)}" text-anchor="middle"
+      opacity="${fade}" font-size="${fs*0.8}" font-weight="600" fill="#16150F" paint-order="stroke"
+      stroke="#fff" stroke-width="${fs/6}" style="pointer-events:none">${p.head} hd</text>`;
   }
   svg += `</svg>`;
 
-  const box = el(`<div style="background:#EBEAE3;border-bottom:1px solid var(--rule)">${svg}</div>`);
+  const box = el(`<div class="mapbox">${svg}${
+    S.selPk ? "" : `<div class="maphint">Tap a paddock</div>`}</div>`);
   box.querySelectorAll("polygon").forEach(poly => {
     poly.onclick = () => { S.selPk = S.selPk===poly.dataset.id ? null : poly.dataset.id; render(); };
   });
   wrap.appendChild(box);
 
-  const unplaced = S.animals.filter(a => !a.paddock_id && isActive(a));
   const sel = S.paddocks.find(p => p.id===S.selPk);
 
+  // Selected paddock: everything about it, and the two things you'd
+  // want to do next, right under the map rather than a scroll away.
   if(sel){
-    wrap.appendChild(el(`<h3 class="sec">${esc(sel.name)} — ${sel.area_ha??"—"} ha${
-      sel.head_per_ha?` · ${sel.head_per_ha}/ha`:""}</h3>`));
-    const inIt = S.animals.filter(a => a.paddock_id===sel.id);
+    const inIt = S.animals.filter(a => isActive(a) && a.paddock_id===sel.id);
+    const card = el(`<div class="pkcard">
+      <div class="top">
+        <span class="dot" style="background:${esc(sel.colour)};width:15px;height:15px"></span>
+        <span class="nm">${esc(sel.name)}</span>
+        <button class="close" aria-label="Clear selection">×</button>
+      </div>
+      <div class="pkstats">
+        <span><b>${inIt.length}</b> head</span>
+        <span><b>${sel.area_ha??"—"}</b> ha</span>
+        ${sel.head_per_ha?`<span><b>${sel.head_per_ha}</b> /ha</span>`:""}
+        ${sel.grazing_since?`<span>grazing since <b>${fmt(sel.grazing_since)}</b></span>`:""}
+      </div>
+      ${canWrite() ? `<div class="pkacts">
+        <button class="pri" data-a="move">Move stock here</button>
+        <button data-a="feed">Feed out here</button></div>` : ""}
+    </div>`);
+    card.querySelector(".close").onclick = () => { S.selPk=null; render(); };
+    card.querySelectorAll("[data-a]").forEach(b => b.onclick = () => {
+      S.view = b.dataset.a==="move" ? "rec:move" : "rec:feed"; render();
+    });
+    wrap.appendChild(card);
+
     if(!inIt.length){
-      wrap.appendChild(el(`<p class="hint" style="padding:0 14px 10px">Empty since ${
-        sel.grazing_since?fmt(sel.grazing_since):"—"}.</p>`));
+      wrap.appendChild(el(`<div class="empty" style="padding:26px 24px">
+        <b>Empty</b>Nothing in ${esc(sel.name)} at the moment.</div>`));
     } else {
       const ul = el(`<ul class="rows"></ul>`);
       for(const a of inIt){
@@ -770,25 +821,28 @@ function viewMap(){
       }
       wrap.appendChild(ul);
     }
-  } else {
-    wrap.appendChild(el(`<h3 class="sec">Paddocks</h3>`));
-    const ul = el(`<ul class="rows"></ul>`);
-    for(const p of S.paddocks){
-      const li = el(`<li><button class="row">
-        <span class="dot" style="background:${esc(p.colour)};width:14px;height:14px"></span>
-        <span class="meta"><span class="nm">${esc(p.name)}</span>
-        <span class="sub">${p.area_ha??"—"} ha${p.grazing_since?` · grazing since ${fmt(p.grazing_since)}`:""}</span></span>
-        <span class="rt">${p.head||0} hd</span></button></li>`);
-      li.querySelector("button").onclick = () => { S.selPk=p.id; render(); };
-      ul.appendChild(li);
-    }
-    wrap.appendChild(ul);
+    return wrap;
   }
 
+  // Nothing selected: the paddocks as a list, so you can pick either way.
+  const ul = el(`<ul class="rows"></ul>`);
+  for(const p of S.paddocks){
+    const li = el(`<li><button class="row">
+      <span class="dot" style="background:${esc(p.colour)};width:14px;height:14px"></span>
+      <span class="meta"><span class="nm">${esc(p.name)}</span>
+      <span class="sub">${p.area_ha??"—"} ha${
+        p.grazing_since?` · grazing since ${fmt(p.grazing_since)}`:" · empty"}</span></span>
+      <span class="rt">${p.head||0} hd</span></button></li>`);
+    li.querySelector("button").onclick = () => { S.selPk=p.id; render(); };
+    ul.appendChild(li);
+  }
+  wrap.appendChild(ul);
+
+  const unplaced = S.animals.filter(a => !a.paddock_id && isActive(a));
   if(unplaced.length){
-    const b = el(`<div class="pad"><div class="note"><b>${unplaced.length} head not in a paddock.</b>
-      Assign them under Record → Move mob.</div></div>`);
-    wrap.appendChild(b);
+    const n = el(`<div class="pad"><button class="btn ghost">${unplaced.length} head not in a paddock</button></div>`);
+    n.querySelector("button").onclick = () => { S.herdMode="list"; S.filter="pk:none"; S.view="herd"; render(); };
+    wrap.appendChild(n);
   }
   return wrap;
 }
@@ -826,6 +880,21 @@ function viewRecord(){
     ["store","Feed store", low ? `${low} low on stock` : `${S.feeds.length} in the shed`],
     ["bulk","Bulk update","Change a field across many animals"],
     ["settings","Which fields to show","Turn animal details on or off"]]);
+
+  wrap.appendChild(el(`<h3 class="sec">On a laptop</h3>`));
+  const ul2 = el(`<ul class="rows"></ul>`);
+  for(const [href,t,sub] of [
+      ["/reports","Records & reports","LPA treatments, feed, movements — printable"],
+      ["/map","Paddock editor","Trace fence lines on satellite imagery"]]){
+    const li = el(`<li><a class="row" href="${href}" target="_blank" rel="noopener"
+      style="text-decoration:none;color:inherit">
+      <span class="meta"><span class="nm">${t}</span><span class="sub">${sub}</span></span>
+      <span class="rt">↗</span></a></li>`);
+    ul2.appendChild(li);
+  }
+  wrap.appendChild(ul2);
+  wrap.appendChild(el(`<p class="hint" style="padding:8px 14px 14px">These open in a new tab.
+    They work on a phone but want a big screen.</p>`));
   return wrap;
 }
 
@@ -1437,7 +1506,8 @@ function recMove(){
   const inner = el(`<div>
     <label><span>Moving to</span><select name="to" required>
       <option value="">Choose a paddock…</option>
-      ${S.paddocks.map(p => `<option value="${p.id}">${esc(p.name)} — ${p.area_ha??"?"} ha, ${p.head||0} head</option>`).join("")}
+      ${S.paddocks.map(p => `<option value="${p.id}"${S.selPk===p.id?" selected":""}>${
+        esc(p.name)} — ${p.area_ha??"?"} ha, ${p.head||0} head</option>`).join("")}
     </select></label>
     <label><span>Date</span><input type="date" name="on" value="${today()}" required></label>
     <label><span>Reason</span><input type="text" name="reason" placeholder="Rotation, feed, calving"></label>
