@@ -1171,7 +1171,9 @@ const addDays = (iso, n) => {
 };
 const seasonNow = () => { const y = new Date().getFullYear(); return `${y}-${y+1}`; };
 
-// Shared tail: season, cycle, attempt, outcome, notes.
+// Shared tail: season, cycle, attempt. Nothing about the result —
+// at the moment of joining there isn't one, and pretending otherwise
+// puts a default on file that reads like a finding.
 const joinCommon = () => `
   <div class="two">
     <label><span>Season</span><input type="text" name="season" value="${seasonNow()}" required></label>
@@ -1180,17 +1182,7 @@ const joinCommon = () => `
   </div>
   <label><span>Attempt</span><select name="attempt">
     <option value="1">First join</option><option value="2">Second join</option>
-    <option value="3">Third join</option></select></label>
-  <h3 class="sec" style="padding-left:0">Result</h3>
-  <label><span>Outcome</span><select name="outcome">
-    <option value="unknown">Not tested yet</option>
-    <option value="in_calf">In calf</option>
-    <option value="empty">Empty — didn't hold</option>
-    <option value="aborted">Aborted</option>
-    <option value="lost">Lost the calf</option>
-  </select></label>
-  <label><span>Tested on</span><input type="date" name="tested"></label>
-  <label><span>Notes</span><input type="text" name="notes" placeholder="Optional"></label>`;
+    <option value="3">Third join</option></select></label>`;
 
 function recJoining(){
   const wrap  = el(`<div></div>`);
@@ -1250,7 +1242,13 @@ function joinAI(){
         <label><span>Straws in</span><input type="number" name="nstraws" min="0" inputmode="numeric"></label>
       </div>
     </div>
-    <label><span>Inseminated on</span><input type="date" name="on" value="${today()}"></label>
+    <div class="two">
+      <label><span>Inseminated on</span><input type="date" name="on" value="${today()}"></label>
+      <label><span>Confidence %</span><input type="number" name="conf" min="0" max="100"
+        step="5" inputmode="numeric" placeholder="—"></label>
+    </div>
+    <p class="hint">How well the job went — heat signs, timing, how the straw handled.
+      Leave it blank if you'd rather not guess; blank and zero aren't the same thing.</p>
     <div class="two">
       <label><span>Gestation days</span><input type="number" name="gest" value="${GEST_DEFAULT}"
         min="250" max="310" inputmode="numeric"></label>
@@ -1258,8 +1256,9 @@ function joinAI(){
     </div>
     <p class="hint" id="gesthint"></p>
     ${joinCommon()}
-    <div class="note">Recording an empty matters as much as an in-calf. Conception rate can only
-      be worked out if the failures are on file too.</div>
+    <label><span>Notes</span><input type="text" name="notes" placeholder="Optional"></label>
+    <div class="note">The result goes on later, in the joining register — a joining recorded
+      today has no outcome yet, and a default one would read like a finding.</div>
   </div>`);
 
   const q = s => inner.querySelector(s);
@@ -1313,12 +1312,14 @@ function joinAI(){
     // due list, family tree and animal timeline keep naming the bull
     // without any of them needing to know AI exists.
     const g = Number(f.get("gest")) || GEST_DEFAULT;
+    const conf = f.get("conf");
     const { error } = await db.from("joining").upsert({
       dam_id:f.get("dam"), sire_id:sireId, method:"ai", ai_semen_id:semenId,
       season:(f.get("season")||"").trim(), cycle:f.get("cycle"),
       attempt:Number(f.get("attempt")||1),
       joined_on:f.get("on")||null, gestation_days:g, due_on:f.get("due")||null,
-      outcome:f.get("outcome"), tested_on:f.get("tested")||null,
+      confidence_pct: conf === "" || conf == null ? null : Number(conf),
+      outcome:"unknown",
       notes:(f.get("notes")||"").trim()||null
     }, {onConflict:"dam_id,season,attempt"});
     if(error) throw error;
@@ -1327,9 +1328,7 @@ function joinAI(){
     if(g !== gestOf(cow))
       await db.from("animal").update({gestation_days:g}).eq("id", cow.id);
 
-    return f.get("outcome")==="empty"
-      ? `${cow?.stock_code} recorded empty for ${f.get("season")}.`
-      : `AI recorded for ${cow?.stock_code}.`;
+    return `AI recorded for ${cow?.stock_code}. Result goes on in the register once she's tested.`;
   });
 }
 
@@ -1354,6 +1353,7 @@ function joinNatural(){
       <label><span>Bull out</span><input type="date" name="out"></label>
     </div>
     ${joinCommon()}
+    <label><span>Notes</span><input type="text" name="notes" placeholder="Applies to the whole mob"></label>
   </div>`);
 
   // The confirm list goes above the season block, right under the paddock.
@@ -1415,7 +1415,8 @@ function joinNatural(){
         ${others.map(a => `${esc(a.stock_code)} (${esc(a.class||a.sex||"?")})`).join(", ")}.
         Not joined — check they're meant to be there.</div>`));
     listWrap.appendChild(el(`<p class="hint">Due dates are the earliest possible: bull in
-      plus each cow's own gestation. Change a number and it's remembered against her.</p>`));
+      plus each cow's own gestation. Change a number and it's remembered against her.
+      Test results go on one at a time later, in the joining register.</p>`));
   };
   pk.onchange = fill; fill();
 
@@ -1435,7 +1436,7 @@ function joinNatural(){
         attempt:Number(f.get("attempt")||1),
         joined_on:onD, bull_out:f.get("out")||null,
         gestation_days:g, due_on: onD ? addDays(onD, g) : null,
-        outcome:f.get("outcome"), tested_on:f.get("tested")||null,
+        outcome:"unknown",
         notes:(f.get("notes")||"").trim()||null
       };
     });
