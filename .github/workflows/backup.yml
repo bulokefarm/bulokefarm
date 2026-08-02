@@ -1,15 +1,26 @@
 # A second copy of the records, off Supabase. The free plan has no
 # backups, and these are records you may need years from now.
+#
+# It also writes supabase/schema.sql back into the repo. The migrations
+# carry the reasoning; that file is the ground truth. If the two ever
+# disagree, something was run in the SQL editor and never written down,
+# and it turns up as a diff on Monday morning rather than as a surprise
+# during a restore.
 name: Weekly backup
 on:
   schedule:
     - cron: "0 15 * * 0"      # Sunday 15:00 UTC ≈ 02:00 AEDT Monday
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   dump:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - name: Install pg_dump 17
         run: |
           curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
@@ -33,3 +44,28 @@ jobs:
           name: buloke-backup
           path: buloke-*.sql
           retention-days: 90
+
+      # Public schema only. The auth, storage and extension schemas are
+      # Supabase's business and shift under you without meaning anything.
+      - name: Snapshot the schema
+        env:
+          PGCONN: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          mkdir -p supabase
+          /usr/lib/postgresql/17/bin/pg_dump "$PGCONN" \
+            --schema-only --schema=public --no-owner --no-privileges \
+            -f supabase/schema.sql
+          wc -l supabase/schema.sql
+
+      - name: Commit it if it moved
+        run: |
+          if git diff --quiet -- supabase/schema.sql; then
+            echo "Schema unchanged since last week."
+            exit 0
+          fi
+          echo "::warning::Live schema differs from the last snapshot — read the commit diff."
+          git config user.name  "buloke-backup"
+          git config user.email "backup@bulokefarm.com.au"
+          git add supabase/schema.sql
+          git commit -m "Schema snapshot $(date +%F)"
+          git push
