@@ -197,6 +197,8 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-
 .msg.err{background:#F7E4E2;color:var(--danger)}
 .msg.ok{background:var(--accent-soft);color:var(--accent)}
 .empty{padding:40px 24px;text-align:center;color:var(--ink2)}
+.boot{padding:22vh 24px;text-align:center;color:var(--ink2);font-size:14px}
+.boot img{width:38px;height:38px;border-radius:8px;display:block;margin:0 auto 14px}
 .empty b{display:block;color:var(--ink);margin-bottom:5px;font-size:17px}
 
 /* ---------- login ---------- */
@@ -213,7 +215,22 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-
 <script src="/nav.js" defer></script>
 </head>
 <body>
-<div id="app"></div>
+<div id="app"><div class="boot" id="bootmsg"><img src="/mark.png" alt="">Loading the herd…</div></div>
+
+<script>
+// Classic script, deliberately: it still runs when the module below never
+// does. A module that fails to load has no way to report that it failed,
+// and the result is a white screen with nothing on it. If the app hasn't
+// painted — #bootmsg is replaced the moment it does — say so and offer a
+// way out, rather than leaving the phone sitting blank.
+setTimeout(function(){
+  var b = document.getElementById("bootmsg");
+  if(!b) return;
+  b.innerHTML = "<b style='color:var(--ink);display:block;margin-bottom:6px'>"
+    + "Couldn't start</b>No answer from the network. This usually clears on its own."
+    + "<br><button class='btn ghost' onclick='location.reload()'>Try again</button>";
+}, 12000);
+</script>
 
 <script type="module">
 // ═══════════════════════════════════════════════════════════════
@@ -224,8 +241,29 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-
 const SUPABASE_URL  = "https://hgnzignikbpdbbyubahu.supabase.co";
 const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhnbnppZ25pa2JwZGJieXViYWh1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU1NTgzNTcsImV4cCI6MjEwMTEzNDM1N30.U5vvmmZfSP0SOXsvLaxpjJ6LjWjOvaOYwTZ9VKyfFs0";
 
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-const db = createClient(SUPABASE_URL, SUPABASE_ANON);
+// The library comes from our own origin first — same connection, same
+// Cloudflare edge that just served this page, no second DNS lookup or TLS
+// handshake to a third party. esm.sh stays only as a fallback for the case
+// where /vendor hasn't been deployed.
+let createClient;
+try      { ({ createClient } = await import("/vendor/supabase.js")); }
+catch(e) { ({ createClient } = await import("https://esm.sh/@supabase/supabase-js@2")); }
+
+// Nothing in this app needs ten seconds. Without a cap, a request made
+// while the phone is still bringing its radio up doesn't fail — it hangs,
+// and the screen stays blank for as long as iOS is willing to wait, which
+// is minutes. A fast failure we can show; a slow one we can't.
+const REQUEST_MS = 10000;
+const timedFetch = (url, opts = {}) => {
+  const c = new AbortController();
+  const t = setTimeout(() => c.abort(), REQUEST_MS);
+  return fetch(url, { ...opts, signal: c.signal })
+    .catch(err => { throw err.name === "AbortError"
+      ? new Error("The network didn't answer. Check your signal and try again.") : err; })
+    .finally(() => clearTimeout(t));
+};
+
+const db = createClient(SUPABASE_URL, SUPABASE_ANON, { global: { fetch: timedFetch } });
 
 // ─── year-letter colours ────────────────────────────────────────
 // The letter is the birth year. Same letter, same colour, everywhere —
@@ -1928,20 +1966,28 @@ async function render(){
 
 async function boot(loginErr){
   const app = document.getElementById("app");
-  const { data:{ session } } = await db.auth.getSession();
-  if(!session){ app.replaceChildren(viewLogin(loginErr)); return; }
-  await loadMe();
-  if(!S.me?.active){
-    app.replaceChildren(el(`<div class="login"><div class="mark">Buloke Farm</div>
-      <div class="msg err" style="margin:20px 0">Your account isn't switched on yet.
-      An owner needs to activate it before you can see the herd.</div>
-      <button class="btn ghost" onclick="location.reload()">Try again</button></div>`));
-    return;
+  try{
+    const { data:{ session } } = await db.auth.getSession();
+    if(!session){ app.replaceChildren(viewLogin(loginErr)); return; }
+    await loadMe();
+    if(!S.me?.active){
+      app.replaceChildren(el(`<div class="login"><div class="mark">Buloke Farm</div>
+        <div class="msg err" style="margin:20px 0">Your account isn't switched on yet.
+        An owner needs to activate it before you can see the herd.</div>
+        <button class="btn ghost" onclick="location.reload()">Try again</button></div>`));
+      return;
+    }
+    await loadPrefs();
+    await Promise.all([loadHerd(), loadPaddocks(), loadRefs(), loadPending()]);
+    render();
+  }catch(e){
+    // Every path above touches the network, and a cold launch on a weak
+    // signal is where it goes wrong. Show the reason and a way to retry;
+    // an uncaught throw here leaves the screen white with no explanation.
+    app.replaceChildren(el(`<div class="empty"><b>Couldn't load the herd</b>${
+      esc(e.message || "Something went wrong.")}
+      <br><button class="btn ghost" onclick="location.reload()">Try again</button></div>`));
   }
-  await loadPrefs();
-  try{ await Promise.all([loadHerd(), loadPaddocks(), loadRefs(), loadPending()]); }
-  catch(e){ app.replaceChildren(el(`<div class="empty"><b>Couldn't load the herd</b>${esc(e.message)}</div>`)); return; }
-  render();
 }
 
 window.__signOut = () => db.auth.signOut();
