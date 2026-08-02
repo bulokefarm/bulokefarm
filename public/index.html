@@ -1595,7 +1595,7 @@ function recMove(){
   const setAll = (ids, on) => {
     pick.querySelectorAll(".pick").forEach((b,i) => {
       const a = pick.list[i];
-      if(!ids.includes(a.id)) return;
+      if(b.hidden || !ids.includes(a.id)) return;
       on ? pick.chosen.add(a.id) : pick.chosen.delete(a.id);
       b.setAttribute("aria-pressed", on);
     });
@@ -1608,9 +1608,9 @@ function recMove(){
                   ["Unassigned", () => S.animals.filter(a=>isActive(a)&&!a.paddock_id).map(a=>a.id)],
                   ["None", () => []]];
   for(const p of S.paddocks.filter(p=>p.head))
-    groups.splice(2, 0, [`All in ${p.name}`, () => S.animals.filter(a=>a.paddock_id===p.id).map(a=>a.id)]);
-  for(const [label, fn] of groups){
-    const b = el(`<button type="button" class="chip">${esc(label)}</button>`);
+    groups.splice(2, 0, [`All in ${p.name}`, () => S.animals.filter(a=>a.paddock_id===p.id).map(a=>a.id), p.id]);
+  for(const [label, fn, pid] of groups){
+    const b = el(`<button type="button" class="chip"${pid?` data-pid="${pid}"`:""}>${esc(label)}</button>`);
     b.onclick = () => {
       if(label==="None"){ setAll(S.animals.map(a=>a.id), false); return; }
       setAll(S.animals.map(a=>a.id), false); setAll(fn(), true);
@@ -1619,9 +1619,31 @@ function recMove(){
   }
   inner.appendChild(quick);
   inner.appendChild(pick);
+  const already = el(`<p class="hint"></p>`);
+  inner.appendChild(already);
   const count = el(`<p class="hint">${S.sel?"1 head selected.":"No animals selected."}</p>`);
-  pick.addEventListener("pick", e => count.textContent = e.detail===1 ? "1 head selected." : `${e.detail} head selected.`);
+  pick.addEventListener("pick", e => count.textContent =
+    !e.detail ? "No animals selected." : e.detail===1 ? "1 head selected." : `${e.detail} head selected.`);
   inner.appendChild(count);
+
+  // An animal already standing in the destination has nowhere to go, so it
+  // isn't offered — and its chip would select nothing. Follows the select,
+  // not just the paddock the map handed us, since the destination can change.
+  const to = inner.querySelector('select[name="to"]');
+  const applyDest = () => {
+    const pid = to.value; let n = 0;
+    pick.querySelectorAll(".pick").forEach((b,i) => {
+      const here = !!pid && pick.list[i].paddock_id===pid;
+      b.hidden = here;
+      if(here && pick.chosen.delete(pick.list[i].id)) b.setAttribute("aria-pressed","false");
+      if(here) n++;
+    });
+    quick.querySelectorAll("[data-pid]").forEach(b => b.hidden = b.dataset.pid===pid);
+    already.textContent = n ? `${n} already in ${S.paddocks.find(p=>p.id===pid)?.name||"this paddock"}.` : "";
+    pick.dispatchEvent(new CustomEvent("pick",{detail:pick.chosen.size}));
+  };
+  to.onchange = applyDest;
+  applyDest();
 
   return formShell("Move stock", inner, async (f) => {
     const ids = [...pick.chosen];
