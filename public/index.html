@@ -1096,6 +1096,37 @@ function recWeight(){
   const pick = animalPicker(false, S.sel?[S.sel]:[]);
   inner.appendChild(pick);
   inner.appendChild(el(`<p class="hint">Tap a tag to choose the animal.</p>`));
+
+  // Weighing is the one time you have her in the crush and are actually
+  // looking at her. Whatever you notice then wants writing down before
+  // she's let out, not remembered until later.
+  const extra = el(`<div></div>`);
+  inner.appendChild(extra);
+  const fillExtra = () => {
+    const a = S.animals.find(x => x.id === [...pick.chosen][0]);
+    extra.replaceChildren();
+    if(!a) return;
+    const box = el(`<div>
+      <h3 class="sec" style="padding-left:0">${esc(a.stock_code)}</h3>
+      <label><span>Notes</span><textarea name="notes" rows="2"
+        placeholder="Anything you noticed">${esc(a.notes||"")}</textarea></label>
+      <p class="hint">Her notes as they stand — edit or add to them. Saved with the
+        weight, and the change is logged like any other correction.</p>
+      <button type="button" class="btn ghost" id="edit-a">Edit ${esc(a.stock_code)}'s details</button>
+    </div>`);
+    box.querySelector("#edit-a").onclick = () => {
+      // Leaving here loses a typed weight, so say so rather than
+      // discovering it on the way back.
+      if(inner.querySelector('[name=kg]').value &&
+         !confirm(`The weight for ${a.stock_code} hasn't been saved yet.\n\n`
+                + `Go to her details anyway? The weight will be lost.`)) return;
+      S.sel = a.id; S.view = "editAnimal"; render();
+    };
+    extra.appendChild(box);
+  };
+  pick.addEventListener("pick", fillExtra);
+  fillExtra();
+
   return formShell("Record a weight", inner, async (f) => {
     const ids = [...pick.chosen];
     if(!ids.length) throw new Error("Choose an animal first.");
@@ -1104,7 +1135,13 @@ function recWeight(){
       weight_kg: Number(f.get("kg")), method: f.get("method")
     });
     if(error) throw new Error(error.code==="23505" ? "That animal already has a weight on that date." : error.message);
-    return "Weight saved.";
+
+    const a = S.animals.find(x => x.id===ids[0]);
+    const now = (f.get("notes") ?? "").trim(), was = (a?.notes || "").trim();
+    if(now === was) return "Weight saved.";
+    const { error:e2 } = await db.from("animal").update({notes: now || null}).eq("id", ids[0]);
+    if(e2) throw new Error(`Weight saved, but the note didn't: ${e2.message}`);
+    return `Weight and note saved for ${a?.stock_code||"the animal"}.`;
   });
 }
 
