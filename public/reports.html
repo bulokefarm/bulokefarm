@@ -367,6 +367,8 @@ function joiningSection(rows, range, error){
       <option value="all"${waiting?"":" selected"}>All</option>
       <option value="in_calf">In calf</option>
       <option value="empty">Empty</option>
+      <option value="natural">Recorded as bull out</option>
+      <option value="ai">Recorded as AI</option>
     </select></label>
     <label>Mark ticked as<select id="jout">
       <option value="">— leave alone —</option>
@@ -374,6 +376,11 @@ function joiningSection(rows, range, error){
         `<option value="${o}">${OUTCOMES[o]}</option>`).join("")}
     </select></label>
     <label>Tested on<input type="date" id="jdate"></label>
+    <label>Method<select id="jmethod">
+      <option value="">— leave alone —</option>
+      <option value="ai">AI</option>
+      <option value="natural">Bull out</option>
+    </select></label>
     <button id="japply">Apply to ticked</button>
     <span class="count" id="jcount">none ticked</span>
   </div><div id="joinout"></div>`;
@@ -383,8 +390,10 @@ function joiningSection(rows, range, error){
 function joinRows(){
   const f = $("#jfilter")?.value || "await";
   return JOININGS.filter(r =>
-    f==="all"   ? true :
-    f==="await" ? (!r.outcome || r.outcome==="unknown") : r.outcome===f);
+    f==="all"     ? true :
+    f==="await"   ? (!r.outcome || r.outcome==="unknown") :
+    f==="natural" ? r.method!=="ai" :
+    f==="ai"      ? r.method==="ai" : r.outcome===f);
 }
 
 function renderJoinings(){
@@ -446,14 +455,35 @@ function wireJoinings(){
     const ids = ticked().map(c => c.dataset.id).filter(Boolean);
     if(!ids.length) return alert("Tick the joinings you're marking first.");
     const patch = {};
-    if($("#jout").value)  patch.outcome   = $("#jout").value;
-    if($("#jdate").value) patch.tested_on = $("#jdate").value;
+    if($("#jout").value)    patch.outcome   = $("#jout").value;
+    if($("#jdate").value)   patch.tested_on = $("#jdate").value;
+    if($("#jmethod").value) patch.method    = $("#jmethod").value;
     if(!Object.keys(patch).length)
-      return alert("Choose an outcome, a test date, or both.");
-    if(!confirm(`Apply to ${ids.length} joining${ids.length===1?"":"s"}?\n\n`
-      + `${patch.outcome ? OUTCOMES[patch.outcome] : "Outcome unchanged"}`
-      + `${patch.tested_on ? `, tested ${fmt(patch.tested_on)}` : ""}.\n\n`
-      + `Each change is logged against whoever made it.`)) return;
+      return alert("Choose an outcome, a test date, a method, or any combination.");
+
+    // A straw belongs to an AI joining and a paddock to a bull out;
+    // the database refuses to hold both. Switching method clears the
+    // one that no longer applies, so say what's about to be lost
+    // rather than letting a constraint error explain it afterwards.
+    let losing = "";
+    if(patch.method){
+      const rows = JOININGS.filter(r => ids.includes(r.id));
+      const n = patch.method === "ai"
+        ? rows.filter(r => r.paddock_id).length
+        : rows.filter(r => r.ai_semen_id).length;
+      if(patch.method === "ai") patch.paddock_id  = null;
+      else                      patch.ai_semen_id = null;
+      if(n) losing = `\n\n${n} of them ${n===1?"has a":"have a"} `
+        + `${patch.method==="ai"?"paddock":"straw"} recorded, which will be cleared.`;
+    }
+
+    const bits = [
+      patch.method    ? (patch.method==="ai" ? "Method: AI" : "Method: bull out") : null,
+      patch.outcome   ? OUTCOMES[patch.outcome] : null,
+      patch.tested_on ? `tested ${fmt(patch.tested_on)}` : null
+    ].filter(Boolean).join(", ");
+    if(!confirm(`Apply to ${ids.length} joining${ids.length===1?"":"s"}?\n\n${bits}.${losing}`
+      + `\n\nEach change is logged against whoever made it.`)) return;
     const { error } = await db.from("joining").update(patch).in("id", ids);
     if(error) return alert(error.message);
     run();
@@ -495,6 +525,7 @@ const FIELDS = {
     ["declared_by","Declared by","text"],["declared_on","Declared on","date"],
     ["notes","Notes","area"]]},
   joining: { title:"Joining", table:"joining", date:"joined_on", fields:[
+    ["method","Method","pick:natural|ai"],
     ["outcome","Outcome","pick:unknown|in_calf|empty|aborted|lost"],
     ["tested_on","Tested on","date"],
     ["notes","Notes","area"],
@@ -582,6 +613,11 @@ async function openEditor(kind, id){
       else if(type==="number") patch[k] = fd.get(k) === "" ? null : Number(fd.get(k));
       else                     patch[k] = (fd.get(k)||"").trim() || null;
     }
+    // Same rule as the bulk bar: the method decides which of the two
+    // can be set, so changing it clears the other.
+    if(cfg.table === "joining" && patch.method)
+      patch[patch.method === "ai" ? "paddock_id" : "ai_semen_id"] = null;
+
     const { error } = id
       ? await db.from(cfg.table).update(patch).eq("id", id)
       : await db.from(cfg.table).insert(patch);
