@@ -92,12 +92,14 @@ footer{margin-top:34px;padding-top:10px;border-top:1px solid var(--rule);
   @page{margin:14mm;size:A4 landscape}
 }
 </style>
+<script src="/nav.js" defer></script>
 </head>
 <body>
 <div class="sheet">
   <div class="masthead">
     <img src="/mark.png" alt="" width="28" height="28" style="flex:none"><h1>Buloke Farm</h1>
     <div class="pic">267 North Canal Rd, Trafalgar VIC 3824<br>PIC <b>3BWWY089</b></div>
+    <button id="navbtn" class="noprint" aria-label="Menu">&#8801;</button>
   </div>
 
   <div class="controls noprint">
@@ -443,6 +445,8 @@ async function openEditor(kind, id){
         `<li><b>${esc(x.changed_by)}</b> · ${new Date(x.changed_at).toLocaleString("en-AU")}<br>${esc(x.summary||"—")}</li>`).join("")}</ul>`
     : `<h4>Change history</h4><ul style="margin:0;padding:0"><li>Never edited.</li></ul>`;
 }
+
+window.__signOut = () => db.auth.signOut();
 
 (async () => {
   const { data:{ session } } = await db.auth.getSession();

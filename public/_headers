@@ -6,6 +6,9 @@
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
 
+/nav.js
+  Cache-Control: no-cache, must-revalidate
+
 /*.png
   Cache-Control: public, max-age=2592000
 
