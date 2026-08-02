@@ -197,6 +197,15 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-
 .msg.err{background:#F7E4E2;color:var(--danger)}
 .msg.ok{background:var(--accent-soft);color:var(--accent)}
 .empty{padding:40px 24px;text-align:center;color:var(--ink2)}
+/* Confirming a mob: one row per female, tick and gestation in reach of a thumb. */
+.mob{border:1px solid var(--rule);border-radius:10px;background:var(--card);margin-top:6px}
+.mob label{display:flex;align-items:center;gap:9px;padding:7px 11px;
+  border-top:1px solid var(--rule);min-height:var(--tap)}
+.mob label:first-child{border-top:0}
+.mob input[type=checkbox]{width:22px;height:22px;flex:none;accent-color:var(--accent)}
+.mob .sub{flex:1;color:var(--ink2);font-size:12.5px}
+.mob .gd{width:60px;flex:none;text-align:center;padding:6px 4px;
+  border:1px solid var(--rule);border-radius:7px;background:var(--paper)}
 .boot{padding:22vh 24px;text-align:center;color:var(--ink2);font-size:14px}
 .boot img{width:38px;height:38px;border-radius:8px;display:block;margin:0 auto 14px}
 .empty b{display:block;color:var(--ink);margin-bottom:5px;font-size:17px}
@@ -351,15 +360,17 @@ async function loadPaddocks(){
   S.feeds    = f.data || [];
 }
 async function loadRefs(){
-  const [h,p,b] = await Promise.all([
+  const [h,p,b,s] = await Promise.all([
     db.from("heritage").select("id,name").order("name"),
     db.from("property").select("id,pic").order("pic"),
-    db.from("v_breeding_stock").select("id,label,sex,origin").order("label")
+    db.from("v_breeding_stock").select("id,label,sex,origin").order("label"),
+    db.from("v_ai_semen").select("*").is("retired_on", null).order("sire_name")
   ]);
   S.refs = {
     heritage: h.data||[], property: (p.data||[]).map(x=>({id:x.id,label:x.pic})),
     sire: (b.data||[]).filter(x=>x.origin==="reference"||x.sex==="male"),
-    dam:  (b.data||[]).filter(x=>x.origin==="reference"||x.sex==="female")
+    dam:  (b.data||[]).filter(x=>x.origin==="reference"||x.sex==="female"),
+    semen: s.data||[]
   };
 }
 async function loadPrefs(){
@@ -1146,9 +1157,65 @@ function recTreatment(){
   });
 }
 
+// ─── joining ────────────────────────────────────────────────────
+// Two different events wearing one word. AI is one cow, one straw,
+// one day. A bull out is one bull and whoever is standing in the
+// paddock, over weeks. Recording them through the same form made
+// the bull-out case a typing exercise and the AI case vague about
+// which straw was used.
+const GEST_DEFAULT = 285;
+const gestOf = a => Number(a?.gestation_days) || GEST_DEFAULT;
+const addDays = (iso, n) => {
+  const d = new Date(iso); d.setDate(d.getDate() + n);
+  return d.toISOString().slice(0,10);
+};
+const seasonNow = () => { const y = new Date().getFullYear(); return `${y}-${y+1}`; };
+
+// Shared tail: season, cycle, attempt, outcome, notes.
+const joinCommon = () => `
+  <div class="two">
+    <label><span>Season</span><input type="text" name="season" value="${seasonNow()}" required></label>
+    <label><span>Cycle</span><select name="cycle">
+      <option value="spring">Spring</option><option value="autumn">Autumn</option></select></label>
+  </div>
+  <label><span>Attempt</span><select name="attempt">
+    <option value="1">First join</option><option value="2">Second join</option>
+    <option value="3">Third join</option></select></label>
+  <h3 class="sec" style="padding-left:0">Result</h3>
+  <label><span>Outcome</span><select name="outcome">
+    <option value="unknown">Not tested yet</option>
+    <option value="in_calf">In calf</option>
+    <option value="empty">Empty — didn't hold</option>
+    <option value="aborted">Aborted</option>
+    <option value="lost">Lost the calf</option>
+  </select></label>
+  <label><span>Tested on</span><input type="date" name="tested"></label>
+  <label><span>Notes</span><input type="text" name="notes" placeholder="Optional"></label>`;
+
 function recJoining(){
+  const wrap  = el(`<div></div>`);
+  const chips = el(`<div class="chips" style="padding:12px 0 2px"></div>`);
+  const slot  = el(`<div></div>`);
+  const build = { natural: joinNatural, ai: joinAI };
+  let mode = "natural";
+  const show = () => {
+    chips.querySelectorAll(".chip").forEach(b => b.setAttribute("aria-pressed", b.dataset.m===mode));
+    slot.replaceChildren(build[mode]());
+  };
+  for(const [m,label] of [["natural","Bull out"],["ai","AI"]]){
+    const b = el(`<button type="button" class="chip" data-m="${m}">${esc(label)}</button>`);
+    b.onclick = () => { mode = m; show(); };
+    chips.appendChild(b);
+  }
+  wrap.append(chips, slot); show();
+  return wrap;
+}
+
+// ─── AI: one cow, one straw ─────────────────────────────────────
+function joinAI(){
   const cows = S.animals.filter(a => a.sex==="female" && isActive(a));
   if(!cows.length) return el(`<div class="empty"><b>No cows on record</b></div>`);
+  const straws = S.refs.semen || [];
 
   const inner = el(`<div>
     <label><span>Cow</span><select name="dam" required>
@@ -1156,74 +1223,235 @@ function recJoining(){
       ${cows.map(a=>`<option value="${a.id}"${S.sel===a.id?" selected":""}>${
         esc(a.stock_code)}${a.name?" · "+esc(a.name):""}</option>`).join("")}
     </select></label>
-    <label><span>Joined to</span><select name="sire">
+    <label><span>Straw</span><select name="semen">
       <option value="">Not recorded</option>
-      ${(S.refs.sire||[]).map(o=>`<option value="${o.id}">${esc(o.label)}</option>`).join("")}
+      ${straws.map(s=>`<option value="${s.id}">${esc(s.sire_label||s.sire_name)}${
+        s.straw_code?" · "+esc(s.straw_code):""}${
+        s.straws_left!=null?` — ${s.straws_left} left`:""}</option>`).join("")}
+      <option value="__new">＋ Register a new straw…</option>
     </select></label>
-    <div class="two">
-      <label><span>Season</span><input type="text" name="season" placeholder="2026-2027" required></label>
-      <label><span>Cycle</span><select name="cycle">
-        <option value="spring">Spring</option><option value="autumn">Autumn</option></select></label>
+    <div class="newstraw" hidden>
+      <div class="note">Registering it here puts it in the tank list for next time.</div>
+      <label><span>Bull</span><select name="nsire">
+        <option value="">Not on file — type the name below</option>
+        ${(S.refs.sire||[]).map(o=>`<option value="${o.id}">${esc(o.label)}</option>`).join("")}
+      </select></label>
+      <label><span>Name on the straw</span><input type="text" name="nname" placeholder="Bull name"></label>
+      <div class="two">
+        <label><span>Straw code</span><input type="text" name="ncode"></label>
+        <label><span>Breed</span><input type="text" name="nbreed"></label>
+      </div>
+      <div class="two">
+        <label><span>Supplier</span><input type="text" name="nsupplier"></label>
+        <label><span>Tank</span><input type="text" name="ntank" placeholder="Flask 1"></label>
+      </div>
+      <div class="two">
+        <label><span>Collected</span><input type="date" name="ncollected"></label>
+        <label><span>Straws in</span><input type="number" name="nstraws" min="0" inputmode="numeric"></label>
+      </div>
     </div>
+    <label><span>Inseminated on</span><input type="date" name="on" value="${today()}"></label>
     <div class="two">
-      <label><span>Joined on</span><input type="date" name="on"></label>
-      <label><span>Bull out</span><input type="date" name="out"></label>
-    </div>
-    <label><span>Attempt</span><select name="attempt">
-      <option value="1">First join</option><option value="2">Second join</option>
-      <option value="3">Third join</option></select></label>
-
-    <h3 class="sec" style="padding-left:0">Result</h3>
-    <label><span>Outcome</span><select name="outcome">
-      <option value="unknown">Not tested yet</option>
-      <option value="in_calf">In calf</option>
-      <option value="empty">Empty — didn't hold</option>
-      <option value="aborted">Aborted</option>
-      <option value="lost">Lost the calf</option>
-    </select></label>
-    <label><span>Tested on</span><input type="date" name="tested"></label>
-    <div class="two">
-      <label><span>Gestation days</span><input type="number" name="gest" value="285" min="250" max="310" inputmode="numeric"></label>
+      <label><span>Gestation days</span><input type="number" name="gest" value="${GEST_DEFAULT}"
+        min="250" max="310" inputmode="numeric"></label>
       <label><span>Due</span><input type="date" name="due"></label>
     </div>
-    <label><span>Notes</span><input type="text" name="notes" placeholder="Optional"></label>
+    <p class="hint" id="gesthint"></p>
+    ${joinCommon()}
     <div class="note">Recording an empty matters as much as an in-calf. Conception rate can only
       be worked out if the failures are on file too.</div>
   </div>`);
 
-  // Due date follows from the join date unless you override it.
-  const on = inner.querySelector('[name=on]'), gest = inner.querySelector('[name=gest]'),
-        due = inner.querySelector('[name=due]');
+  const q = s => inner.querySelector(s);
+  const dam = q('[name=dam]'), sem = q('[name=semen]'), nb = q('.newstraw'),
+        on = q('[name=on]'), gest = q('[name=gest]'), due = q('[name=due]'),
+        hint = q('#gesthint');
+
+  sem.onchange = () => nb.hidden = sem.value !== "__new";
+
+  // Gestation is the cow's, not the joining's. Hers is the starting
+  // point; changing it here is her being corrected, not an exception.
+  const loadGest = () => {
+    const a = cows.find(c => c.id===dam.value);
+    gest.value = gestOf(a);
+    hint.textContent = !a ? ""
+      : a.gestation_days ? `${a.stock_code} runs ${a.gestation_days} days.`
+      : `No gestation on file for ${a.stock_code} — using ${GEST_DEFAULT}. Change it and it's remembered.`;
+    calc();
+  };
   const calc = () => {
     if(!on.value || due.dataset.touched) return;
-    const d = new Date(on.value); d.setDate(d.getDate() + (Number(gest.value)||285));
-    due.value = d.toISOString().slice(0,10);
+    due.value = addDays(on.value, Number(gest.value)||GEST_DEFAULT);
   };
-  on.onchange = calc; gest.onchange = calc;
+  dam.onchange = loadGest; on.onchange = calc; gest.onchange = calc;
   due.oninput = () => due.dataset.touched = "1";
+  loadGest();
 
-  const season = inner.querySelector('[name=season]');
-  const y = new Date().getFullYear();
-  season.value = `${y}-${y+1}`;
-
-  return formShell("Record a joining", inner, async (f) => {
+  return formShell("AI — one cow", inner, async (f) => {
     if(!f.get("dam")) throw new Error("Choose the cow.");
-    const row = {
-      dam_id:f.get("dam"), sire_id:f.get("sire")||null,
+    let semenId = f.get("semen") || null, sireId = null;
+
+    if(semenId === "__new"){
+      const label = (S.refs.sire||[]).find(o => o.id===f.get("nsire"))?.label;
+      const name  = (f.get("nname")||"").trim() || label;
+      if(!name) throw new Error("Name the bull the straw is from.");
+      const { data, error } = await db.from("ai_semen").insert({
+        sire_id: f.get("nsire")||null, sire_name: name,
+        breed:(f.get("nbreed")||"").trim()||null, straw_code:(f.get("ncode")||"").trim()||null,
+        supplier:(f.get("nsupplier")||"").trim()||null, tank:(f.get("ntank")||"").trim()||null,
+        collected_on: f.get("ncollected")||null,
+        straws_in: f.get("nstraws") ? Number(f.get("nstraws")) : null,
+        created_by: S.me?.id || null
+      }).select("id,sire_id").single();
+      if(error) throw error;
+      semenId = data.id; sireId = data.sire_id;
+    } else if(semenId){
+      sireId = straws.find(s => s.id===semenId)?.sire_id || null;
+    }
+
+    // sire_id is filled from the straw as well as ai_semen_id, so the
+    // due list, family tree and animal timeline keep naming the bull
+    // without any of them needing to know AI exists.
+    const g = Number(f.get("gest")) || GEST_DEFAULT;
+    const { error } = await db.from("joining").upsert({
+      dam_id:f.get("dam"), sire_id:sireId, method:"ai", ai_semen_id:semenId,
       season:(f.get("season")||"").trim(), cycle:f.get("cycle"),
       attempt:Number(f.get("attempt")||1),
-      joined_on:f.get("on")||null, bull_out:f.get("out")||null,
-      gestation_days:Number(f.get("gest")||285), due_on:f.get("due")||null,
+      joined_on:f.get("on")||null, gestation_days:g, due_on:f.get("due")||null,
       outcome:f.get("outcome"), tested_on:f.get("tested")||null,
       notes:(f.get("notes")||"").trim()||null
-    };
-    const { error } = await db.from("joining")
-      .upsert(row, {onConflict:"dam_id,season,attempt"});
+    }, {onConflict:"dam_id,season,attempt"});
     if(error) throw error;
-    const cow = cows.find(c=>c.id===row.dam_id);
-    return row.outcome==="empty"
-      ? `${cow?.stock_code} recorded empty for ${row.season}.`
-      : `Joining saved for ${cow?.stock_code}.`;
+
+    const cow = cows.find(c => c.id===f.get("dam"));
+    if(g !== gestOf(cow))
+      await db.from("animal").update({gestation_days:g}).eq("id", cow.id);
+
+    return f.get("outcome")==="empty"
+      ? `${cow?.stock_code} recorded empty for ${f.get("season")}.`
+      : `AI recorded for ${cow?.stock_code}.`;
+  });
+}
+
+// ─── bull out: one bull, one mob ────────────────────────────────
+function joinNatural(){
+  if(!S.paddocks.length)
+    return el(`<div class="empty"><b>No paddocks yet</b>
+      A bull goes out to a mob, so there needs to be a paddock to put him in.</div>`);
+
+  const inner = el(`<div>
+    <label><span>Bull</span><select name="sire" required>
+      <option value="">Which bull…</option>
+      ${(S.refs.sire||[]).map(o=>`<option value="${o.id}">${esc(o.label)}</option>`).join("")}
+    </select></label>
+    <label><span>Out with</span><select name="paddock" required>
+      <option value="">Choose a paddock…</option>
+      ${S.paddocks.map(p=>`<option value="${p.id}"${S.selPk===p.id?" selected":""}>${
+        esc(p.name)} — ${p.head||0} head</option>`).join("")}
+    </select></label>
+    <div class="two">
+      <label><span>Bull in</span><input type="date" name="on" value="${today()}"></label>
+      <label><span>Bull out</span><input type="date" name="out"></label>
+    </div>
+    ${joinCommon()}
+  </div>`);
+
+  // The confirm list goes above the season block, right under the paddock.
+  const listWrap = el(`<div></div>`);
+  inner.querySelector('.two').after(listWrap);
+
+  const q = s => inner.querySelector(s);
+  const pk = q('[name=paddock]'), onDate = q('[name=on]');
+
+  const fill = () => {
+    listWrap.replaceChildren();
+    const p = S.paddocks.find(x => x.id===pk.value);
+    if(!p) return;
+    const here    = S.animals.filter(a => isActive(a) && a.paddock_id===p.id);
+    const females = here.filter(a => a.sex==="female");
+    const others  = here.filter(a => a.sex!=="female");
+
+    listWrap.appendChild(el(`<h3 class="sec" style="padding-left:0">Who he's running with</h3>`));
+    if(!females.length){
+      listWrap.appendChild(el(`<div class="empty"><b>No females in ${esc(p.name)}</b>
+        Either the bull's in the wrong paddock or the stock haven't been moved yet.</div>`));
+      return;
+    }
+
+    // Breeders are ticked; heifers and younger are not. Joining a
+    // weaner by accident is the expensive mistake, so it takes a
+    // deliberate tap rather than an untick you might not notice.
+    const list = el(`<div class="mob"></div>`);
+    for(const a of females){
+      const on  = a.class==="breeder";
+      const g   = gestOf(a);
+      const row = el(`<label data-id="${a.id}" data-g="${g}">
+        <input type="checkbox"${on?" checked":""}>
+        ${tagHTML(a.stock_code)}
+        <span class="sub">${esc(a.class||"unclassed")} · ${age(a.age_years)}</span>
+        <input type="number" class="gd" value="${g}" min="250" max="310"
+          inputmode="numeric" aria-label="Gestation days">
+      </label>`);
+      list.appendChild(row);
+    }
+    listWrap.appendChild(list);
+
+    const chips = el(`<div class="chips" style="padding:8px 0 0"></div>`);
+    const setAll = fn => list.querySelectorAll("label").forEach((l,i) =>
+      l.querySelector("input[type=checkbox]").checked = fn(females[i]));
+    for(const [label, fn] of [["All females", () => true],
+                              ["Breeders only", a => a.class==="breeder"],
+                              ["None", () => false]]){
+      const b = el(`<button type="button" class="chip">${esc(label)}</button>`);
+      b.onclick = () => setAll(fn);
+      chips.appendChild(b);
+    }
+    listWrap.appendChild(chips);
+
+    // Everything else standing in that paddock. Half the value of this
+    // screen is noticing here that the steers never got shifted.
+    if(others.length)
+      listWrap.appendChild(el(`<div class="note">Also in ${esc(p.name)}:
+        ${others.map(a => `${esc(a.stock_code)} (${esc(a.class||a.sex||"?")})`).join(", ")}.
+        Not joined — check they're meant to be there.</div>`));
+    listWrap.appendChild(el(`<p class="hint">Due dates are the earliest possible: bull in
+      plus each cow's own gestation. Change a number and it's remembered against her.</p>`));
+  };
+  pk.onchange = fill; fill();
+
+  return formShell("Bull out to a mob", inner, async (f) => {
+    if(!f.get("sire"))    throw new Error("Choose the bull.");
+    if(!f.get("paddock")) throw new Error("Choose the paddock he went out to.");
+    const picked = [...listWrap.querySelectorAll(".mob label")]
+      .filter(l => l.querySelector("input[type=checkbox]").checked);
+    if(!picked.length) throw new Error("Confirm which females he was joined to.");
+
+    const season = (f.get("season")||"").trim(), onD = f.get("on")||null;
+    const rows = picked.map(l => {
+      const g = Number(l.querySelector(".gd").value) || GEST_DEFAULT;
+      return {
+        dam_id:l.dataset.id, sire_id:f.get("sire"), method:"natural",
+        paddock_id:f.get("paddock"), season, cycle:f.get("cycle"),
+        attempt:Number(f.get("attempt")||1),
+        joined_on:onD, bull_out:f.get("out")||null,
+        gestation_days:g, due_on: onD ? addDays(onD, g) : null,
+        outcome:f.get("outcome"), tested_on:f.get("tested")||null,
+        notes:(f.get("notes")||"").trim()||null
+      };
+    });
+    const { error } = await db.from("joining")
+      .upsert(rows, {onConflict:"dam_id,season,attempt"});
+    if(error) throw error;
+
+    // A corrected gestation is about the cow, so it follows her.
+    const moved = picked.filter(l =>
+      (Number(l.querySelector(".gd").value)||GEST_DEFAULT) !== Number(l.dataset.g));
+    await Promise.all(moved.map(l => db.from("animal")
+      .update({gestation_days: Number(l.querySelector(".gd").value)}).eq("id", l.dataset.id)));
+
+    const name = S.paddocks.find(p => p.id===f.get("paddock"))?.name || "the paddock";
+    return `${rows.length} joined in ${name}${moved.length
+      ? `, ${moved.length} gestation length${moved.length>1?"s":""} updated` : ""}.`;
   });
 }
 
