@@ -1,114 +1,267 @@
 # Buloke Farm
 
-Cattle records for 267 North Canal Rd, Trafalgar. PIC 3BWWY089.
+Cattle records for 267 North Canal Rd, Trafalgar, Victoria. PIC 3BWWY089.
 
-Three static pages talking to a Supabase Postgres database. No build
-step, no server, no framework. The whole app is about 24 KB over the wire.
+Replaces a 55-column spreadsheet. Three static HTML pages talking to a
+Supabase Postgres database. No build step, no server, no framework —
+the phone app is about 26 KB over the wire.
 
-| Page | Path | For |
+Live at **https://admin.bulokefarm.com.au**
+
+---
+
+## 1. The pages
+
+| File | Path | Where it's used |
 |---|---|---|
-| `index.html` | `/` | The phone app — herd, map, family tree, recording |
-| `map-editor.html` | `/map` | Tracing paddock boundaries on satellite imagery. Laptop. |
-| `reports.html` | `/reports` | LPA records, printable. Editing and change history. Laptop. |
+| `public/index.html` | `/` | Phone. Herd, paddock map, family tree, all recording. |
+| `public/reports.html` | `/reports` | Laptop. LPA records, printable, with editing and change history. |
+| `public/map.html` | `/map` | Laptop. Tracing paddock boundaries on satellite imagery. |
 
-## Layout
+The phone app links to the other two under **Record → Manage → On a laptop**.
+
+### What the app does
+
+**Herd** — three views behind one toggle. *List* filtered by class,
+*Paddocks* grouped by where stock are, *Family tree* showing descent.
+
+**Map** — paddock boundaries as flat SVG. No tiles, no map library: the
+expensive work happens once in the boundary editor, and the phone just
+draws stored coordinates. Two panes on a wide screen, stacked on a
+phone. Selecting a paddock gives head count, area, stocking rate, and
+buttons to move stock in or feed out.
+
+**Due** — expected calvings by season.
+
+**Record** — feed out, move mob, weights, treatments, joinings,
+calvings, sale/consignment. Plus Manage: feed store, bulk update, field
+visibility.
+
+---
+
+## 2. Design decisions
+
+These are the things to re-read before changing anything.
+
+**Nothing is silently rewritten.** Treatments, feeding, consignments,
+weights, calvings, joinings and animal records all have change-log
+triggers capturing before, after, who and when. Corrections are normal;
+invisible corrections turn a compliance record into an assertion.
+
+**Derived values are never stored.** Age, growth rate, head counts,
+stocking rate, slaughter-clear dates, feed remaining — all computed on
+read. Roughly a third of the spreadsheet's columns were stored
+calculations, and they had gone stale.
+
+**Feeding targets a paddock, not animals.** You record that the back
+gully got two rolls; who ate it comes from `paddock_stay`. One entry
+instead of fourteen.
+
+**Feed stock uses adjustments.** A recount or spoilage is its own row,
+never an edit to the original quantity, so the balance stays
+explainable: 40 in, 24 fed out, 4 written off.
+
+**Paddocks are retired, not deleted.** Their boundary at the time is
+kept, and lineage records what split into what. Grazing history from
+five years ago still resolves.
+
+**Descent runs through the dam.** Sires are mostly external AI bulls
+that change each season; the cow family is what persists.
+
+**An animal is on hand if its life state is `alive` or absent.** Sold
+and died animals stay in the pedigree and the family tree but count
+towards nothing.
+
+**LPA drives the schema.** Treatments carry batch, expiry, dose,
+withholding, ESI and operator because that's what Section 2 wants. The
+operator fills itself from the login, which is the whole reason for
+separate accounts. Consigning checks withholding periods and refuses if
+anything is still inside one.
+
+---
+
+## 3. Data model
+
+```
+animal ──┬─ animal_status       dated life state + class transitions
+         ├─ weight_event
+         ├─ treatment_animal ── treatment      LPA section 2
+         ├─ paddock_stay ────── paddock        where, and where it's been
+         ├─ consignment_animal─ consignment    NVD, waybill, LPA 5A/5B
+         ├─ joining ─────────── calving        outcomes incl. empty
+         └─ expected_calving                   projected, not yet animals
+
+feed_source ─┬─ feed_event ──── paddock        LPA 3C / 3D
+             └─ feed_adjustment                recounts, spoilage
+
+farm_user           roles: viewer / manager / owner
+user_pref           per-user field visibility
+record_change_log   append-only audit trail
+```
+
+`animal` also holds **reference** animals (`origin = 'reference'`) —
+sires and dams that were never on the property. That keeps pedigree a
+single self-join instead of nullable text columns.
+
+### Key views
+
+| View | For |
+|---|---|
+| `v_animal_current` | The herd, every column, with age, status, paddock, clearance |
+| `v_paddock_current` | Paddocks with live head count and stocking rate |
+| `v_treatment_report` | LPA section 2 shape |
+| `v_feed_event` / `v_feed_store` | LPA 3C / 3D, with what's left in the shed |
+| `v_consignment` | LPA 5A / 5B |
+| `v_animal_clearance` | Withholding and export interval per animal |
+| `v_joining_performance` | Conception rate by bull and season |
+| `v_record_history` | Change log in plain language |
+
+### Deliberately not used
+
+**PostGIS.** Boundaries are GeoJSON in `jsonb`; the only geometry maths
+needed is polygon area, which is a dozen lines. Adding the extension
+would eat a chunk of a 500 MB free-tier database for nothing.
+
+**A frontend framework.** Three files, no build, no `node_modules`.
+
+---
+
+## 4. Repository
 
 ```
 public/                 served as-is by Cloudflare Pages
 supabase/
-  migrations/           schema — applied in filename order
+  migrations/           schema, applied in filename order
   seed/                 data loads, run once, in numeric order
     notes/              flagged rows from each import
     tools/              the xlsx -> SQL converters
-.github/workflows/
+.github/workflows/      keepalive and backup
 ```
 
-**Migrations define shape; seeds carry data.** Keeping them apart matters:
-migrations run first on a rebuild, so anything depending on imported
-records has to be a seed. That's why the joining-outcome backfill lives
-in `seed/90_joining_backfill.sql` and not in the migration that adds the
-column.
+**Migrations define shape; seeds carry data.** Migrations run first on a
+rebuild, so anything depending on imported records has to be a seed.
+That's why the joining-outcome backfill is `seed/90_joining_backfill.sql`
+and not part of the migration that adds the column.
 
-## Deploying
+### Migrations
 
-Cloudflare Pages builds nothing. Point it at `public/` and it serves.
+| # | What |
+|---|---|
+| 01 | Core: animal, status, weights, treatments, joining, calving |
+| 02 | Users, roles, attribution, real RLS policies |
+| 03 | Paddocks, grazing stays |
+| 04 | Paddock retirement, lineage, geometry history |
+| 05 | Feed sources and feeding events |
+| 06 | Change log and audit triggers |
+| 07 | Feed store quantities |
+| 08 | Feed stock adjustments |
+| 09 | Consignments, NVD, withholding checks |
+| 10 | Full animal view, preferences, bulk status |
+| 11 | Joining outcomes and fertility views |
+| 12 | Heartbeat table for the keepalive job |
 
-1. Push this repo to `buloke-farm` on GitHub.
-2. Cloudflare → Workers & Pages → Create → Pages → connect the repo.
-   - Framework preset: **None**
-   - Build command: *leave empty*
-   - Output directory: `public`
-3. Deploy. You get `<project>.pages.dev` — confirm it works there first.
-4. Pages project → Custom domains → add `admin.bulokefarm.com.au`.
-   Cloudflare gives you a CNAME target.
-5. Add that CNAME wherever the zone actually lives — check the
-   nameservers in VIPControl, it's either VentraIP or Squarespace.
-   **Add only the `admin` record.** Nothing else in the zone changes, so
-   the Squarespace site is untouched.
+### Seeds
 
-The custom domain must exist in the Pages dashboard *before* the CNAME,
-or it resolves to a 522.
+| # | What |
+|---|---|
+| 10 | The 31 head from `Cattle Data.xlsx` |
+| 20 | Autumn/winter 2026 drenches and grain |
+| 30 | 50 historical animals, 29 consignments, back to 2011 |
+| 90 | Joining outcome backfill — must run last |
 
-After that, `git push` to `main` deploys. There is nothing else to do.
+---
 
-## Database
+## 5. Making changes
 
-Project `production`, region **Oceania (Sydney)** — deliberately not
-Singapore; the Vocus path from Trafalgar to `ap-southeast-1` is broken.
+1. Write the SQL into a **new numbered file** in `supabase/migrations/`
+2. Commit and push
+3. Paste the same SQL into the Supabase **SQL Editor** and run it
 
-```bash
-npx supabase link --project-ref hgnzignikbpdbbyubahu
-npx supabase db push
-```
+The file is the record; running it is execution. If you paste SQL that
+isn't in a file, the repo quietly stops being true and a rebuild won't
+reproduce the database.
 
-Rebuilding from empty: migrations, then seeds in numeric order —
-`10_herd`, `20_treatments_2026`, `30_historical`, `90_joining_backfill`.
+Every migration is written to be **safely re-runnable** — `if not
+exists`, `or replace`, `drop policy if exists`. Keep it that way.
 
-Every migration is written to be safely re-runnable. Keep it that way. A
-migration that can't be retried is a bad afternoon on a database with
-real records in it.
+### Two rules learned the hard way
 
-Two rules learned the hard way here:
+- **`create or replace view` can only append columns.** Adding one at
+  the front, renaming, or reordering needs `drop view if exists` first.
+  This cost two failed migrations.
+- **Drop dependent views before touching a column they read.**
 
-- `create or replace view` can only **append** columns. Adding one at the
-  front, renaming, or reordering needs `drop view if exists` first.
-- Drop dependent views **before** touching any column they read.
+### Deploying
 
-### Settings to check
+`git push` to `main`. Cloudflare Pages rebuilds in under a minute. There
+is no build step — it serves `public/` as-is.
 
-- **Authentication → Providers → Email → disable public sign-ups.**
-  There's no signup form in the app, but the endpoint is open by default.
-  Users get created from the dashboard, then activated in SQL.
-- **Authentication → URL Configuration → Site URL:**
-  `https://admin.bulokefarm.com.au`. Password-reset links point here.
+Pages settings: framework preset **None**, build command **empty**,
+output directory **public**.
+
+**Don't add a `_redirects` file mapping `/foo` to `/foo.html`.** Pages
+already serves clean URLs and redirects the `.html` form, so the two
+fight and you get a redirect loop. Name the file after the path you want.
+
+---
+
+## 6. Operations
+
+### Infrastructure
+
+| Thing | Where |
+|---|---|
+| Domain | VentraIP (`ns1-3.nameserver.net.au`), one CNAME: `admin` → `bulokefarm.pages.dev` |
+| Main website | Squarespace, untouched — shares only the registrar |
+| Hosting | Cloudflare Pages, project `bulokefarm` |
+| Database | Supabase project `production`, region **Oceania (Sydney)** |
+| Repo | `github.com/bulokefarm/bulokefarm` |
+
+Sydney, not Singapore: the Vocus path from Trafalgar to `ap-southeast-1`
+was dropping packets past Perth.
 
 ### Keys
 
 The anon key is in the HTML and that is correct — it is designed to be
-public, and row level security is what protects the data. Every table
-denies by default, then grants read to active farm users, write to
-managers and owners, delete to owners only.
+public, and row level security protects the data. Every table denies by
+default, then grants read to active farm users, write to managers and
+owners, delete to owners.
 
-The **service_role** key bypasses RLS entirely. It must never appear in
-this repo, in the HTML, or in a chat window.
+The **service_role** key bypasses RLS entirely. Never in this repo,
+never in the HTML.
 
-## GitHub secrets
+### GitHub secrets
 
-| Secret | Value |
+| Secret | Notes |
 |---|---|
-| `SUPABASE_URL` | `https://hgnzignikbpdbbyubahu.supabase.co` |
-| `SUPABASE_ANON_KEY` | the anon key |
-| `SUPABASE_DB_URL` | connection string, Project Settings → Database |
+| `SUPABASE_ANON_KEY` | Use the copy button — truncated pastes cause 401s |
+| `SUPABASE_DB_URL` | **Session pooler**, port **5432** |
 
-`keepalive.yml` pokes the database on weekdays, because a free project
-pauses after a week idle and this app goes quiet between musters.
-`backup.yml` dumps weekly to a build artifact, because the free plan has
-no backups and these records carry retention obligations. Both become
-unnecessary on the paid plan — delete them then.
+The database URL must be the session pooler
+(`aws-0-ap-southeast-2.pooler.supabase.com`), username
+`postgres.hgnzignikbpdbbyubahu`. The direct connection is IPv6-only and
+unreachable from GitHub runners. Port 6543 is transaction mode and won't
+work with `pg_dump`. Special characters in the password need URL
+encoding — `/` becomes `%2F`.
 
-## Adding a user
+### Backups
 
-1. Supabase → Authentication → Users → Add user, auto-confirm.
+`Weekly backup` produces a dump as a GitHub artifact. **They expire
+after 90 days** — a rolling window, not an archive. Download one every
+few months and keep it somewhere you own.
+
+### Keepalive
+
+A free Supabase project pauses after a week without database activity.
+`Keep database awake` queries the `heartbeat` table on weekdays. Delete
+both workflows if the project moves to a paid plan.
+
+If a request returns 404 shortly after creating a table, PostgREST's
+schema cache is stale: `notify pgrst, 'reload schema';`
+
+### Adding a user
+
+1. Supabase → Authentication → Users → Add user, auto-confirm
 2. ```sql
    update farm_user
       set display_name = 'Name', phone = '04xx xxx xxx',
@@ -117,32 +270,27 @@ unnecessary on the paid plan — delete them then.
    ```
 
 Roles: `viewer` reads, `manager` records, `owner` also deletes. New
-accounts land inactive and see nothing until switched on.
+accounts land inactive and see nothing until switched on. `display_name`
+and `phone` fill the LPA "treated by" field automatically.
 
-`display_name` and `phone` fill the LPA "treated by (name and contact)"
-field automatically, which is the whole reason for separate logins.
+**Don't disable the email provider** to stop signups — that turns off
+sign-in too. The setting you want is "Allow new users to sign up".
 
-## Design notes
+---
 
-**Nothing is silently rewritten.** Treatments, feeding, consignments,
-weights, calvings, joinings and animal records all have change-log
-triggers capturing the before and after with who and when. Feed stock
-uses adjustments rather than editing the original quantity. Paddocks are
-retired, not deleted, and their boundary at the time is kept. Corrections
-are normal; invisible corrections are not.
+## 7. Still to do
 
-**Derived values are never stored.** Age, growth rate, head counts,
-stocking rate, slaughter-clear dates and feed remaining are all computed
-on read. The spreadsheet stored about a third of its columns as
-calculations, and they went stale.
+- **Five drenches have no operator name.** LPA requires it. Fix by
+  clicking each row in `/reports`.
+- **Two possible duplicate sires** — is `Davelle Cool Beau` the same
+  animal as `Davelle Cool Beau N51`? `Quicksilver` and
+  `Bre. Quicksilver (P)`? Their progeny stay split across two lines
+  until this is settled.
+- **2021 vaccination and 2022 drench** imported with dates only — no
+  product, batch or withholding period.
+- **`n/B/R` column** — meaning unknown. Values `R` and `Br`. Currently
+  free text as `marking_code`.
+- **Icons** — drop `icon-192.png` and `icon-512.png` into `public/` for
+  a proper home-screen icon.
 
-**An animal is on hand if its life state is `alive` or absent.** Sold and
-died animals stay in the pedigree and the family tree but count towards
-nothing.
-
-## Installing on a phone
-
-Open `admin.bulokefarm.com.au` in Safari or Chrome and choose *Add to
-Home Screen*. The manifest makes it open full screen without browser
-chrome. Drop `icon-192.png` and `icon-512.png` into `public/` when you
-have artwork.
+Flagged rows from both imports are in `supabase/seed/notes/`.
