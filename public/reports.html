@@ -32,6 +32,18 @@ button{border:0;border-radius:8px;padding:10px 16px;font:inherit;font-weight:700
   background:var(--accent);color:#fff;cursor:pointer}
 button.ghost{background:var(--card);color:var(--ink);border:1px solid var(--rule)}
 
+/* Joining register action bar — same furniture as the report controls,
+   but scoped to one section rather than the page. */
+.jbar{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;
+  background:var(--card);border:1px solid var(--rule);border-radius:10px;
+  padding:11px 13px;margin-bottom:10px}
+.jbar label{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ink2)}
+.jbar input,.jbar select{display:block;margin-top:4px;border:1px solid var(--rule);
+  border-radius:8px;padding:7px 9px;font:inherit;font-size:14px;background:var(--paper)}
+.jbar .count{margin-left:auto;align-self:center;font-size:13px;color:var(--ink2)}
+td.tick,th.tick{width:30px;padding-right:0}
+input.jck{width:18px;height:18px;accent-color:var(--accent);cursor:pointer}
+
 section{margin-top:30px;page-break-inside:auto}
 section > h2{font-size:13px;letter-spacing:.1em;text-transform:uppercase;margin:0 0 3px;
   padding-bottom:6px;border-bottom:1px solid var(--ink)}
@@ -127,8 +139,16 @@ footer{margin-top:34px;padding-top:10px;border-top:1px solid var(--rule);
 <script type="module">
 const SUPABASE_URL  = "https://hgnzignikbpdbbyubahu.supabase.co";
 const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhnbnppZ25pa2JwZGJieXViYWh1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU1NTgzNTcsImV4cCI6MjEwMTEzNDM1N30.U5vvmmZfSP0SOXsvLaxpjJ6LjWjOvaOYwTZ9VKyfFs0";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-const db = createClient(SUPABASE_URL, SUPABASE_ANON);
+let createClient;
+try      { ({ createClient } = await import("/vendor/supabase.js")); }
+catch(e) { ({ createClient } = await import("https://esm.sh/@supabase/supabase-js@2")); }
+
+const timedFetch = (url, opts = {}) => {
+  const c = new AbortController();
+  const t = setTimeout(() => c.abort(), 15000);
+  return fetch(url, { ...opts, signal: c.signal }).finally(() => clearTimeout(t));
+};
+const db = createClient(SUPABASE_URL, SUPABASE_ANON, { global: { fetch: timedFetch } });
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -160,8 +180,12 @@ async function run(){
   let fq = db.from("v_feed_event").select("*").gte("fed_on",from).lte("fed_on",to).order("fed_on");
   let cq = db.from("v_consignment").select("*").gte("consigned_on",from).lte("consigned_on",to).order("consigned_on");
   let sq = db.from("v_feed_store").select("*").order("received_on",{ascending:false, nullsFirst:false});
+  // Joinings are dated by when the bull went in, or the straw went in.
+  let jq = db.from("v_joining_result").select("*")
+             .gte("joined_on",from).lte("joined_on",to)
+             .order("season",{ascending:false}).order("dam_code");
 
-  const [t,f,s,c] = await Promise.all([tq,fq,sq,cq]);
+  const [t,f,s,c,j] = await Promise.all([tq,fq,sq,cq,jq]);
   const err = t.error||f.error||s.error||c.error;
   if(err){ $("#out").innerHTML = `<p class="gap">${esc(err.message)}</p>`; return; }
 
@@ -173,9 +197,11 @@ async function run(){
     feedingSection(f.data||[], range) +
     sourceSection(s.data||[]) +
     consignSection(c.data||[], range) +
+    joiningSection(j.data||[], range, j.error) +
     `<div class="sig"><div>Producer signature</div><div>Date</div></div>
      <footer><span>Buloke Farm · PIC 3BWWY089</span>
      <span>Produced ${new Date().toLocaleString("en-AU")}</span></footer>`;
+  wireJoinings();
 }
 
 function treatmentSection(rows, range){
@@ -314,6 +340,126 @@ function sourceSection(rows){
 }
 
 
+// ── joining register ────────────────────────────────────────────
+// Not an LPA section. A joining is recorded when the bull goes out or
+// the straw goes in, at which point there is no result — this is where
+// the result goes on, weeks later, one preg-test day at a time.
+//
+// noprint: it carries checkboxes and an action bar, which would print
+// as clutter in a document meant to be handed to a processor.
+let JOININGS = [];
+const OUTCOMES = {unknown:"Not tested", in_calf:"In calf", empty:"Empty",
+                  aborted:"Aborted", lost:"Lost the calf", calved:"Calved"};
+
+function joiningSection(rows, range, error){
+  JOININGS = rows;
+  let h = `<section class="noprint" id="joinsec"><h2>Joining register</h2>
+    <p class="lede">${esc(range)} · ${rows.length} joining${rows.length===1?"":"s"}
+      · a breeding record, not part of the LPA declaration</p>`;
+  if(error) return h + `<p class="gap"><b>The joining register isn't available yet.</b>
+    ${esc(error.message)} — this usually means migration 015 hasn't been run.</p></section>`;
+  if(!rows.length) return h + `<p class="none">No joinings recorded in this period.</p></section>`;
+
+  const waiting = rows.filter(r => !r.outcome || r.outcome==="unknown").length;
+  h += `<div class="jbar">
+    <label>Show<select id="jfilter">
+      <option value="await"${waiting?" selected":""}>Awaiting result (${waiting})</option>
+      <option value="all"${waiting?"":" selected"}>All</option>
+      <option value="in_calf">In calf</option>
+      <option value="empty">Empty</option>
+    </select></label>
+    <label>Mark ticked as<select id="jout">
+      <option value="">— leave alone —</option>
+      ${["in_calf","empty","aborted","lost"].map(o =>
+        `<option value="${o}">${OUTCOMES[o]}</option>`).join("")}
+    </select></label>
+    <label>Tested on<input type="date" id="jdate"></label>
+    <button id="japply">Apply to ticked</button>
+    <span class="count" id="jcount">none ticked</span>
+  </div><div id="joinout"></div>`;
+  return h + `</section>`;
+}
+
+function joinRows(){
+  const f = $("#jfilter")?.value || "await";
+  return JOININGS.filter(r =>
+    f==="all"   ? true :
+    f==="await" ? (!r.outcome || r.outcome==="unknown") : r.outcome===f);
+}
+
+function renderJoinings(){
+  const rows = joinRows();
+  if(!rows.length){
+    $("#joinout").innerHTML = `<p class="none">Nothing matches that filter.</p>`;
+    return updateCount();
+  }
+  let h = `<table><thead><tr>
+    <th class="tick"><input type="checkbox" class="jck" id="jall" aria-label="Tick all"></th>
+    <th>Cow</th><th class="m">Method</th><th>Sire / straw</th><th>Where</th>
+    <th class="m">Season</th><th class="m">Joined</th><th class="m">Due</th>
+    <th class="num">Conf</th><th class="m">Outcome</th><th class="m">Tested</th><th>Notes</th>
+  </tr></thead><tbody>`;
+  for(const r of rows){
+    const open = !r.outcome || r.outcome==="unknown";
+    h += `<tr class="ed" data-kind="joining" data-id="${r.id}">
+      <td class="tick nodrawer"><input type="checkbox" class="jck" data-id="${r.id}"></td>
+      <td>${esc(r.dam_code||"—")}${r.dam_name?`<br><span style="color:var(--ink2)">${esc(r.dam_name)}</span>`:""}</td>
+      <td class="m">${r.method==="ai"?"AI":"bull"}</td>
+      <td>${esc(r.sire_name||"—")}${r.straw_code?`<br><span style="color:var(--ink2)">${esc(r.straw_code)}</span>`:""}</td>
+      <td>${esc(r.paddock_name||(r.method==="ai"?"—":"not recorded"))}</td>
+      <td class="m">${esc(r.season||"—")}${r.attempt>1?`<br><span style="color:var(--ink2)">attempt ${r.attempt}</span>`:""}</td>
+      <td class="m">${fmt(r.joined_on)}${r.bull_out?`<br><span style="color:var(--ink2)">out ${fmt(r.bull_out)}</span>`:""}</td>
+      <td class="m">${r.due_on?fmt(r.due_on):"—"}${r.gestation_days&&r.gestation_days!==285
+        ?`<br><span style="color:var(--ink2)">${r.gestation_days} d</span>`:""}</td>
+      <td class="num">${r.confidence_pct!=null?r.confidence_pct+"%":"—"}</td>
+      <td class="m">${open?'<span class="flag">not tested</span>'
+        :`<span class="${r.outcome==="in_calf"?"ok":""}">${esc(OUTCOMES[r.outcome]||r.outcome)}</span>`}</td>
+      <td class="m">${r.tested_on?fmt(r.tested_on):"—"}</td>
+      <td>${esc(r.notes||"—")}</td></tr>`;
+  }
+  $("#joinout").innerHTML = h + `</tbody></table>`;
+  updateCount();
+}
+
+function ticked(){ return [...document.querySelectorAll("#joinout input.jck:checked")]; }
+function updateCount(){
+  const n = ticked().length, c = $("#jcount");
+  if(c) c.textContent = n ? `${n} ticked` : "none ticked";
+}
+
+function wireJoinings(){
+  if(!$("#joinsec") || !$("#joinout")) return;
+  renderJoinings();
+  $("#jfilter").onchange = renderJoinings;
+
+  // Tick handling is delegated so it survives re-rendering the table.
+  $("#joinout").addEventListener("change", e => {
+    if(e.target.id === "jall")
+      document.querySelectorAll("#joinout tbody input.jck")
+        .forEach(c => c.checked = e.target.checked);
+    if(e.target.classList.contains("jck")) updateCount();
+  });
+
+  // Preg testing is one day's work over one mob. Setting the same
+  // result thirty times individually is the problem this removes.
+  $("#japply").onclick = async () => {
+    const ids = ticked().map(c => c.dataset.id).filter(Boolean);
+    if(!ids.length) return alert("Tick the joinings you're marking first.");
+    const patch = {};
+    if($("#jout").value)  patch.outcome   = $("#jout").value;
+    if($("#jdate").value) patch.tested_on = $("#jdate").value;
+    if(!Object.keys(patch).length)
+      return alert("Choose an outcome, a test date, or both.");
+    if(!confirm(`Apply to ${ids.length} joining${ids.length===1?"":"s"}?\n\n`
+      + `${patch.outcome ? OUTCOMES[patch.outcome] : "Outcome unchanged"}`
+      + `${patch.tested_on ? `, tested ${fmt(patch.tested_on)}` : ""}.\n\n`
+      + `Each change is logged against whoever made it.`)) return;
+    const { error } = await db.from("joining").update(patch).in("id", ids);
+    if(error) return alert(error.message);
+    run();
+  };
+}
+
 // ── editing ─────────────────────────────────────────────────────
 const FIELDS = {
   treatment: { title:"Treatment", table:"treatment", date:"treated_on", fields:[
@@ -348,6 +494,15 @@ const FIELDS = {
     ["q_movement_restriction","Under movement restriction","bool"],
     ["declared_by","Declared by","text"],["declared_on","Declared on","date"],
     ["notes","Notes","area"]]},
+  joining: { title:"Joining", table:"joining", date:"joined_on", fields:[
+    ["outcome","Outcome","pick:unknown|in_calf|empty|aborted|lost"],
+    ["tested_on","Tested on","date"],
+    ["notes","Notes","area"],
+    ["confidence_pct","AI confidence % (AI only)","number"],
+    ["joined_on","Joined / bull in","date"],["bull_out","Bull out","date"],
+    ["gestation_days","Gestation days","number"],["due_on","Due","date"],
+    ["season","Season","text"],["cycle","Cycle","pick:spring|autumn"],
+    ["attempt","Attempt","number"]]},
   feed_source: { title:"Feed in store", table:"feed_source", date:"received_on", fields:[
     ["feedstuff","Feedstuff","text"],
     ["feed_type","Type","pick:fodder|grain|pellet|supplement|mineral|other"],
@@ -368,6 +523,8 @@ veil.onclick = closeDrawer;
 function closeDrawer(){ drawer.classList.remove("on"); veil.classList.remove("on"); }
 
 document.addEventListener("click", e => {
+  // The tick column is an action in its own right, not a way into the row.
+  if(e.target.closest(".nodrawer")) return;
   const src = e.target.closest(".srclink");
   if(src){ e.stopPropagation(); return openEditor("feed_source", src.dataset.src); }
   const tr = e.target.closest("tr.ed");
