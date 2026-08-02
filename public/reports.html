@@ -357,7 +357,7 @@ function joiningSection(rows, range, error){
     <p class="lede">${esc(range)} · ${rows.length} joining${rows.length===1?"":"s"}
       · a breeding record, not part of the LPA declaration</p>`;
   if(error) return h + `<p class="gap"><b>The joining register isn't available yet.</b>
-    ${esc(error.message)} — this usually means migration 015 hasn't been run.</p></section>`;
+    ${esc(error.message)} — this usually means the joining-method migration hasn't been run.</p></section>`;
   if(!rows.length) return h + `<p class="none">No joinings recorded in this period.</p></section>`;
 
   const waiting = rows.filter(r => !r.outcome || r.outcome==="unknown").length;
@@ -408,10 +408,10 @@ function renderJoinings(){
       <td>${esc(r.sire_name||"—")}${r.straw_code?`<br><span style="color:var(--ink2)">${esc(r.straw_code)}</span>`:""}</td>
       <td>${esc(r.paddock_name||(r.method==="ai"?"—":"not recorded"))}</td>
       <td class="m">${esc(r.season||"—")}${r.attempt>1?`<br><span style="color:var(--ink2)">attempt ${r.attempt}</span>`:""}</td>
-      <td class="m">${fmt(r.joined_on)}${r.bull_out?`<br><span style="color:var(--ink2)">out ${fmt(r.bull_out)}</span>`:""}</td>
+      <td class="m">${fmt(r.joined_on)}${r.edits?`<span class="edits">${r.edits} edit${r.edits===1?"":"s"}</span>`:""}${r.bull_out?`<br><span style="color:var(--ink2)">out ${fmt(r.bull_out)}</span>`:""}</td>
       <td class="m">${r.due_on?fmt(r.due_on):"—"}${r.gestation_days&&r.gestation_days!==285
         ?`<br><span style="color:var(--ink2)">${r.gestation_days} d</span>`:""}</td>
-      <td class="num">${r.confidence_pct!=null?r.confidence_pct+"%":"—"}</td>
+      <td class="num">${r.confidence!=null?Math.round(r.confidence*100)+"%":"—"}</td>
       <td class="m">${open?'<span class="flag">not tested</span>'
         :`<span class="${r.outcome==="in_calf"?"ok":""}">${esc(OUTCOMES[r.outcome]||r.outcome)}</span>`}</td>
       <td class="m">${r.tested_on?fmt(r.tested_on):"—"}</td>
@@ -498,7 +498,7 @@ const FIELDS = {
     ["outcome","Outcome","pick:unknown|in_calf|empty|aborted|lost"],
     ["tested_on","Tested on","date"],
     ["notes","Notes","area"],
-    ["confidence_pct","AI confidence % (AI only)","number"],
+    ["confidence","Confidence %","pct"],
     ["joined_on","Joined / bull in","date"],["bull_out","Bull out","date"],
     ["gestation_days","Gestation days","number"],["due_on","Due","date"],
     ["season","Season","text"],["cycle","Cycle","pick:spring|autumn"],
@@ -554,6 +554,10 @@ async function openEditor(kind, id){
           `<option ${v===o?"selected":""}>${o}</option>`).join("")}</select></label>`;
     if(type==="area")
       return `<label><span>${label}</span><textarea name="${k}" rows="2">${esc(v||"")}</textarea></label>`;
+    // Stored 0-1, typed 0-100. Nobody says "point six five confident".
+    if(type==="pct")
+      return `<label><span>${label}</span><input type="number" name="${k}" min="0" max="100"
+        step="5" value="${v==null?"":Math.round(v*100)}"></label>`;
     return `<label><span>${label}</span><input type="${type}" name="${k}" value="${esc(v??"")}"></label>`;
   };
 
@@ -574,6 +578,7 @@ async function openEditor(kind, id){
     const fd = new FormData(ev.target), patch = {};
     for(const [k,,type] of cfg.fields){
       if(type==="bool")        patch[k] = fd.get(k) === "on";
+      else if(type==="pct")    patch[k] = fd.get(k) === "" ? null : Number(fd.get(k))/100;
       else if(type==="number") patch[k] = fd.get(k) === "" ? null : Number(fd.get(k));
       else                     patch[k] = (fd.get(k)||"").trim() || null;
     }

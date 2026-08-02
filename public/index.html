@@ -1318,7 +1318,7 @@ function joinAI(){
       season:(f.get("season")||"").trim(), cycle:f.get("cycle"),
       attempt:Number(f.get("attempt")||1),
       joined_on:f.get("on")||null, gestation_days:g, due_on:f.get("due")||null,
-      confidence_pct: conf === "" || conf == null ? null : Number(conf),
+      confidence: conf === "" || conf == null ? null : Number(conf)/100,
       outcome:"unknown",
       notes:(f.get("notes")||"").trim()||null
     }, {onConflict:"dam_id,season,attempt"});
