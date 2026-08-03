@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="/favicon-32.png" sizes="32x32">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<title>Stock account — Buloke Farm</title>
+<style>
+:root{
+  --paper:#F2F2EE;--card:#FFF;--ink:#16150F;--ink2:#5A574E;--rule:#D9D6CC;
+  --accent:#12564F;--accent-soft:#E2EDEA;--danger:#8C2F2A;--warn:#8F5A0C;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:15px}
+.sheet{max-width:1100px;margin:0 auto;padding:22px 20px 60px}
+
+.masthead{display:flex;align-items:center;gap:12px;border-bottom:2px solid var(--ink);
+  padding-bottom:10px}
+.masthead h1{font-size:15px;letter-spacing:.14em;text-transform:uppercase;margin:0;flex:1}
+.masthead .pic{font-size:11.5px;color:var(--ink2);text-align:right;line-height:1.5}
+.masthead .pic b{font-family:var(--mono);color:var(--ink)}
+
+.controls{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;
+  padding:14px 0 18px;border-bottom:1px solid var(--rule);margin-bottom:6px}
+.controls label{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ink2)}
+.controls select{display:block;margin-top:4px;border:1px solid var(--rule);
+  border-radius:8px;padding:8px 10px;font:inherit;font-size:14px;background:var(--card)}
+button{border:0;border-radius:8px;padding:10px 16px;font:inherit;font-weight:700;font-size:14px;
+  background:var(--accent);color:#fff;cursor:pointer}
+button.ghost{background:var(--card);color:var(--ink);border:1px solid var(--rule)}
+
+section{margin-top:28px}
+section > h2{font-size:13px;letter-spacing:.1em;text-transform:uppercase;margin:0 0 3px;
+  padding-bottom:5px;border-bottom:1px solid var(--ink)}
+section > p.lede{margin:0 0 12px;font-size:12.5px;color:var(--ink2)}
+section h3{font-size:12px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--ink2);margin:18px 0 4px;font-weight:700}
+
+table{width:100%;border-collapse:collapse;font-size:13px;background:var(--card)}
+th{text-align:left;font-size:10.5px;letter-spacing:.07em;text-transform:uppercase;
+  color:var(--ink2);border-bottom:1px solid var(--rule);padding:7px 9px;font-weight:700}
+td{border-bottom:1px solid var(--rule);padding:8px 9px;vertical-align:top}
+td.m,th.m{font-family:var(--mono);font-size:12px;white-space:nowrap}
+td.num,th.num{text-align:right}
+td.num{font-family:var(--mono)}
+tr.open-row{cursor:pointer}
+tr.open-row:hover{background:var(--accent-soft)}
+tr.open-row[aria-expanded="true"]{background:var(--accent-soft);font-weight:700}
+td.cell{cursor:pointer}
+td.cell:hover{background:var(--accent-soft)}
+td.cell[aria-pressed="true"]{background:var(--accent-soft);font-weight:700}
+.caret{color:var(--ink2);font-size:11px}
+
+.flag{display:inline-block;background:#F7E4E2;color:var(--danger);border-radius:4px;
+  padding:1px 6px;font-size:11px;font-weight:700;font-family:var(--sans)}
+.ok{color:var(--accent);font-weight:700}
+.none{color:var(--ink2);font-style:italic;padding:14px 8px}
+.gap{background:#FCF3E3;border-left:3px solid var(--warn);padding:11px 13px;font-size:13px;margin-top:12px}
+
+/* Drill-down. Each bucket is a card so the eye can tell one list from
+   the next without reading the headings. */
+.drill{margin-top:14px;border:1px solid var(--rule);border-radius:10px;
+  background:var(--card);padding:14px 15px}
+.drill > h3:first-child{margin-top:0}
+.buckets{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:14px;margin-top:10px}
+.bucket{border:1px solid var(--rule);border-radius:9px;overflow:hidden}
+.bucket > .bh{background:var(--paper);padding:8px 11px;border-bottom:1px solid var(--rule);
+  display:flex;align-items:baseline;gap:8px}
+.bucket > .bh b{font-size:12px;letter-spacing:.06em;text-transform:uppercase;flex:1}
+.bucket > .bh span{font-family:var(--mono);font-size:15px}
+.bucket ul{list-style:none;margin:0;padding:0;max-height:340px;overflow:auto}
+.bucket li{display:flex;gap:8px;align-items:baseline;padding:6px 11px;
+  border-bottom:1px solid var(--rule);font-size:13px}
+.bucket li:last-child{border-bottom:0}
+.bucket li .tag{font-family:var(--mono);font-weight:700;flex:none;min-width:46px}
+.bucket li .nm{flex:1;color:var(--ink2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bucket li .dt{font-family:var(--mono);font-size:11.5px;color:var(--ink2);flex:none}
+.bucket .empty{padding:10px 11px;color:var(--ink2);font-style:italic;font-size:12.5px}
+.loading{padding:16px;color:var(--ink2);font-style:italic}
+
+footer{margin-top:34px;padding-top:10px;border-top:1px solid var(--rule);
+  font-size:11.5px;color:var(--ink2);display:flex;justify-content:space-between}
+
+@media print{
+  body{background:#fff;font-size:11px}
+  .sheet{max-width:none;padding:0}
+  .controls,.noprint{display:none !important}
+  .bucket ul{max-height:none;overflow:visible}
+  table{font-size:10px}
+  thead{display:table-header-group}
+  @page{margin:14mm;size:A4 landscape}
+}
+</style>
+<script src="/nav.js" defer></script>
+</head>
+<body>
+<div class="sheet">
+  <div class="masthead">
+    <img src="/mark.png" alt="" width="28" height="28" style="flex:none"><h1>Buloke Farm</h1>
+    <div class="pic">267 North Canal Rd, Trafalgar VIC 3824<br>PIC <b>3BWWY089</b></div>
+    <button id="navbtn" class="noprint" aria-label="Menu">&#8801;</button>
+  </div>
+
+  <div class="controls noprint">
+    <label>Financial year<select id="fy"><option value="">All years</option></select></label>
+    <button class="ghost" id="print">Print / save as PDF</button>
+  </div>
+
+  <div id="out"><p class="loading">Loading…</p></div>
+</div>
+
+<script type="module">
+const SUPABASE_URL  = "https://hgnzignikbpdbbyubahu.supabase.co";
+const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhnbnppZ25pa2JwZGJieXViYWh1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU1NTgzNTcsImV4cCI6MjEwMTEzNDM1N30.U5vvmmZfSP0SOXsvLaxpjJ6LjWjOvaOYwTZ9VKyfFs0";
+
+let createClient;
+try      { ({ createClient } = await import("/vendor/supabase.js")); }
+catch(e) { ({ createClient } = await import("https://esm.sh/@supabase/supabase-js@2")); }
+
+const timedFetch = (url, opts = {}) => {
+  const c = new AbortController();
+  const t = setTimeout(() => c.abort(), 15000);
+  return fetch(url, { ...opts, signal: c.signal }).finally(() => clearTimeout(t));
+};
+const db = createClient(SUPABASE_URL, SUPABASE_ANON, { global: { fetch: timedFetch } });
+
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const fmt = d => d ? new Date(d+"T00:00:00")
+  .toLocaleDateString("en-AU",{day:"2-digit",month:"short",year:"2-digit"}) : "—";
+
+// Buckets in the order an accountant reads them: what you started with,
+// what came in, what went out, what you finished with.
+const BUCKETS = [
+  ["opening",          "Opening"],
+  ["purchases",        "Purchases"],
+  ["natural_increase", "Natural increase"],
+  ["sales",            "Sales"],
+  ["deaths",           "Deaths"],
+  ["rations",          "Rations"],
+  ["closing",          "Closing"]
+];
+
+let YEARS = [], CLASSES = [];
+const DRILL = new Map();     // fy -> animal rows, fetched once and kept
+
+// ── the trading account ─────────────────────────────────────────
+function render(){
+  const only = $("#fy").value;
+  const years = only ? YEARS.filter(r => String(r.fy) === only) : YEARS;
+
+  if(!years.length){
+    $("#out").innerHTML = `<p class="none">No stock history recorded.</p>`;
+    return;
+  }
+
+  let off = 0;
+  let h = `<section><h2>Livestock trading account</h2>
+    <p class="lede">Cattle, head only · Australian financial years
+      · ${only ? esc(years[0].fy_label) : "all years on record"}
+      · tap a year to see the animals behind it</p>
+    <table><thead><tr><th>Year</th><th class="num">Opening</th>
+      <th class="num">Purchases</th><th class="num">Natural increase</th>
+      <th class="num">Sales</th><th class="num">Deaths</th><th class="num">Rations</th>
+      <th class="num">Closing</th><th class="num">Check</th></tr></thead><tbody>`;
+
+  for(const r of years){
+    // Not forced to balance. A mismatch means an animal's status history
+    // says something impossible, and that is worth surfacing rather than
+    // papering over.
+    const expect = r.opening + r.purchases + r.natural_increase
+                 - r.sales - r.deaths - r.rations;
+    const gap = r.closing - expect;
+    if(gap) off++;
+    h += `<tr class="open-row" data-fy="${r.fy}" aria-expanded="false">
+      <td class="m"><span class="caret">▸</span> ${esc(r.fy_label)}</td>
+      <td class="num">${r.opening}</td><td class="num">${r.purchases}</td>
+      <td class="num">${r.natural_increase}</td><td class="num">${r.sales}</td>
+      <td class="num">${r.deaths}</td><td class="num">${r.rations}</td>
+      <td class="num"><b>${r.closing}</b></td>
+      <td class="num">${gap ? `<span class="flag">${gap>0?"+":""}${gap}</span>`
+                            : `<span class="ok">✓</span>`}</td></tr>
+      <tr class="drillrow" data-for="${r.fy}" hidden><td colspan="9" style="padding:0"></td></tr>`;
+  }
+  h += `</tbody></table>`;
+  h += off
+    ? `<p class="gap"><b>${off} year${off===1?"":"s"} don't reconcile.</b>
+       Opening plus purchases and natural increase, less sales, deaths and rations,
+       should equal closing. Open the year and compare the lists — the animal that
+       appears where it shouldn't, or is missing where it should be, is the one with
+       a status history that can't be true.</p>`
+    : `<p class="lede">Every year reconciles.</p>`;
+  h += `</section>`;
+
+  // ── closing numbers by class ──────────────────────────────────
+  const cls = only ? CLASSES.filter(c => String(c.fy) === only) : CLASSES;
+  if(cls.length){
+    const names = [...new Set(cls.map(c => c.class))].sort();
+    h += `<section><h2>Closing numbers by class</h2>
+      <p class="lede">Head alive at each balance date · tap a number to see which animals</p>
+      <table><thead><tr><th>Class</th>` +
+      years.map(r => `<th class="num">${esc(r.fy_label)}</th>`).join("") +
+      `</tr></thead><tbody>`;
+    for(const n of names){
+      h += `<tr><td>${esc(n)}</td>` + years.map(r => {
+        const hit = cls.find(c => c.fy===r.fy && c.class===n);
+        return hit
+          ? `<td class="num cell" data-fy="${r.fy}" data-class="${esc(n)}"
+               aria-pressed="false">${hit.head}</td>`
+          : `<td class="num">—</td>`;
+      }).join("") + `</tr>`;
+    }
+    h += `<tr><td><b>Total</b></td>` +
+      years.map(r => `<td class="num"><b>${r.closing}</b></td>`).join("") +
+      `</tr></tbody></table><div id="classdrill"></div></section>`;
+  }
+
+  h += `<footer><span>Buloke Farm · PIC 3BWWY089</span>
+    <span>Produced ${new Date().toLocaleString("en-AU")}</span></footer>`;
+  $("#out").innerHTML = h;
+}
+
+// ── the animals behind a year ───────────────────────────────────
+// Fetched on demand, not up front. Opening and closing alone are one
+// row per animal per year, so loading every year would mean thousands
+// of rows to show one.
+async function animalsFor(fy){
+  if(DRILL.has(fy)) return DRILL.get(fy);
+  const { data, error } = await db.from("v_stock_year_animal")
+    .select("bucket,stock_code,name,sex,breed,dob,class,on_date,detail")
+    .eq("fy", fy).order("stock_code");
+  if(error) throw error;
+  DRILL.set(fy, data || []);
+  return data || [];
+}
+
+function bucketCard(key, label, rows){
+  const mine = rows.filter(r => r.bucket === key);
+  return `<div class="bucket">
+    <div class="bh"><b>${esc(label)}</b><span>${mine.length}</span></div>
+    ${mine.length
+      ? `<ul>${mine.map(r => `<li>
+          <span class="tag">${esc(r.stock_code)}</span>
+          <span class="nm">${esc(r.name || "—")}${
+            key==="opening"||key==="closing" ? "" :
+            r.detail ? ` · ${esc(r.detail)}` : ""}</span>
+          <span class="dt">${key==="opening"||key==="closing"
+            ? esc(r.class) : fmt(r.on_date)}</span></li>`).join("")}</ul>`
+      : `<div class="empty">None.</div>`}
+  </div>`;
+}
+
+async function toggleYear(tr){
+  const fy   = tr.dataset.fy;
+  const slot = document.querySelector(`.drillrow[data-for="${fy}"]`);
+  const cell = slot.querySelector("td");
+  const open = tr.getAttribute("aria-expanded") === "true";
+
+  if(open){
+    tr.setAttribute("aria-expanded","false");
+    tr.querySelector(".caret").textContent = "▸";
+    slot.hidden = true; return;
+  }
+  tr.setAttribute("aria-expanded","true");
+  tr.querySelector(".caret").textContent = "▾";
+  slot.hidden = false;
+  cell.innerHTML = `<div class="drill"><p class="loading">Fetching the animals…</p></div>`;
+  try{
+    const rows = await animalsFor(fy);
+    const yr = YEARS.find(y => String(y.fy) === String(fy));
+    cell.innerHTML = `<div class="drill">
+      <h3>${esc(yr.fy_label)} — ${fmt(yr.fy_start)} to ${fmt(yr.fy_end)}</h3>
+      <div class="buckets">${BUCKETS.map(([k,l]) => bucketCard(k,l,rows)).join("")}</div>
+    </div>`;
+  }catch(e){
+    cell.innerHTML = `<div class="drill"><p class="gap">${esc(e.message)}</p></div>`;
+  }
+}
+
+async function toggleClass(td){
+  const { fy } = td.dataset, klass = td.dataset.class;
+  const box = $("#classdrill");
+  const already = td.getAttribute("aria-pressed") === "true";
+  document.querySelectorAll("td.cell").forEach(c => c.setAttribute("aria-pressed","false"));
+  if(already){ box.innerHTML = ""; return; }
+  td.setAttribute("aria-pressed","true");
+
+  box.innerHTML = `<div class="drill"><p class="loading">Fetching the animals…</p></div>`;
+  try{
+    const rows = (await animalsFor(fy))
+      .filter(r => r.bucket === "closing" && r.class === klass);
+    const yr = YEARS.find(y => String(y.fy) === String(fy));
+    box.innerHTML = `<div class="drill">
+      <h3>${esc(klass)} at ${fmt(yr.fy_end)} — ${rows.length} head</h3>
+      <table><thead><tr><th>Tag</th><th>Name</th><th class="m">Sex</th>
+        <th>Breed</th><th class="m">Born</th></tr></thead><tbody>
+        ${rows.map(r => `<tr><td class="m"><b>${esc(r.stock_code)}</b></td>
+          <td>${esc(r.name||"—")}</td><td class="m">${esc(r.sex||"—")}</td>
+          <td>${esc(r.breed||"—")}</td><td class="m">${fmt(r.dob)}</td></tr>`).join("")}
+      </tbody></table></div>`;
+  }catch(e){
+    box.innerHTML = `<div class="drill"><p class="gap">${esc(e.message)}</p></div>`;
+  }
+}
+
+document.addEventListener("click", e => {
+  const cell = e.target.closest("td.cell");
+  if(cell) return toggleClass(cell);
+  const tr = e.target.closest("tr.open-row");
+  if(tr) return toggleYear(tr);
+});
+$("#print").onclick = () => window.print();
+$("#fy").onchange = render;
+
+window.__signOut = () => db.auth.signOut();
+
+(async () => {
+  const { data:{ session } } = await db.auth.getSession();
+  if(!session){
+    const email = prompt("Email"), pw = email && prompt("Password");
+    if(!pw){ $("#out").innerHTML = '<p class="none">Sign in required.</p>'; return; }
+    const { error } = await db.auth.signInWithPassword({email, password:pw});
+    if(error){ alert(error.message); location.reload(); return; }
+  }
+  const [y, c] = await Promise.all([
+    db.from("v_stock_year").select("*").order("fy", {ascending:false}),
+    db.from("v_stock_year_class").select("*")
+  ]);
+  if(y.error){
+    $("#out").innerHTML = `<p class="gap"><b>Not available yet.</b> ${esc(y.error.message)}
+      — the stock-year migrations haven't been run.</p>`;
+    return;
+  }
+  YEARS = y.data || []; CLASSES = c.data || [];
+  $("#fy").innerHTML = `<option value="">All years</option>` +
+    YEARS.map(r => `<option value="${r.fy}">${esc(r.fy_label)}</option>`).join("");
+  render();
+})();
+</script>
+</body>
+</html>

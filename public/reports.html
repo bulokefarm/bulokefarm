@@ -184,14 +184,11 @@ async function run(){
   let cq = db.from("v_consignment").select("*").gte("consigned_on",from).lte("consigned_on",to).order("consigned_on");
   let sq = db.from("v_feed_store").select("*").order("received_on",{ascending:false, nullsFirst:false});
   // Joinings are dated by when the bull went in, or the straw went in.
-  let yq = db.from("v_stock_year").select("*").order("fy");
-  let ycq = db.from("v_stock_year_class").select("*");
-  let rq = db.from("v_stock_exit").select("*").eq("exit_kind","ration").order("effective_on");
   let jq = db.from("v_joining_result").select("*")
              .gte("joined_on",from).lte("joined_on",to)
              .order("season",{ascending:false}).order("dam_code");
 
-  const [t,f,s,c,j,y,yc,rat] = await Promise.all([tq,fq,sq,cq,jq,yq,ycq,rq]);
+  const [t,f,s,c,j] = await Promise.all([tq,fq,sq,cq,jq]);
   const err = t.error||f.error||s.error||c.error;
   if(err){ $("#out").innerHTML = `<p class="gap">${esc(err.message)}</p>`; return; }
 
@@ -203,7 +200,6 @@ async function run(){
     feedingSection(f.data||[], range) +
     sourceSection(s.data||[]) +
     consignSection(c.data||[], range) +
-    stockYearSection(y.data||[], yc.data||[], rat.data||[], y.error) +
     joiningSection(j.data||[], range, j.error) +
     `<div class="sig"><div>Producer signature</div><div>Date</div></div>
      <footer><span>Buloke Farm · PIC 3BWWY089</span>
@@ -346,85 +342,6 @@ function sourceSection(rows){
   return h + `</tbody></table></section>`;
 }
 
-
-// ── livestock trading account ───────────────────────────────────
-// Head only. The valuation basis is an election the accountant makes,
-// and a number invented here would end up on a tax return.
-//
-// Every financial year on record is shown rather than the date range
-// above, because the point of the schedule is that last year's closing
-// is this year's opening. One year on its own can't show that.
-function stockYearSection(years, classes, rations, error){
-  let h = `<section><h2>Livestock trading account</h2>
-    <p class="lede">Cattle, head only · Australian financial years · all records held</p>`;
-  if(error) return h + `<p class="gap"><b>Not available yet.</b> ${esc(error.message)}
-    — the stock-year migration hasn't been run.</p></section>`;
-  if(!years.length) return h + `<p class="none">No stock history recorded.</p></section>`;
-
-  h += `<table><thead><tr><th>Year</th><th class="num">Opening</th>
-    <th class="num">Purchases</th><th class="num">Natural increase</th>
-    <th class="num">Sales</th><th class="num">Deaths</th><th class="num">Rations</th>
-    <th class="num">Closing</th><th class="num">Check</th></tr></thead><tbody>`;
-
-  let off = 0;
-  for(const r of years){
-    // Deliberately not forced to balance. A mismatch means an animal's
-    // status history says something impossible, and June is when you
-    // want to hear about it.
-    const expect = r.opening + r.purchases + r.natural_increase
-                 - r.sales - r.deaths - r.rations;
-    const gap = r.closing - expect;
-    if(gap) off++;
-    h += `<tr><td class="m">${esc(r.fy_label)}</td>
-      <td class="num">${r.opening}</td><td class="num">${r.purchases}</td>
-      <td class="num">${r.natural_increase}</td><td class="num">${r.sales}</td>
-      <td class="num">${r.deaths}</td><td class="num">${r.rations}</td>
-      <td class="num"><b>${r.closing}</b></td>
-      <td class="num">${gap ? `<span class="flag">${gap>0?"+":""}${gap}</span>` : "✓"}</td></tr>`;
-  }
-  h += `</tbody></table>`;
-  h += off
-    ? `<p class="gap"><b>${off} year${off===1?"":"s"} don't reconcile.</b>
-       Opening plus purchases and natural increase, less sales, deaths and rations,
-       should equal closing. Where it doesn't, an animal has a status history that
-       can't be true — most often a date outside the year it belongs to, or a life
-       state recorded twice. The figures above are what the records say, not what
-       they ought to say.</p>`
-    : `<p class="lede">Every year reconciles.</p>`;
-
-  // Closing numbers by class — the middle block of the spreadsheet.
-  if(classes.length){
-    const fys = years.map(r => r.fy);
-    const names = [...new Set(classes.map(c => c.class))];
-    h += `<h3>Closing numbers by class</h3><table><thead><tr><th>Class</th>` +
-      years.map(r => `<th class="num">${esc(r.fy_label)}</th>`).join("") +
-      `</tr></thead><tbody>`;
-    for(const n of names){
-      h += `<tr><td>${esc(n)}</td>` + fys.map(fy => {
-        const hit = classes.find(c => c.fy===fy && c.class===n);
-        return `<td class="num">${hit ? hit.head : "—"}</td>`;
-      }).join("") + `</tr>`;
-    }
-    h += `<tr><td><b>Total</b></td>` +
-      years.map(r => `<td class="num"><b>${r.closing}</b></td>`).join("") +
-      `</tr></tbody></table>`;
-  }
-
-  // Rations is inferred, so name them. A wrong one is then obvious.
-  h += `<h3>Killed for rations</h3>`;
-  h += rations.length
-    ? `<p class="lede">Inferred: slaughtered, with no consignment to a saleyard,
-        abattoir or agent within a month either side. Check the list — anything here
-        that actually went to the works belongs on the sales line.</p>
-       <table><thead><tr><th>Animal</th><th class="m">Date</th><th>Went to</th></tr></thead><tbody>`
-       + rations.map(r => `<tr><td>${esc(r.stock_code)}</td>
-         <td class="m">${fmt(r.effective_on)}</td>
-         <td>${r.consigned ? esc(r.destination_kind||"consigned") : "—"}</td></tr>`).join("")
-       + `</tbody></table>`
-    : `<p class="none">None recorded.</p>`;
-
-  return h + `</section>`;
-}
 
 // ── joining register ────────────────────────────────────────────
 // Not an LPA section. A joining is recorded when the bull goes out or

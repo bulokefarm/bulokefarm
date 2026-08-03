@@ -1,4 +1,4 @@
-// Shared menu for all three pages. Loaded as a plain script, not a
+// Shared menu for all four pages. Loaded as a plain script, not a
 // module, so it can attach before the page's own code runs.
 //
 // Pages opt in with two things:
@@ -10,6 +10,7 @@
   var LINKS = [
     ["/",        "Herd & recording", "Animals, map, family tree, everything you record"],
     ["/reports", "Records & reports", "LPA treatments, feed, movements — printable"],
+    ["/stock",   "Stock account",     "Trading account by financial year, for tax"],
     ["/map",     "Paddock editor",    "Trace fence lines on satellite imagery"]
   ];
 
