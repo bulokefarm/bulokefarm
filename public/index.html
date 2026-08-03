@@ -348,6 +348,7 @@ const isActive = a => !a.life_state || a.life_state === "alive";
 // breeder cow and a lamb is not a calf — so the scope has to be
 // settled before the words on the buttons can be.
 const SPECIES = ["cattle","sheep"];
+const sLabel = sp => ({cattle:"Cattle", sheep:"Sheep"})[sp] || sp;
 const inSpecies = a => S.species === "all" || a.species === S.species;
 const speciesOf = a => a?.species || "cattle";
 const hasBoth = () => new Set(S.animals.map(speciesOf)).size > 1;
@@ -400,7 +401,7 @@ const classLabel = (k, sp) => (CLASS_LABEL[sp] || CLASS_LABEL.cattle)[k]
 const shown = k => S.prefs?.fields?.[k] !== false;
 
 // ─── state ──────────────────────────────────────────────────────
-const S = { me:null, animals:[], herdMode:"list", species:"all", pending:[], treeFam:undefined, treePend:false, paddocks:[], feeds:[], refs:{}, prefs:null, selFeed:null, view:"herd", filter:"all", q:"", sel:null, selPk:null, busy:false };
+const S = { me:null, animals:[], herdMode:"list", species:"all", treeLink:null, pending:[], treeFam:undefined, treePend:false, paddocks:[], feeds:[], refs:{}, prefs:null, selFeed:null, view:"herd", filter:"all", q:"", sel:null, selPk:null, busy:false };
 
 // ═══ data ═══════════════════════════════════════════════════════
 async function loadHerd(){
@@ -762,23 +763,40 @@ async function viewDetail(){
 // that change every season, so they annotate a node rather than
 // forming their own branch — which is how a cow family actually
 // persists on the ground.
+// Which parent the spine follows. Cattle records carry dams, so descent
+// down the dam line is the natural read. The sheep have no dams recorded
+// at all — 90 nulls — so a dam spine gives 90 roots and no tree. Sire is
+// the only link there is, and pretending otherwise draws nothing.
+const linkDefault = sp => sp === "sheep" ? "sire" : "dam";
+const treeLink = () => S.treeLink || linkDefault(treeSpecies());
+// A tree spanning both mobs is two unrelated forests in one picture.
+const treeSpecies = () => S.species === "all"
+  ? (hasBoth() ? "cattle" : speciesOf(S.animals[0])) : S.species;
+
 function buildForest(){
-  const byId = new Map(S.animals.map(a => [a.id, a]));
+  const link = treeLink(), sp = treeSpecies();
+  const pool = S.animals.filter(a => speciesOf(a) === sp);
+  const byId = new Map(pool.map(a => [a.id, a]));
   const kids = new Map();                 // parent key -> [node]
   const nodes = new Map();                // key -> node
   const push = (p,c) => { if(!kids.has(p)) kids.set(p,[]); kids.get(p).push(c); };
 
-  for(const a of S.animals){
+  for(const a of pool){
     const n = {key:a.id, animal:a, kind:"animal"};
     nodes.set(a.id, n);
   }
+  const parentId   = a => link === "sire" ? a.sire_id : a.dam_id;
+  const parentName = a => link === "sire"
+    ? (a.sire_name || "Unknown sire")
+    : (a.dam_name || a.dam_code || "Unknown dam");
   const roots = [];
-  for(const a of S.animals){
-    if(a.dam_id && byId.has(a.dam_id))      push(a.dam_id, nodes.get(a.id));
-    else if(a.dam_id){                       // dam known but not in the herd
-      const gk = "g:"+a.dam_id;
+  for(const a of pool){
+    const pid = parentId(a);
+    if(pid && byId.has(pid))      push(pid, nodes.get(a.id));
+    else if(pid){                  // parent known but not in this mob
+      const gk = "g:"+pid;
       if(!nodes.has(gk)){
-        const g = {key:gk, kind:"ghost", label:a.dam_name||a.dam_code||"Unknown dam"};
+        const g = {key:gk, kind:"ghost", label:parentName(a)};
         nodes.set(gk,g); roots.push(g);
       }
       push(gk, nodes.get(a.id));
@@ -786,7 +804,7 @@ function buildForest(){
   }
   // Expected calvings hang off their dam as pending.
   for(const e of (S.treePend ? S.pending : [])){
-    if(!byId.has(e.dam_id)) continue;
+    if(link !== "dam" || !byId.has(e.dam_id)) continue;
     const k = "e:"+e.id;
     const n = {key:k, kind:"pending", label:e.due_on, sire:e.sire?.name, season:e.season};
     nodes.set(k,n); push(e.dam_id, n);
@@ -816,13 +834,53 @@ function treeControls(){
          S.treeFam===r.key, () => { S.treeFam=r.key; render(); });
 
   const wrap = el(`<div></div>`);
+
+  // A tree across both mobs is two unrelated forests in one picture, so
+  // here species is a choice rather than a scope — "All stock" has no
+  // meaning on this screen and isn't offered.
+  if(hasBoth()){
+    const sp = treeSpecies();
+    const row = el(`<div class="chips" style="padding-top:10px"></div>`);
+    for(const k of SPECIES){
+      const b = el(`<button class="chip" aria-pressed="${sp===k}">${esc(sLabel(k))}</button>`);
+      b.onclick = () => { S.species = k; S.treeFam = undefined; S.treeLink = null; render(); };
+      row.appendChild(b);
+    }
+    wrap.appendChild(row);
+  }
+
+  // Which parent the line follows. Both are shown on every animal; this
+  // decides which one the branches are drawn from.
+  const link = treeLink();
+  const lrow = el(`<div class="chips" style="padding-top:6px"></div>`);
+  for(const [k,label] of [["dam","Down the dam line"],["sire","Down the sire line"]]){
+    const b = el(`<button class="chip" aria-pressed="${link===k}">${label}</button>`);
+    b.onclick = () => { S.treeLink = k; S.treeFam = undefined; render(); };
+    lrow.appendChild(b);
+  }
+  wrap.appendChild(lrow);
+
   wrap.appendChild(box);
   const t = el(`<div class="chips" style="padding-top:4px;padding-bottom:2px"></div>`);
-  const p = el(`<button class="chip" aria-pressed="${S.treePend}">Upcoming calvings</button>`);
+  // Expected births hang off the dam, so they have nowhere to sit on a
+  // sire line. Disabled rather than hidden — a control that vanishes
+  // reads as a bug.
+  const p = el(`<button class="chip" aria-pressed="${S.treePend && link==="dam"}"
+    ${link==="dam" ? "" : "disabled"}>Upcoming ${wl("birth")}s</button>`);
+  if(link !== "dam") p.style.opacity = ".45";
   p.onclick = () => { S.treePend = !S.treePend; render(); };
   t.appendChild(p);
   wrap.appendChild(t);
   return wrap;
+}
+
+// The branch shows one parent; this names the other, so the pedigree is
+// readable both ways round without redrawing.
+function parentTag(a){
+  const sire = a.sire_name ? "♂ " + a.sire_name : null;
+  const dam  = (a.dam_name || a.dam_code) ? "♀ " + (a.dam_code || a.dam_name) : null;
+  const both = treeLink() === "sire" ? [dam, sire] : [sire, dam];
+  return (both.filter(Boolean).join(" · ") || "no pedigree").slice(0, 26);
 }
 
 function treeSVG(match){
@@ -830,7 +888,8 @@ function treeSVG(match){
   const kids = all.kids;
   const roots = S.treeFam ? all.roots.filter(r => r.key===S.treeFam) : all.roots;
   if(!roots.length)
-    return el(`<div class="empty"><b>No pedigree yet</b>Dams need recording before a tree can be drawn.</div>`);
+    return el(`<div class="empty"><b>No pedigree yet</b>${
+      treeLink()==="dam" ? "Dams" : "Sires"} need recording before a tree can be drawn.</div>`);
 
   const NW=158, NH=54, GAPX=14, GAPY=48;
   let leaf = 0, maxD = 0;
@@ -891,8 +950,8 @@ function treeSVG(match){
         font-family="ui-monospace,Menlo,monospace" fill="#16150F">${esc(a.stock_code)}</text>
       <text x="${x+68}" y="${y+22}" font-size="12.5" fill="#16150F">${esc((a.name||"").slice(0,13))}</text>
       <text x="${x+16}" y="${y+40}" font-size="10.5" fill="#5A574E">${
-        esc(a.sex==="female"?"♀":"♂")} ${esc(age(a.age_years))}${
-        a.sire_name?" · "+esc(a.sire_name.slice(0,16)):""}</text>
+        esc(a.sex==="female"?"♀":a.sex==="wether"?"⚲":"♂")} ${esc(age(a.age_years))} · ${
+        esc(parentTag(a))}</text>
     </g>`;
   }
   roots.forEach(walk);
