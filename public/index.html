@@ -512,7 +512,8 @@ function viewHerd(){
         <span class="meta">
           <span class="nm">${esc(a.name||"Unnamed")}</span>
           <span class="sub">${!isActive(a)
-              ? `<span style="opacity:.75">${esc(a.life_state)}</span> · ${esc(a.breed||"")}`
+              ? `<span style="opacity:.75">${esc(a.life_state)}${
+                  a.exit_on ? " " + fmt(a.exit_on) : ""}</span> · ${esc(a.breed||"")}`
               : (a.paddock_name
                   ? `<span class="dot" style="background:${esc(a.paddock_colour||"#999")}"></span>`+esc(a.paddock_name)
                   : "<span style='opacity:.6'>no paddock</span>") + ` · ${esc(a.breed||"")}`}</span>
@@ -585,6 +586,10 @@ async function viewDetail(){
   if(shown("dob"))        F("Born", fmt(a.dob));
   if(shown("life_state")||shown("class"))
     F("Status", `${esc(a.life_state||"—")}${shown("class")?" · "+esc(a.class||"—"):""}`);
+  if(!isActive(a))
+    F(a.life_state==="sold" ? "Sold" : a.life_state==="died" ? "Died" : "Left",
+      a.exit_on ? fmt(a.exit_on) + (a.exit_reason ? ` · ${esc(a.exit_reason)}` : "")
+                : `<span style="color:var(--danger)">date not recorded</span>`, true);
   if(shown("paddock_name")) F("Paddock", a.paddock_name
       ? `<span class="dot" style="background:${esc(a.paddock_colour||"#999")}"></span>`+esc(a.paddock_name)
         +`<span style="font-weight:400;color:var(--ink2)"> · since ${fmt(a.in_paddock_since)}</span>`
@@ -2022,7 +2027,11 @@ function editAnimal(){
       ${["calf","weaner","yearling","harvest","breeder","protector","bull"]
         .map(o=>`<option ${a.class===o?"selected":""}>${o}</option>`).join("")}
     </select></label></div>
-    <p class="hint">Changing these adds a dated transition — the old status stays in the animal's history.</p>`));
+    <label><span>Date sold, died or left</span><input type="date" name="_on"
+      value="${a.exit_on||""}"></label>
+    <p class="hint">Changing the state adds a dated transition on this date — the old
+      status stays in the animal's history. If the state is already right and only the
+      date is wrong, the existing transition is corrected instead of a new one added.</p>`));
 
   return formShell(`Edit ${a.stock_code}`, inner, async (fd) => {
     const patch = {};
@@ -2031,12 +2040,34 @@ function editAnimal(){
     if(error) throw new Error(error.code==="23505" ? "Another animal already has that tag." : error.message);
 
     const life = fd.get("_life"), cls = fd.get("_class")||null;
+    const on   = fd.get("_on") || null;
+    const left = life !== "alive";
+
     if(life !== a.life_state || cls !== (a.class||null)){
+      // Date the transition the day it happened, not the day it was
+      // typed. A sale entered three weeks late belongs in the week it
+      // happened or the trading account puts it in the wrong year.
       const { error:e2 } = await db.rpc("set_animal_status", {
         p_animal_ids:[a.id], p_life_state:life, p_class:cls,
-        p_on: today(), p_reason:"Edited" });
+        p_on: (left && on) || today(), p_reason:"Edited" });
       if(e2) throw e2;
+      S.view = "detail";
+      return left && on && on !== today() ? `Saved, dated ${fmt(on)}.` : "Saved.";
     }
+
+    // State unchanged and only the date moved: correct the transition
+    // that already exists rather than stacking a second one on top of
+    // it. exit_status_id names the exact row, so there's no guessing.
+    if(left && on && on !== a.exit_on && a.exit_status_id){
+      const { error:e3 } = await db.from("animal_status")
+        .update({ effective_on: on }).eq("id", a.exit_status_id);
+      if(e3) throw new Error(e3.code === "23505"
+        ? `${a.stock_code} already has a status change recorded on that date.`
+        : e3.message);
+      S.view = "detail";
+      return `Date corrected to ${fmt(on)}.`;
+    }
+
     S.view = "detail";
     return "Saved.";
   });
