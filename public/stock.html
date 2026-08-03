@@ -57,9 +57,6 @@ td.num{font-family:var(--mono)}
 tr.open-row{cursor:pointer}
 tr.open-row:hover{background:var(--accent-soft)}
 tr.open-row[aria-expanded="true"]{background:var(--accent-soft);font-weight:700}
-td.cell{cursor:pointer}
-td.cell:hover{background:var(--accent-soft)}
-td.cell[aria-pressed="true"]{background:var(--accent-soft);font-weight:700}
 .caret{color:var(--ink2);font-size:11px}
 
 .flag{display:inline-block;background:#F7E4E2;color:var(--danger);border-radius:4px;
@@ -203,7 +200,7 @@ function render(){
                  - r.sales - r.deaths - r.rations;
     const gap = r.closing - expect;
     if(gap) off++;
-    h += `<tr class="open-row" data-fy="${r.fy}" aria-expanded="false">
+    h += `<tr class="open-row" data-kind="buckets" data-fy="${r.fy}" aria-expanded="false">
       <td class="m"><span class="caret">▸</span> ${esc(r.fy_label)}</td>
       <td class="num">${r.opening}</td><td class="num">${r.purchases}</td>
       <td class="num">${r.natural_increase}</td><td class="num">${r.sales}</td>
@@ -211,7 +208,8 @@ function render(){
       <td class="num"><b>${r.closing}</b></td>
       <td class="num">${gap ? `<span class="flag">${gap>0?"+":""}${gap}</span>`
                             : `<span class="ok">✓</span>`}</td></tr>
-      <tr class="drillrow" data-for="${r.fy}" hidden><td colspan="9" style="padding:0"></td></tr>`;
+      <tr class="drillrow" data-for="buckets-${r.fy}" hidden>
+        <td colspan="9" style="padding:0"></td></tr>`;
   }
   h += `</tbody></table>`;
   h += off
@@ -224,26 +222,29 @@ function render(){
   h += `</section>`;
 
   // ── closing numbers by class ──────────────────────────────────
+  // Pivoted to match the trading account above: a year is a row, and
+  // a row opens. Reading two tables that disagree about which axis is
+  // time costs more than the space it saves.
   const cls = SEL.size ? CLASSES.filter(c => SEL.has(c.fy)) : CLASSES;
   if(cls.length){
     const names = [...new Set(cls.map(c => c.class))].sort();
     h += `<section><h2>Closing numbers by class</h2>
-      <p class="lede">Head alive at each balance date · tap a number to see which animals</p>
-      <table><thead><tr><th>Class</th>` +
-      years.map(r => `<th class="num">${esc(r.fy_label)}</th>`).join("") +
-      `</tr></thead><tbody>`;
-    for(const n of names){
-      h += `<tr><td>${esc(n)}</td>` + years.map(r => {
-        const hit = cls.find(c => c.fy===r.fy && c.class===n);
-        return hit
-          ? `<td class="num cell" data-fy="${r.fy}" data-class="${esc(n)}"
-               aria-pressed="false">${hit.head}</td>`
-          : `<td class="num">—</td>`;
-      }).join("") + `</tr>`;
+      <p class="lede">Head alive at each balance date · tap a year to see which animals</p>
+      <table><thead><tr><th>Year</th>` +
+      names.map(n => `<th class="num">${esc(n)}</th>`).join("") +
+      `<th class="num">Total</th></tr></thead><tbody>`;
+    for(const r of years){
+      h += `<tr class="open-row" data-kind="classes" data-fy="${r.fy}" aria-expanded="false">
+        <td class="m"><span class="caret">▸</span> ${esc(r.fy_label)}</td>` +
+        names.map(n => {
+          const hit = cls.find(c => c.fy===r.fy && c.class===n);
+          return `<td class="num">${hit ? hit.head : "—"}</td>`;
+        }).join("") +
+        `<td class="num"><b>${r.closing}</b></td></tr>
+        <tr class="drillrow" data-for="classes-${r.fy}" hidden>
+          <td colspan="${names.length+2}" style="padding:0"></td></tr>`;
     }
-    h += `<tr><td><b>Total</b></td>` +
-      years.map(r => `<td class="num"><b>${r.closing}</b></td>`).join("") +
-      `</tr></tbody></table><div id="classdrill"></div></section>`;
+    h += `</tbody></table></section>`;
   }
 
   h += `<footer><span>${esc(HOME.trading_name||"Buloke Farm")} · PIC ${esc(HOME.pic)}</span>
@@ -265,29 +266,27 @@ async function animalsFor(fy){
   return data || [];
 }
 
-function bucketCard(key, label, rows){
-  const mine = rows.filter(r => r.bucket === key);
+// One card, one list of animals. `right` decides what sits on the far
+// side of each line — the class for a stock-on-hand list, the date it
+// happened for a movement.
+function card(label, mine, right){
   return `<div class="bucket">
     <div class="bh"><b>${esc(label)}</b><span>${mine.length}</span></div>
     ${mine.length
       ? `<ul>${mine.map(r => `<li>
           <span class="tag">${esc(r.stock_code)}</span>
-          <span class="nm">${esc(r.name || "—")}${
-            key==="opening"||key==="closing" ? "" :
-            r.detail ? ` · ${esc(r.detail)}` : ""}</span>
-          <span class="dt">${key==="opening"||key==="closing"
-            ? esc(r.class) : fmt(r.on_date)}</span></li>`).join("")}</ul>`
+          <span class="nm">${esc(r.name || "—")}</span>
+          <span class="dt">${esc(right(r))}</span></li>`).join("")}</ul>`
       : `<div class="empty">None.</div>`}
   </div>`;
 }
 
-async function toggleYear(tr){
-  const fy   = tr.dataset.fy;
-  const slot = document.querySelector(`.drillrow[data-for="${fy}"]`);
+async function toggleRow(tr){
+  const { fy, kind } = tr.dataset;
+  const slot = document.querySelector(`.drillrow[data-for="${kind}-${fy}"]`);
   const cell = slot.querySelector("td");
-  const open = tr.getAttribute("aria-expanded") === "true";
 
-  if(open){
+  if(tr.getAttribute("aria-expanded") === "true"){
     tr.setAttribute("aria-expanded","false");
     tr.querySelector(".caret").textContent = "▸";
     slot.hidden = true; return;
@@ -296,49 +295,38 @@ async function toggleYear(tr){
   tr.querySelector(".caret").textContent = "▾";
   slot.hidden = false;
   cell.innerHTML = `<div class="drill"><p class="loading">Fetching the animals…</p></div>`;
+
   try{
     const rows = await animalsFor(fy);
-    const yr = YEARS.find(y => String(y.fy) === String(fy));
-    cell.innerHTML = `<div class="drill">
-      <h3>${esc(yr.fy_label)} — ${fmt(yr.fy_start)} to ${fmt(yr.fy_end)}</h3>
-      <div class="buckets">${BUCKETS.map(([k,l]) => bucketCard(k,l,rows)).join("")}</div>
-    </div>`;
+    const yr   = YEARS.find(y => String(y.fy) === String(fy));
+    let inner;
+    if(kind === "classes"){
+      // Stock on hand at balance date, split the way the table splits it.
+      const held = rows.filter(r => r.bucket === "closing");
+      const names = [...new Set(held.map(r => r.class))].sort();
+      inner = `<h3>Held at ${fmt(yr.fy_end)} — ${held.length} head</h3>
+        <div class="buckets">${names.map(n =>
+          card(n, held.filter(r => r.class === n),
+               r => r.sex ? `${r.sex}${r.dob ? " · " + fmt(r.dob) : ""}` : fmt(r.dob))
+        ).join("")}</div>`;
+    } else {
+      inner = `<h3>${esc(yr.fy_label)} — ${fmt(yr.fy_start)} to ${fmt(yr.fy_end)}</h3>
+        <div class="buckets">${BUCKETS.map(([k,l]) => {
+          const mine = rows.filter(r => r.bucket === k);
+          return k === "opening" || k === "closing"
+            ? card(l, mine, r => r.class)
+            : card(l, mine, r => fmt(r.on_date));
+        }).join("")}</div>`;
+    }
+    cell.innerHTML = `<div class="drill">${inner}</div>`;
   }catch(e){
     cell.innerHTML = `<div class="drill"><p class="gap">${esc(e.message)}</p></div>`;
   }
 }
 
-async function toggleClass(td){
-  const { fy } = td.dataset, klass = td.dataset.class;
-  const box = $("#classdrill");
-  const already = td.getAttribute("aria-pressed") === "true";
-  document.querySelectorAll("td.cell").forEach(c => c.setAttribute("aria-pressed","false"));
-  if(already){ box.innerHTML = ""; return; }
-  td.setAttribute("aria-pressed","true");
-
-  box.innerHTML = `<div class="drill"><p class="loading">Fetching the animals…</p></div>`;
-  try{
-    const rows = (await animalsFor(fy))
-      .filter(r => r.bucket === "closing" && r.class === klass);
-    const yr = YEARS.find(y => String(y.fy) === String(fy));
-    box.innerHTML = `<div class="drill">
-      <h3>${esc(klass)} at ${fmt(yr.fy_end)} — ${rows.length} head</h3>
-      <table><thead><tr><th>Tag</th><th>Name</th><th class="m">Sex</th>
-        <th>Breed</th><th class="m">Born</th></tr></thead><tbody>
-        ${rows.map(r => `<tr><td class="m"><b>${esc(r.stock_code)}</b></td>
-          <td>${esc(r.name||"—")}</td><td class="m">${esc(r.sex||"—")}</td>
-          <td>${esc(r.breed||"—")}</td><td class="m">${fmt(r.dob)}</td></tr>`).join("")}
-      </tbody></table></div>`;
-  }catch(e){
-    box.innerHTML = `<div class="drill"><p class="gap">${esc(e.message)}</p></div>`;
-  }
-}
-
 document.addEventListener("click", e => {
-  const cell = e.target.closest("td.cell");
-  if(cell) return toggleClass(cell);
   const tr = e.target.closest("tr.open-row");
-  if(tr) return toggleYear(tr);
+  if(tr) toggleRow(tr);
 });
 $("#print").onclick = () => window.print();
 
