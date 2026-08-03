@@ -128,6 +128,11 @@ footer{margin-top:34px;padding-top:10px;border-top:1px solid var(--rule);
       <option value="all" selected>Everything</option>
     </select></label>
     <button id="go">Show records</button>
+    <label>Stock<select id="sp">
+      <option value="">All stock</option>
+      <option value="cattle">Cattle</option>
+      <option value="sheep">Sheep</option>
+    </select></label>
     <button class="ghost" id="print">Print / save as PDF</button>
     <button class="ghost" id="addfeed">+ Add feed to store</button>
   </div>
@@ -154,6 +159,17 @@ const timedFetch = (url, opts = {}) => {
 const db = createClient(SUPABASE_URL, SUPABASE_ANON, { global: { fetch: timedFetch } });
 
 const $ = s => document.querySelector(s);
+
+// A joining has one dam, so it has one species. A drench run or a
+// truckload can carry both, so those views report which species were
+// involved and the filter asks "was this species on it" rather than
+// pretending each record belongs to one.
+const SP = () => $("#sp") ? $("#sp").value : "";
+const involves = row => !SP() || (row.species || "cattle").includes(SP());
+const isSp = row => !SP() || (row.species || "cattle") === SP();
+
+// Bull to cows, ram to ewes. Same row in the same table, different word.
+const SIRE_WORD = { cattle: "bull", sheep: "ram" };
 
 // The letterhead is a fact about the business, not a string in the
 // markup. With a second PIC on the same land there is more than one
@@ -185,6 +201,7 @@ $("#preset").onchange = e => {
                      d.setFullYear(d.getFullYear()-1); $("#from").value=d.toISOString().slice(0,10); }
   else if(v==="all"){ $("#from").value=""; $("#to").value=""; }
 };
+$("#sp").onchange = run;
 $("#print").onclick = () => window.print();
 $("#addfeed").onclick = () => openEditor("feed_source", null);
 $("#go").onclick = run;
@@ -206,14 +223,15 @@ async function run(){
   const err = t.error||f.error||s.error||c.error;
   if(err){ $("#out").innerHTML = `<p class="gap">${esc(err.message)}</p>`; return; }
 
-  const range = ($("#from").value||$("#to").value)
-    ? `${fmt($("#from").value)||"start"} to ${fmt($("#to").value)||"today"}` : "All records held";
+  const range = (($("#from").value||$("#to").value)
+    ? `${fmt($("#from").value)||"start"} to ${fmt($("#to").value)||"today"}` : "All records held")
+    + (SP() ? ` · ${SP()} only` : "");
 
   $("#out").innerHTML =
-    treatmentSection(t.data||[], range) +
+    treatmentSection((t.data||[]).filter(involves), range) +
     feedingSection(f.data||[], range) +
     sourceSection(s.data||[]) +
-    consignSection(c.data||[], range) +
+    consignSection((c.data||[]).filter(involves), range) +
     joiningSection(j.data||[], range, j.error) +
     `<div class="sig"><div>Producer signature</div><div>Date</div></div>
      <footer><span>${esc(HOME.trading_name||"Buloke Farm")} · PIC ${esc(HOME.pic)}</span>
@@ -406,7 +424,7 @@ function joiningSection(rows, range, error){
 
 function joinRows(){
   const f = $("#jfilter")?.value || "await";
-  return JOININGS.filter(r =>
+  return JOININGS.filter(isSp).filter(r =>
     f==="all"     ? true :
     f==="await"   ? (!r.outcome || r.outcome==="unknown") :
     f==="natural" ? r.method!=="ai" :
@@ -430,7 +448,7 @@ function renderJoinings(){
     h += `<tr class="ed" data-kind="joining" data-id="${r.id}">
       <td class="tick nodrawer"><input type="checkbox" class="jck" data-id="${r.id}"></td>
       <td>${esc(r.dam_code||"—")}${r.dam_name?`<br><span style="color:var(--ink2)">${esc(r.dam_name)}</span>`:""}</td>
-      <td class="m">${r.method==="ai"?"AI":"bull"}</td>
+      <td class="m">${r.method==="ai" ? "AI" : (SIRE_WORD[r.species] || "bull")}</td>
       <td>${esc(r.sire_name||"—")}${r.straw_code?`<br><span style="color:var(--ink2)">${esc(r.straw_code)}</span>`:""}</td>
       <td>${esc(r.paddock_name||(r.method==="ai"?"—":"not recorded"))}</td>
       <td class="m">${esc(r.season||"—")}${r.attempt>1?`<br><span style="color:var(--ink2)">attempt ${r.attempt}</span>`:""}</td>
