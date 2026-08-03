@@ -361,6 +361,35 @@ const CLASS_LABEL = {
            calf:"Calves", protector:"Protector", bull:"Bulls"},
   sheep:  {breeder:"Ewes", harvest:"Harvest", yearling:"Yearlings", lamb:"Lambs", ram:"Rams"}
 };
+// The same event has a different name in each mob. A bull goes out to
+// cows; a ram goes out to ewes. Using one word for both reads as a
+// system that was built for cattle and had sheep bolted on.
+const WORD = {
+  cattle: {sire:"Bull",        dam:"Cow",    young:"Calf",         birth:"Calving",
+           birthed:"Calved",   incalf:"In calf"},
+  sheep:  {sire:"Ram",         dam:"Ewe",     young:"Lamb",         birth:"Lambing",
+           birthed:"Lambed",   incalf:"In lamb"},
+  all:    {sire:"Bull or ram", dam:"Female",  young:"Calf or lamb", birth:"Calving / lambing",
+           birthed:"Birthed",  incalf:"In calf or lamb"}
+};
+const w  = (k, sp = S.species) => (WORD[sp] || WORD.cattle)[k];
+const wl = (k, sp = S.species) => w(k, sp).toLowerCase();
+
+// The scope control, wherever it is needed. One piece of state, so
+// setting it on the herd screen carries into the record forms.
+function speciesBar(){
+  if(!hasBoth()) return null;
+  const bar = el(`<div class="search" style="padding-top:0"><div class="seg">
+    <button aria-pressed="${S.species==="all"}">All stock</button>
+    <button aria-pressed="${S.species==="cattle"}">Cattle</button>
+    <button aria-pressed="${S.species==="sheep"}">Sheep</button>
+  </div></div>`);
+  bar.querySelectorAll(".seg button").forEach((b,i) => b.onclick = () => {
+    S.species = ["all","cattle","sheep"][i]; S.filter = "all"; render();
+  });
+  return bar;
+}
+
 // Sheep run 145 days, cattle 285. Her own figure still wins.
 const GEST_BY_SPECIES = { cattle: 285, sheep: 145 };
 const classesFor = sp => sp === "all"
@@ -443,17 +472,8 @@ function viewHerd(){
 
   // The species row only appears when there is more than one on the
   // books. A cattle-only farm should never see it.
-  if(hasBoth()){
-    const sp = el(`<div class="search" style="padding-top:0"><div class="seg">
-      <button aria-pressed="${S.species==="all"}">All stock</button>
-      <button aria-pressed="${S.species==="cattle"}">Cattle</button>
-      <button aria-pressed="${S.species==="sheep"}">Sheep</button>
-    </div></div>`);
-    sp.querySelectorAll(".seg button").forEach((b,i) => b.onclick = () => {
-      S.species = ["all","cattle","sheep"][i]; S.filter = "all"; render();
-    });
-    wrap.appendChild(sp);
-  }
+  const spBar = speciesBar();
+  if(spBar) wrap.appendChild(spBar);
 
   const live = S.animals.filter(a => isActive(a) && inSpecies(a));
   const past = S.animals.filter(a => !isActive(a) && inSpecies(a));
@@ -588,17 +608,26 @@ function viewHerd(){
 
 async function viewDue(){
   const wrap = el(`<div></div>`);
+  const spBar = speciesBar();
+  if(spBar) wrap.appendChild(spBar);
+
   const { data, error } = await db.from("expected_calving")
-    .select("id,due_on,season,cycle,dam:dam_id(stock_code,name),sire:sire_id(name)")
+    .select("id,due_on,season,cycle,dam:dam_id(stock_code,name,species),sire:sire_id(name)")
     .is("resolved_calving_id", null).order("due_on");
   if(error){ wrap.appendChild(el(`<div class="msg err">${esc(error.message)}</div>`)); return wrap; }
 
-  if(!data.length){
-    wrap.appendChild(el(`<div class="empty"><b>Nothing due</b>Expected calvings appear here once joinings are recorded.</div>`));
+  // Filtered here rather than in the query: the species is on the dam,
+  // and PostgREST can't filter a parent by an embedded child's column.
+  const rows0 = (data || []).filter(r =>
+    S.species === "all" || (r.dam?.species || "cattle") === S.species);
+
+  if(!rows0.length){
+    wrap.appendChild(el(`<div class="empty"><b>Nothing due</b>Expected ${
+      wl("birth")}s appear here once joinings are recorded.</div>`));
     return wrap;
   }
   const groups = {};
-  for(const r of data) (groups[`${r.season} ${r.cycle||""}`.trim()] ||= []).push(r);
+  for(const r of rows0) (groups[`${r.season} ${r.cycle||""}`.trim()] ||= []).push(r);
   for(const [head, rows] of Object.entries(groups)){
     wrap.appendChild(el(`<h3 class="sec">${esc(head)} — ${rows.length} head</h3>`));
     const ul = el(`<ul class="rows"></ul>`);
@@ -697,8 +726,10 @@ async function viewDetail(){
   if(a.sex==="female"){
     const { data:js } = await db.from("v_joining_result").select("*")
       .eq("dam_id", a.id).order("season", {ascending:false});
-    const LBL = {in_calf:"In calf", empty:"Empty — didn't hold", calved:"Calved",
-                 aborted:"Aborted", lost:"Lost the calf", unknown:"Not tested"};
+    const sp = speciesOf(a);
+    const LBL = {in_calf:w("incalf", sp), empty:"Empty — didn't hold",
+                 calved:w("birthed", sp), aborted:"Aborted",
+                 lost:`Lost the ${wl("young", sp)}`, unknown:"Not tested"};
     timeline("Joinings", (js||[]).map(j => ({
         d: j.joined_on || j.due_on,
         t: `${LBL[j.outcome]||j.outcome}${j.sire_name?" — "+j.sire_name:""}`,
@@ -709,7 +740,7 @@ async function viewDetail(){
 
   if(a.sex==="female")
     timeline("Calvings", (c.data||[]).map(r => ({
-      d:r.calved_on, t:r.calf?.stock_code ? `${r.calf.stock_code} ${r.calf.name||""}`.trim() : (r.outcome||"Calved"),
+      d:r.calved_on, t:r.calf?.stock_code ? `${r.calf.stock_code} ${r.calf.name||""}`.trim() : (r.outcome||w("birthed", speciesOf(a))),
       s:[r.assisted?"assisted":"unassisted", r.notes].filter(Boolean).join(" · ")
     })), "No calvings recorded yet.");
 
@@ -1032,6 +1063,8 @@ function viewMap(){
 // ─── recording ──────────────────────────────────────────────────
 function viewRecord(){
   const wrap = el(`<div></div>`);
+  const spBar = speciesBar();
+  if(spBar) wrap.appendChild(spBar);
   if(!canWrite()){
     wrap.appendChild(el(`<div class="empty"><b>Read-only access</b>
       You can look at everything, but recording needs manager access. Ask an owner to change your role.</div>`));
@@ -1055,7 +1088,7 @@ function viewRecord(){
     ["weight","Weights","Scale or tape, one or many head"],
     ["treatment","Treatment","Vaccination, drench — full LPA detail"],
     ["joining","Joining","Mating, pregnancy test, empty result"],
-    ["calving","Calving","A calf on the ground"],
+    ["calving", w("birth"), `A ${wl("young")} on the ground`],
     ["sell","Sell / consign","NVD, waybill, off the property"]]);
   const low = S.feeds.filter(f => f.pct_left != null && f.pct_left <= 20).length;
   group("Manage", [
@@ -1111,6 +1144,11 @@ function say(node, kind, text){
 function formShell(title, inner, onSave){
   const wrap = el(`<div></div>`);
   wrap.appendChild(el(`<h3 class="sec">${title}</h3>`));
+  // Put it above the form rather than in each one: every form that
+  // picks animals needs it, and changing scope mid-form should be
+  // possible without backing out to the herd screen.
+  const spBar = speciesBar();
+  if(spBar) wrap.appendChild(spBar);
   const form = el(`<form></form>`);
   form.appendChild(inner);
   const save = el(`<button type="submit" class="btn">Save</button>`);
@@ -1289,7 +1327,7 @@ function recJoining(){
     chips.querySelectorAll(".chip").forEach(b => b.setAttribute("aria-pressed", b.dataset.m===mode));
     slot.replaceChildren(build[mode]());
   };
-  for(const [m,label] of [["natural","Bull out"],["ai","AI"]]){
+  for(const [m,label] of [["natural", `${w("sire")} out`],["ai","AI"]]){
     const b = el(`<button type="button" class="chip" data-m="${m}">${esc(label)}</button>`);
     b.onclick = () => { mode = m; show(); };
     chips.appendChild(b);
@@ -1300,13 +1338,13 @@ function recJoining(){
 
 // ─── AI: one cow, one straw ─────────────────────────────────────
 function joinAI(){
-  const cows = S.animals.filter(a => a.sex==="female" && isActive(a));
-  if(!cows.length) return el(`<div class="empty"><b>No cows on record</b></div>`);
+  const cows = S.animals.filter(a => a.sex==="female" && isActive(a) && inSpecies(a));
+  if(!cows.length) return el(`<div class="empty"><b>No ${wl("dam")}s on record</b></div>`);
   const straws = S.refs.semen || [];
 
   const inner = el(`<div>
-    <label><span>Cow</span><select name="dam" required>
-      <option value="">Which cow…</option>
+    <label><span>${w("dam")}</span><select name="dam" required>
+      <option value="">Which ${wl("dam")}…</option>
       ${cows.map(a=>`<option value="${a.id}"${S.sel===a.id?" selected":""}>${
         esc(a.stock_code)}${a.name?" · "+esc(a.name):""}</option>`).join("")}
     </select></label>
@@ -1319,11 +1357,12 @@ function joinAI(){
     </select></label>
     <div class="newstraw" hidden>
       <div class="note">Registering it here puts it in the tank list for next time.</div>
-      <label><span>Bull</span><select name="nsire">
+      <label><span>${w("sire")}</span><select name="nsire">
         <option value="">Not on file — type the name below</option>
-        ${(S.refs.sire||[]).map(o=>`<option value="${o.id}">${esc(o.label)}</option>`).join("")}
+        ${(S.refs.sire||[]).filter(o => S.species==="all" || (o.species||"cattle")===S.species)
+          .map(o=>`<option value="${o.id}">${esc(o.label)}</option>`).join("")}
       </select></label>
-      <label><span>Name on the straw</span><input type="text" name="nname" placeholder="Bull name"></label>
+      <label><span>Name on the straw</span><input type="text" name="nname" placeholder="${w("sire")} name"></label>
       <div class="two">
         <label><span>Straw code</span><input type="text" name="ncode"></label>
         <label><span>Breed</span><input type="text" name="nbreed"></label>
@@ -1381,14 +1420,14 @@ function joinAI(){
   due.oninput = () => due.dataset.touched = "1";
   loadGest();
 
-  return formShell("AI — one cow", inner, async (f) => {
-    if(!f.get("dam")) throw new Error("Choose the cow.");
+  return formShell(`AI — one ${wl("dam")}`, inner, async (f) => {
+    if(!f.get("dam")) throw new Error(`Choose the ${wl("dam")}.`);
     let semenId = f.get("semen") || null, sireId = null;
 
     if(semenId === "__new"){
       const label = (S.refs.sire||[]).find(o => o.id===f.get("nsire"))?.label;
       const name  = (f.get("nname")||"").trim() || label;
-      if(!name) throw new Error("Name the bull the straw is from.");
+      if(!name) throw new Error(`Name the ${wl("sire")} the straw is from.`);
       const { data, error } = await db.from("ai_semen").insert({
         sire_id: f.get("nsire")||null, sire_name: name,
         breed:(f.get("nbreed")||"").trim()||null, straw_code:(f.get("ncode")||"").trim()||null,
@@ -1431,12 +1470,13 @@ function joinAI(){
 function joinNatural(){
   if(!S.paddocks.length)
     return el(`<div class="empty"><b>No paddocks yet</b>
-      A bull goes out to a mob, so there needs to be a paddock to put him in.</div>`);
+      A ${wl("sire")} goes out to a mob, so there needs to be a paddock to put him in.</div>`);
 
   const inner = el(`<div>
-    <label><span>Bull</span><select name="sire" required>
-      <option value="">Which bull…</option>
-      ${(S.refs.sire||[]).map(o=>`<option value="${o.id}">${esc(o.label)}</option>`).join("")}
+    <label><span>${w("sire")}</span><select name="sire" required>
+      <option value="">Which ${wl("sire")}…</option>
+      ${(S.refs.sire||[]).filter(o => S.species==="all" || (o.species||"cattle")===S.species)
+        .map(o=>`<option value="${o.id}">${esc(o.label)}</option>`).join("")}
     </select></label>
     <label><span>Out with</span><select name="paddock" required>
       <option value="">Choose a paddock…</option>
@@ -1444,8 +1484,8 @@ function joinNatural(){
         esc(p.name)} — ${p.head||0} head</option>`).join("")}
     </select></label>
     <div class="two">
-      <label><span>Bull in</span><input type="date" name="on" value="${today()}"></label>
-      <label><span>Bull out</span><input type="date" name="out"></label>
+      <label><span>${w("sire")} in</span><input type="date" name="on" value="${today()}"></label>
+      <label><span>${w("sire")} out</span><input type="date" name="out"></label>
     </div>
     ${joinCommon()}
     <label><span>Notes</span><input type="text" name="notes" placeholder="Applies to the whole mob"></label>
@@ -1462,14 +1502,14 @@ function joinNatural(){
     listWrap.replaceChildren();
     const p = S.paddocks.find(x => x.id===pk.value);
     if(!p) return;
-    const here    = S.animals.filter(a => isActive(a) && a.paddock_id===p.id);
+    const here    = S.animals.filter(a => isActive(a) && inSpecies(a) && a.paddock_id===p.id);
     const females = here.filter(a => a.sex==="female");
     const others  = here.filter(a => a.sex!=="female");
 
     listWrap.appendChild(el(`<h3 class="sec" style="padding-left:0">Who he's running with</h3>`));
     if(!females.length){
       listWrap.appendChild(el(`<div class="empty"><b>No females in ${esc(p.name)}</b>
-        Either the bull's in the wrong paddock or the stock haven't been moved yet.</div>`));
+        Either the ${wl("sire")} is in the wrong paddock or the stock haven't been moved yet.</div>`));
       return;
     }
 
@@ -1509,14 +1549,14 @@ function joinNatural(){
       listWrap.appendChild(el(`<div class="note">Also in ${esc(p.name)}:
         ${others.map(a => `${esc(a.stock_code)} (${esc(a.class||a.sex||"?")})`).join(", ")}.
         Not joined — check they're meant to be there.</div>`));
-    listWrap.appendChild(el(`<p class="hint">Due dates are the earliest possible: bull in
-      plus each cow's own gestation. Change a number and it's remembered against her.
+    listWrap.appendChild(el(`<p class="hint">Due dates are the earliest possible: ${wl("sire")} in
+      plus each ${wl("dam")}'s own gestation. Change a number and it's remembered against her.
       Test results go on one at a time later, in the joining register.</p>`));
   };
   pk.onchange = fill; fill();
 
-  return formShell("Bull out to a mob", inner, async (f) => {
-    if(!f.get("sire"))    throw new Error("Choose the bull.");
+  return formShell(`${w("sire")} out to a mob`, inner, async (f) => {
+    if(!f.get("sire"))    throw new Error(`Choose the ${wl("sire")}.`);
     if(!f.get("paddock")) throw new Error("Choose the paddock he went out to.");
     const picked = [...listWrap.querySelectorAll(".mob label")]
       .filter(l => l.querySelector("input[type=checkbox]").checked);
