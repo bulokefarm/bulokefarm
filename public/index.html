@@ -831,7 +831,8 @@ function treeControls(){
   };
   chip(`All families`, S.treeFam===null, () => { S.treeFam=null; render(); });
   for(const r of roots)
-    chip(`${r.kind==="ghost" ? r.label : r.animal.stock_code} · ${size(r)}`,
+    chip(`${r.kind==="ghost" ? (r.label || "Unknown")
+           : (r.animal.stock_code || r.animal.name || "Untagged")} · ${size(r)}`,
          S.treeFam===r.key, () => { S.treeFam=r.key; render(); });
 
   const wrap = el(`<div></div>`);
@@ -875,14 +876,7 @@ function treeControls(){
   return wrap;
 }
 
-// The branch shows one parent; this names the other, so the pedigree is
-// readable both ways round without redrawing.
-function parentTag(a){
-  const sire = a.sire_name ? "♂ " + a.sire_name : null;
-  const dam  = (a.dam_name || a.dam_code) ? "♀ " + (a.dam_code || a.dam_name) : null;
-  const both = treeLink() === "sire" ? [dam, sire] : [sire, dam];
-  return (both.filter(Boolean).join(" · ") || "no pedigree").slice(0, 26);
-}
+const sexMark = a => a.sex === "female" ? "♀" : a.sex === "wether" ? "⚲" : "♂";
 
 function treeSVG(match){
   const all = buildForest();
@@ -892,7 +886,10 @@ function treeSVG(match){
     return el(`<div class="empty"><b>No pedigree yet</b>${
       treeLink()==="dam" ? "Dams" : "Sires"} need recording before a tree can be drawn.</div>`);
 
-  const NW=158, NH=54, GAPX=14, GAPY=48;
+  // Age, sire and dam stacked rather than run together on one line —
+  // three facts separated by middots read as one long string, and the
+  // sire and dam are the two you scan a pedigree for.
+  const NW=176, NH=86, GAPX=14, GAPY=44;
   let leaf = 0, maxD = 0;
   const seen = new Set();
   const place = (n, d) => {
@@ -931,13 +928,14 @@ function treeSVG(match){
     if(n.kind==="ghost")
       return `<g><rect x="${x}" y="${y}" width="${NW}" height="${NH}" rx="9"
         fill="#F2F2EE" stroke="var(--rule)" stroke-width="1.5" stroke-dasharray="4 3"/>
-        <text x="${x+12}" y="${y+23}" font-size="13" font-weight="700" fill="#5A574E">${esc(n.label)}</text>
-        <text x="${x+12}" y="${y+40}" font-size="11" fill="#5A574E">not in the herd</text></g>`;
+        <text x="${x+12}" y="${y+30}" font-size="13" font-weight="700" fill="#5A574E">${
+          esc((n.label||"Unknown").slice(0,22))}</text>
+        <text x="${x+12}" y="${y+50}" font-size="11" fill="#5A574E">not in the herd</text></g>`;
     if(n.kind==="pending")
       return `<g><rect x="${x}" y="${y}" width="${NW}" height="${NH}" rx="9"
         fill="#FFF" stroke="#8F5A0C" stroke-width="1.5" stroke-dasharray="5 4"/>
-        <text x="${x+12}" y="${y+23}" font-size="13" font-weight="700" fill="#8F5A0C">Due ${fmt(n.label)}</text>
-        <text x="${x+12}" y="${y+40}" font-size="11" fill="#5A574E">${esc(n.sire||n.season||"")}</text></g>`;
+        <text x="${x+12}" y="${y+30}" font-size="13" font-weight="700" fill="#8F5A0C">Due ${fmt(n.label)}</text>
+        <text x="${x+12}" y="${y+50}" font-size="11" fill="#5A574E">${esc(n.sire||n.season||"")}</text></g>`;
 
     const a = n.animal, on = match(a), col = hue(a.year_letter);
     const gone = !isActive(a);
@@ -947,12 +945,15 @@ function treeSVG(match){
         stroke="${on?col:"var(--rule)"}" stroke-width="${on?2.2:1.4}"
         stroke-dasharray="${gone?"5 3":"none"}"/>
       <rect x="${x}" y="${y}" width="7" height="${NH}" rx="3.5" fill="${col}"/>
-      <text x="${x+16}" y="${y+22}" font-size="14" font-weight="700"
-        font-family="ui-monospace,Menlo,monospace" fill="#16150F">${esc(a.stock_code)}</text>
-      <text x="${x+68}" y="${y+22}" font-size="12.5" fill="#16150F">${esc((a.name||"").slice(0,13))}</text>
-      <text x="${x+16}" y="${y+40}" font-size="10.5" fill="#5A574E">${
-        esc(a.sex==="female"?"♀":a.sex==="wether"?"⚲":"♂")} ${esc(age(a.age_years))} · ${
-        esc(parentTag(a))}</text>
+      <text x="${x+16}" y="${y+21}" font-size="14" font-weight="700"
+        font-family="ui-monospace,Menlo,monospace" fill="#16150F">${esc(a.stock_code||"untagged")}</text>
+      <text x="${x+16}" y="${y+38}" font-size="12" fill="#16150F">${esc((a.name||"").slice(0,20))}</text>
+      <text x="${x+16}" y="${y+55}" font-size="10.5" fill="#5A574E">${
+        sexMark(a)} ${esc(age(a.age_years))}</text>
+      <text x="${x+16}" y="${y+69}" font-size="10.5" fill="${a.sire_name?"#5A574E":"#A8A49A"}">♂ ${
+        esc((a.sire_name||"not recorded").slice(0,22))}</text>
+      <text x="${x+16}" y="${y+82}" font-size="10.5" fill="${(a.dam_code||a.dam_name)?"#5A574E":"#A8A49A"}">♀ ${
+        esc((a.dam_code||a.dam_name||"not recorded").slice(0,22))}</text>
     </g>`;
   }
   roots.forEach(walk);
