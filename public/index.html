@@ -615,7 +615,7 @@ async function viewDue(){
   if(spBar) wrap.appendChild(spBar);
 
   const { data, error } = await db.from("expected_calving")
-    .select("id,due_on,season,cycle,dam:dam_id(stock_code,name,species),sire:sire_id(name)")
+    .select("id,due_on,season,cycle,dam:dam_id(stock_code,name,species),sire:sire_id(name,stock_code)")
     .is("resolved_calving_id", null).order("due_on");
   if(error){ wrap.appendChild(el(`<div class="msg err">${esc(error.message)}</div>`)); return wrap; }
 
@@ -640,7 +640,8 @@ async function viewDue(){
         ${tagHTML(r.dam?.stock_code)}
         <span class="meta">
           <span class="nm">${esc(r.dam?.name||"")}</span>
-          <span class="sub">${r.sire?.name?"to "+esc(r.sire.name):"sire not recorded"}</span>
+          <span class="sub">${(r.sire?.name || r.sire?.stock_code)
+            ? "to " + esc(r.sire.name || r.sire.stock_code) : "sire not recorded"}</span>
         </span>
         <span class="rt">${fmt(r.due_on)}<br>${days>0?"in "+days+"d":"overdue"}</span>
       </div></li>`));
