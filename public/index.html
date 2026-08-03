@@ -353,6 +353,7 @@ const sLabel = sp => ({cattle:"Cattle", sheep:"Sheep"})[sp] || sp;
 const inSpecies = a => S.species === "all" || a.species === S.species;
 const speciesOf = a => a?.species || "cattle";
 const hasBoth = () => new Set(S.animals.map(speciesOf)).size > 1;
+const hasSpecies = sp => S.animals.some(a => speciesOf(a) === sp);
 
 const CLASS_ORDER = {
   cattle: ["breeder","harvest","yearling","weaner","calf","protector","bull"],
@@ -699,10 +700,13 @@ async function viewDetail(){
   if(shown("notes") && a.notes) F("Notes", esc(a.notes), true);
   wrap.appendChild(el(`<dl class="facts">${facts.join("")}</dl>`));
 
-  const [w, t, c] = await Promise.all([
+  const [w, t, c, sh] = await Promise.all([
     db.from("weight_event").select("weighed_on,weight_kg,method").eq("animal_id",a.id).order("weighed_on",{ascending:false}),
     db.from("treatment_animal").select("treatment:treatment_id(treated_on,product_name,batch_number,withholding_days,safe_for_slaughter)").eq("animal_id",a.id),
-    db.from("calving").select("calved_on,outcome,assisted,notes,calf:calf_id(stock_code,name)").eq("dam_id",a.id).order("calved_on",{ascending:false})
+    db.from("calving").select("calved_on,outcome,assisted,notes,calf:calf_id(stock_code,name)").eq("dam_id",a.id).order("calved_on",{ascending:false}),
+    speciesOf(a) === "sheep"
+      ? db.from("shearing_animal").select("shearing:shearing_id(shorn_on,kind,description,contractor,bales,micron)").eq("animal_id",a.id)
+      : Promise.resolve({data:[]})
   ]);
 
   const timeline = (title, rows, empty) => {
@@ -724,6 +728,17 @@ async function viewDetail(){
       s:[r.batch_number && "batch "+r.batch_number,
          r.safe_for_slaughter && "clear "+fmt(r.safe_for_slaughter)].filter(Boolean).join(" · ")
     })), "No treatments recorded yet.");
+
+  if(speciesOf(a) === "sheep"){
+    const shed = (sh.data||[]).map(r => r.shearing).filter(Boolean)
+      .sort((x,y) => y.shorn_on.localeCompare(x.shorn_on));
+    timeline("Shed work", shed.map(r => ({
+        d: r.shorn_on,
+        t: SHED_KIND.find(k => k[0]===r.kind)?.[1] || r.kind,
+        s: [r.description, r.contractor, r.bales && `${r.bales} bales`,
+            r.micron && `${r.micron} micron`].filter(Boolean).join(" · ")
+      })), "No shearing or marking recorded yet.");
+  }
 
   if(a.sex==="female"){
     const { data:js } = await db.from("v_joining_result").select("*")
@@ -1144,14 +1159,19 @@ function viewRecord(){
     }
     wrap.appendChild(ul);
   };
-  group("What are you recording?", [
+  // Shearing is sheep work. On a cattle-only place the entry would be
+  // dead weight in a menu that is meant to be short.
+  const jobs = [
     ["feed","Feed out","Hay or grain to a paddock"],
     ["move","Move mob","Shift stock to another paddock"],
     ["weight","Weights","Scale or tape, one or many head"],
     ["treatment","Treatment","Vaccination, drench — full LPA detail"],
     ["joining","Joining","Mating, pregnancy test, empty result"],
     ["calving", w("birth"), `A ${wl("young")} on the ground`],
-    ["sell","Sell / consign","NVD, waybill, off the property"]]);
+    ["sell","Sell / consign","NVD, waybill, off the property"]];
+  if(hasSpecies("sheep"))
+    jobs.splice(5, 0, ["shearing","Shed work","Shearing, crutching, marking"]);
+  group("What are you recording?", jobs);
   const low = S.feeds.filter(f => f.pct_left != null && f.pct_left <= 20).length;
   group("Manage", [
     ["store","Feed store", low ? `${low} low on stock` : `${S.feeds.length} in the shed`],
@@ -1650,6 +1670,91 @@ function joinNatural(){
     const name = S.paddocks.find(p => p.id===f.get("paddock"))?.name || "the paddock";
     return `${rows.length} joined in ${name}${moved.length
       ? `, ${moved.length} gestation length${moved.length>1?"s":""} updated` : ""}.`;
+  });
+}
+
+// ─── shed work ──────────────────────────────────────────────────
+// Shearing, crutching, the summer clip and marking are one shape: a
+// date, a mob, and a few facts about the job. Modelled like a
+// treatment rather than given four screens.
+const SHED_KIND = [
+  ["shearing", "Shearing",  "Full clip off"],
+  ["crutching","Crutching", "Around the britch"],
+  ["clip",     "Summer clip","A short clip in the heat"],
+  ["marking",  "Marking",   "Tails, rings, ear marks"]
+];
+
+function recShearing(){
+  const inner = el(`<div>
+    <label><span>Date</span><input type="date" name="on" value="${today()}" required></label>
+    <label><span>Job</span><select name="kind">
+      ${SHED_KIND.map(([k,t,sub]) => `<option value="${k}">${t} — ${sub}</option>`).join("")}
+    </select></label>
+    <label><span>Description</span><input type="text" name="desc"
+      placeholder="Autumn shearing, lamb marking…"></label>
+    <label><span>Contractor</span><input type="text" name="contractor" placeholder="Optional"></label>
+    <div class="two">
+      <label><span>Bales</span><input type="number" name="bales" step="0.5" min="0" inputmode="decimal"></label>
+      <label><span>Micron</span><input type="number" name="micron" step="0.1" min="1" inputmode="decimal"></label>
+    </div>
+    <p class="hint" id="woolhint">Bales and micron only make sense for a clip — leave them
+      blank for marking or crutching.</p>
+    <label><span>Notes</span><input type="text" name="notes" placeholder="Optional"></label>
+    <label><span>Which sheep</span></label></div>`);
+
+  const pick = animalPicker(true, []);
+  inner.appendChild(pick);
+  const count = el(`<p class="hint">No sheep selected.</p>`);
+  pick.addEventListener("pick", e => count.textContent =
+    !e.detail ? "No sheep selected." : e.detail===1 ? "1 head selected." : `${e.detail} head selected.`);
+
+  const chips = el(`<div class="chips" style="padding:8px 0 0"></div>`);
+  const setAll = fn => pick.querySelectorAll(".pick").forEach((b,i) => {
+    const want = fn(pick.list[i]);
+    if(want !== pick.chosen.has(pick.list[i].id)) b.click();
+  });
+  for(const [label, fn] of [["Everything", () => true],
+                            ["Ewes only", a => a.class==="breeder"],
+                            ["Lambs only", a => a.class==="lamb"],
+                            ["None", () => false]]){
+    const b = el(`<button type="button" class="chip">${esc(label)}</button>`);
+    b.onclick = () => setAll(fn);
+    chips.appendChild(b);
+  }
+  inner.appendChild(chips);
+  inner.appendChild(count);
+
+  // Wool figures belong to a clip. Dimmed rather than removed, so it is
+  // obvious they exist and why they are not offered.
+  const kind = inner.querySelector('[name=kind]');
+  const wool = [inner.querySelector('[name=bales]'), inner.querySelector('[name=micron]')];
+  const tune = () => {
+    const clip = kind.value === "shearing" || kind.value === "clip";
+    wool.forEach(i => { i.disabled = !clip; i.parentElement.style.opacity = clip ? 1 : .45;
+                        if(!clip) i.value = ""; });
+    inner.querySelector("#woolhint").hidden = clip;
+  };
+  kind.onchange = tune; tune();
+
+  return formShell("Record shed work", inner, async (f) => {
+    const ids = [...pick.chosen];
+    if(!ids.length) throw new Error("Choose the sheep the job was done on.");
+    const { data, error } = await db.from("shearing").insert({
+      shorn_on: f.get("on"), kind: f.get("kind"),
+      description: (f.get("desc")||"").trim() || null,
+      contractor: (f.get("contractor")||"").trim() || null,
+      bales:  f.get("bales")  ? Number(f.get("bales"))  : null,
+      micron: f.get("micron") ? Number(f.get("micron")) : null,
+      notes: (f.get("notes")||"").trim() || null
+    }).select("id").single();
+    if(error) throw error;
+
+    const { error:e2 } = await db.from("shearing_animal")
+      .insert(ids.map(id => ({ shearing_id: data.id, animal_id: id })));
+    if(e2) throw new Error(`The job saved but the sheep didn't attach: ${e2.message}`);
+
+    const label = SHED_KIND.find(k => k[0]===f.get("kind"))?.[1] || "Shed work";
+    return `${label} recorded for ${ids.length} head.`;
   });
 }
 
@@ -2384,6 +2489,7 @@ async function render(){
   else if(S.view==="rec:treatment") body = recTreatment();
   else if(S.view==="rec:calving")   body = recCalving();
   else if(S.view==="rec:joining")   body = recJoining();
+  else if(S.view==="rec:shearing")  body = recShearing();
   else if(S.view==="rec:move")      body = recMove();
   else if(S.view==="rec:feed")      body = recFeed();
   else if(S.view==="rec:sell")      body = recSell();
