@@ -342,10 +342,36 @@ const defaultPrefs = () => ({
 // so it's still here. Sold and died are gone; they stay in the
 // pedigree but never in a head count.
 const isActive = a => !a.life_state || a.life_state === "alive";
+
+// ─── species ────────────────────────────────────────────────────
+// The class vocabulary differs between the two — a ewe is not a
+// breeder cow and a lamb is not a calf — so the scope has to be
+// settled before the words on the buttons can be.
+const SPECIES = ["cattle","sheep"];
+const inSpecies = a => S.species === "all" || a.species === S.species;
+const speciesOf = a => a?.species || "cattle";
+const hasBoth = () => new Set(S.animals.map(speciesOf)).size > 1;
+
+const CLASS_ORDER = {
+  cattle: ["breeder","harvest","yearling","weaner","calf","protector","bull"],
+  sheep:  ["breeder","harvest","yearling","lamb","ram"]
+};
+const CLASS_LABEL = {
+  cattle: {breeder:"Breeders", harvest:"Harvest", yearling:"Yearlings", weaner:"Weaners",
+           calf:"Calves", protector:"Protector", bull:"Bulls"},
+  sheep:  {breeder:"Ewes", harvest:"Harvest", yearling:"Yearlings", lamb:"Lambs", ram:"Rams"}
+};
+// Sheep run 145 days, cattle 285. Her own figure still wins.
+const GEST_BY_SPECIES = { cattle: 285, sheep: 145 };
+const classesFor = sp => sp === "all"
+  ? [...new Set([...CLASS_ORDER.cattle, ...CLASS_ORDER.sheep])]
+  : CLASS_ORDER[sp];
+const classLabel = (k, sp) => (CLASS_LABEL[sp] || CLASS_LABEL.cattle)[k]
+  || (CLASS_LABEL.cattle[k] || CLASS_LABEL.sheep[k] || k);
 const shown = k => S.prefs?.fields?.[k] !== false;
 
 // ─── state ──────────────────────────────────────────────────────
-const S = { me:null, animals:[], herdMode:"list", pending:[], treeFam:undefined, treePend:false, paddocks:[], feeds:[], refs:{}, prefs:null, selFeed:null, view:"herd", filter:"all", q:"", sel:null, selPk:null, busy:false };
+const S = { me:null, animals:[], herdMode:"list", species:"all", pending:[], treeFam:undefined, treePend:false, paddocks:[], feeds:[], refs:{}, prefs:null, selFeed:null, view:"herd", filter:"all", q:"", sel:null, selPk:null, busy:false };
 
 // ═══ data ═══════════════════════════════════════════════════════
 async function loadHerd(){
@@ -372,13 +398,14 @@ async function loadRefs(){
   const [h,p,b,s] = await Promise.all([
     db.from("heritage").select("id,name").order("name"),
     db.from("property").select("id,pic").order("pic"),
-    db.from("v_breeding_stock").select("id,label,sex,origin").order("label"),
+    db.from("v_breeding_stock").select("id,label,sex,origin,species").order("label"),
     db.from("v_ai_semen").select("*").is("retired_on", null).order("sire_name")
   ]);
   S.refs = {
     heritage: h.data||[], property: (p.data||[]).map(x=>({id:x.id,label:x.pic})),
     sire: (b.data||[]).filter(x=>x.origin==="reference"||x.sex==="male"),
     dam:  (b.data||[]).filter(x=>x.origin==="reference"||x.sex==="female"),
+    _all: b.data||[],
     semen: s.data||[]
   };
 }
@@ -414,14 +441,27 @@ function viewHerd(){
   bT.onclick = () => { S.herdMode="tree"; render(); };
   wrap.appendChild(bar);
 
-  const live = S.animals.filter(isActive);
-  const past = S.animals.filter(a => !isActive(a));
+  // The species row only appears when there is more than one on the
+  // books. A cattle-only farm should never see it.
+  if(hasBoth()){
+    const sp = el(`<div class="search" style="padding-top:0"><div class="seg">
+      <button aria-pressed="${S.species==="all"}">All stock</button>
+      <button aria-pressed="${S.species==="cattle"}">Cattle</button>
+      <button aria-pressed="${S.species==="sheep"}">Sheep</button>
+    </div></div>`);
+    sp.querySelectorAll(".seg button").forEach((b,i) => b.onclick = () => {
+      S.species = ["all","cattle","sheep"][i]; S.filter = "all"; render();
+    });
+    wrap.appendChild(sp);
+  }
+
+  const live = S.animals.filter(a => isActive(a) && inSpecies(a));
+  const past = S.animals.filter(a => !isActive(a) && inSpecies(a));
   const counts = { all: live.length, past: past.length };
   for(const a of live) counts[a.class] = (counts[a.class]||0)+1;
-  const cats = [["all","On hand"],["breeder","Breeders"],["harvest","Harvest"],
-                ["yearling","Yearlings"],["weaner","Weaners"],["calf","Calves"],
-                ["protector","Protector"],["bull","Bulls"]]
-                .filter(([k]) => k==="all" || counts[k]);
+  const cats = [["all","On hand"],
+    ...classesFor(S.species).map(k => [k, classLabel(k, S.species)])]
+    .filter(([k]) => k==="all" || counts[k]);
   if(counts.past) cats.push(["past","Sold & died"]);
 
   // In Paddocks mode the filters are paddocks — and only the ones with
@@ -447,12 +487,12 @@ function viewHerd(){
   wrap.appendChild(chips);
 
   const q = S.q.trim().toLowerCase();
-  const inScope = a =>
+  const inScope = a => inSpecies(a) && (
       S.herdMode==="paddock" && S.filter==="all" ? isActive(a)
     : S.filter==="past"      ? !isActive(a)
     : S.filter==="pk:none"   ? isActive(a) && !a.paddock_id
     : S.filter.startsWith("pk:") ? isActive(a) && a.paddock_id===S.filter.slice(3)
-    : isActive(a) && (S.filter==="all" || a.class===S.filter);
+    : isActive(a) && (S.filter==="all" || a.class===S.filter));
   const match = a => inScope(a) &&
     (!q || [a.stock_code,a.name,a.breed,a.nlis_tag].some(v => (v||"").toLowerCase().includes(q)));
 
@@ -592,6 +632,7 @@ async function viewDetail(){
     `<div class="fact"${wide?' style="grid-column:1/-1"':""}><dt>${label}</dt>
      <dd${mono?' class="mono"':""}>${val}</dd></div>`);
 
+  if(hasBoth())           F("Species", esc(speciesOf(a)));
   if(shown("dob"))        F("Born", fmt(a.dob));
   if(shown("life_state")||shown("class"))
     F("Status", `${esc(a.life_state||"—")}${shown("class")?" · "+esc(a.class||"—"):""}`);
@@ -1042,7 +1083,9 @@ function viewRecord(){
 function animalPicker(multi=true, preset=[]){
   const chosen = new Set(preset);
   const box = el(`<div class="picker"></div>`);
-  const list = S.animals.filter(isActive);
+  // Recording against the wrong species is a whole class of mistake
+  // that simply can't be made if it isn't on the screen.
+  const list = S.animals.filter(a => isActive(a) && inSpecies(a));
   box.list = list;
   for(const a of list){
     const b = el(`<button type="button" class="pick" aria-pressed="${chosen.has(a.id)}"
@@ -1215,7 +1258,8 @@ function recTreatment(){
 // the bull-out case a typing exercise and the AI case vague about
 // which straw was used.
 const GEST_DEFAULT = 285;
-const gestOf = a => Number(a?.gestation_days) || GEST_DEFAULT;
+const gestFor = a => Number(a?.gestation_days)
+  || GEST_BY_SPECIES[speciesOf(a)] || GEST_DEFAULT;
 const addDays = (iso, n) => {
   const d = new Date(iso); d.setDate(d.getDate() + n);
   return d.toISOString().slice(0,10);
@@ -1301,7 +1345,7 @@ function joinAI(){
     <p class="hint">How well the job went — heat signs, timing, how the straw handled.
       Leave it blank if you'd rather not guess; blank and zero aren't the same thing.</p>
     <div class="two">
-      <label><span>Gestation days</span><input type="number" name="gest" value="${GEST_DEFAULT}"
+      <label><span>Gestation days</span><input type="number" name="gest" value="${GEST_BY_SPECIES[S.species] || GEST_DEFAULT}"
         min="250" max="310" inputmode="numeric"></label>
       <label><span>Due</span><input type="date" name="due"></label>
     </div>
@@ -1323,15 +1367,15 @@ function joinAI(){
   // point; changing it here is her being corrected, not an exception.
   const loadGest = () => {
     const a = cows.find(c => c.id===dam.value);
-    gest.value = gestOf(a);
+    gest.value = gestFor(a);
     hint.textContent = !a ? ""
       : a.gestation_days ? `${a.stock_code} runs ${a.gestation_days} days.`
-      : `No gestation on file for ${a.stock_code} — using ${GEST_DEFAULT}. Change it and it's remembered.`;
+      : `No gestation on file for ${a.stock_code} — using ${gestFor(a)} for ${speciesOf(a)}. Change it and it's remembered.`;
     calc();
   };
   const calc = () => {
     if(!on.value || due.dataset.touched) return;
-    due.value = addDays(on.value, Number(gest.value)||GEST_DEFAULT);
+    due.value = addDays(on.value, Number(gest.value)||gestFor(cows.find(c=>c.id===dam.value)));
   };
   dam.onchange = loadGest; on.onchange = calc; gest.onchange = calc;
   due.oninput = () => due.dataset.touched = "1";
@@ -1376,7 +1420,7 @@ function joinAI(){
     if(error) throw error;
 
     const cow = cows.find(c => c.id===f.get("dam"));
-    if(g !== gestOf(cow))
+    if(g !== gestFor(cow))
       await db.from("animal").update({gestation_days:g}).eq("id", cow.id);
 
     return `AI recorded for ${cow?.stock_code}. Result goes on in the register once she's tested.`;
@@ -1435,7 +1479,7 @@ function joinNatural(){
     const list = el(`<div class="mob"></div>`);
     for(const a of females){
       const on  = a.class==="breeder";
-      const g   = gestOf(a);
+      const g   = gestFor(a);
       const row = el(`<label data-id="${a.id}" data-g="${g}">
         <input type="checkbox"${on?" checked":""}>
         ${tagHTML(a.stock_code)}
@@ -2033,7 +2077,7 @@ function editAnimal(){
       ${["alive","sold","died","slaughtered"].map(o=>`<option ${a.life_state===o?"selected":""}>${o}</option>`).join("")}
     </select></label>
     <label><span>Class</span><select name="_class"><option value="">—</option>
-      ${["calf","weaner","yearling","harvest","breeder","protector","bull"]
+      ${classesFor(speciesOf(a))
         .map(o=>`<option ${a.class===o?"selected":""}>${o}</option>`).join("")}
     </select></label></div>
     <label><span>Date sold, died or left</span><input type="date" name="_on"
@@ -2097,8 +2141,7 @@ function bulkEdit(){
       <label><span>State</span><select name="b_life"><option value="">—</option>
         ${["alive","sold","died","slaughtered"].map(o=>`<option>${o}</option>`).join("")}</select></label>
       <label><span>Class</span><select name="b_class"><option value="">—</option>
-        ${["calf","weaner","yearling","harvest","breeder","protector","bull"]
-          .map(o=>`<option>${o}</option>`).join("")}</select></label>
+        ${classesFor(S.species).map(o=>`<option>${o}</option>`).join("")}</select></label>
     </div>
     <label><span>Effective from</span><input type="date" name="b_on" value="${today()}"></label>
     <h3 class="sec" style="padding-left:0">Which animals</h3>`));
