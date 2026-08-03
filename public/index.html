@@ -127,6 +127,7 @@ nav button b{display:block;font-size:19px;font-weight:600;letter-spacing:0;margi
 h3.sec{margin-top:4px}
 .chips{display:flex;gap:7px;overflow-x:auto;padding:9px 14px 3px;scrollbar-width:none}
 .chips::-webkit-scrollbar{display:none}
+.chips.wrap{flex-wrap:wrap;overflow-x:visible;row-gap:6px}
 .chip{
   flex:none;border:1px solid var(--rule);background:var(--card);border-radius:99px;
   padding:7px 13px;font-size:13px;font-weight:600;cursor:pointer;
@@ -823,7 +824,7 @@ function treeControls(){
   if(S.treeFam === undefined)
     S.treeFam = (roots.length > 3 && window.innerWidth < 760) ? roots[0].key : null;
 
-  const box = el(`<div class="chips" style="padding-top:10px"></div>`);
+  const box = el(`<div class="chips wrap" style="padding-top:10px"></div>`);
   const chip = (label, active, fn) => {
     const b = el(`<button class="chip" aria-pressed="${active}">${esc(label)}</button>`);
     b.onclick = fn; box.appendChild(b);
@@ -971,9 +972,10 @@ function treeSVG(match){
   roots.forEach(collect);
   const hits = inTree.filter(match).length;
   wrap.appendChild(el(`<p class="hint" style="padding:11px 14px 14px">
-    Descent follows the dam; the sire is named on each animal. Dashed grey is a cow that was never
-    on the place${S.treePend?", amber is a calving still to come":""}. Filters dim rather than hide,
-    so the line stays whole — ${hits} of ${inTree.length} shown here match.${
+    Descent follows the ${treeLink()}; both parents are named on each animal.
+    Dashed grey is a ${wl(treeLink()==="sire" ? "sire" : "dam", treeSpecies())} that was never
+    on the place${S.treePend && treeLink()==="dam" ? `, amber is a ${wl("birth", treeSpecies())} still to come` : ""}.
+    Filters dim rather than hide, so the line stays whole — ${hits} of ${inTree.length} shown here match.${
     W > 400 ? " Scroll sideways for the rest." : ""}</p>`));
   return wrap;
 }
