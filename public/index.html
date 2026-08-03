@@ -1459,7 +1459,7 @@ function joinAI(){
       </div>
     </div>
     <div class="two">
-      <label><span>Inseminated on</span><input type="date" name="on" value="${today()}"></label>
+      <label><span>Inseminated on</span><input type="date" name="on" value="${today()}" required></label>
       <label><span>Confidence %</span><input type="number" name="conf" min="0" max="100"
         step="5" inputmode="numeric" placeholder="—"></label>
     </div>
@@ -1566,7 +1566,7 @@ function joinNatural(){
         esc(p.name)} — ${p.head||0} head</option>`).join("")}
     </select></label>
     <div class="two">
-      <label><span>${w("sire")} in</span><input type="date" name="on" value="${today()}"></label>
+      <label><span>${w("sire")} in</span><input type="date" name="on" value="${today()}" required></label>
       <label><span>${w("sire")} out</span><input type="date" name="out"></label>
     </div>
     ${joinCommon()}
