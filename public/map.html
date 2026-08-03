@@ -196,7 +196,7 @@ async function saveNew(){
   if(!name) return say("err","Give the paddock a name.");
   if(S.pts.length < 3) return say("err","A paddock needs at least three corners.");
   const ring = [...S.pts, S.pts[0]];                     // GeoJSON rings close
-  const { data:prop } = await db.from("property").select("id").eq("pic","3BWWY089").maybeSingle();
+  const { data:prop } = await db.from("property").select("id").eq("is_primary", true).maybeSingle();
   const { error } = await db.from("paddock").insert({
     property_id: prop?.id ?? null,
     name, code: $("#f-code").value.trim() || null,

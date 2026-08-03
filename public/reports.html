@@ -112,8 +112,8 @@ footer{margin-top:34px;padding-top:10px;border-top:1px solid var(--rule);
 <body>
 <div class="sheet">
   <div class="masthead">
-    <img src="/mark.png" alt="" width="28" height="28" style="flex:none"><h1>Buloke Farm</h1>
-    <div class="pic">267 North Canal Rd, Trafalgar VIC 3824<br>PIC <b>3BWWY089</b></div>
+    <img src="/mark.png" alt="" width="28" height="28" style="flex:none"><h1 id="tradingname">Buloke Farm</h1>
+    <div class="pic" id="letterhead">&nbsp;</div>
     <button id="navbtn" class="noprint" aria-label="Menu">&#8801;</button>
   </div>
 
@@ -154,6 +154,20 @@ const timedFetch = (url, opts = {}) => {
 const db = createClient(SUPABASE_URL, SUPABASE_ANON, { global: { fetch: timedFetch } });
 
 const $ = s => document.querySelector(s);
+
+// The letterhead is a fact about the business, not a string in the
+// markup. With a second PIC on the same land there is more than one
+// right answer, and the primary registration is the one this page
+// trades under.
+let HOME = { pic: "", trading_name: "Buloke Farm", address: "" };
+async function loadHome(){
+  const { data } = await db.from("property")
+    .select("pic,trading_name,address").eq("is_primary", true).maybeSingle();
+  if(data) HOME = { ...HOME, ...data };
+  document.getElementById("tradingname").textContent = HOME.trading_name || "Buloke Farm";
+  document.getElementById("letterhead").innerHTML =
+    `${esc(HOME.address||"")}<br>PIC <b>${esc(HOME.pic||"—")}</b>`;
+}
 const esc = s => String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const fmt = d => d ? new Date(d+"T00:00:00").toLocaleDateString("en-AU",{day:"2-digit",month:"short",year:"numeric"}) : "—";
 const dash = v => (v===null||v===undefined||v==="") ? '<span class="flag">missing</span>' : esc(v);
@@ -202,7 +216,7 @@ async function run(){
     consignSection(c.data||[], range) +
     joiningSection(j.data||[], range, j.error) +
     `<div class="sig"><div>Producer signature</div><div>Date</div></div>
-     <footer><span>Buloke Farm · PIC 3BWWY089</span>
+     <footer><span>${esc(HOME.trading_name||"Buloke Farm")} · PIC ${esc(HOME.pic)}</span>
      <span>Produced ${new Date().toLocaleString("en-AU")}</span></footer>`;
   wireJoinings();
 }
@@ -659,6 +673,7 @@ window.__signOut = () => db.auth.signOut();
   }
   const { data:{ user } } = await db.auth.getUser();
   if(user){ const { data } = await db.from("farm_user").select("role").eq("id",user.id).maybeSingle(); ME = data; }
+  await loadHome();
   run();
 })();
 </script>
