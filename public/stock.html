@@ -28,6 +28,14 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);f
 .controls label{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ink2)}
 .controls select{display:block;margin-top:4px;border:1px solid var(--rule);
   border-radius:8px;padding:8px 10px;font:inherit;font-size:14px;background:var(--card)}
+/* Years are a set, not a choice. Toggles rather than a multi-select
+   box, because ctrl-clicking a list is a thing nobody remembers how
+   to do and nobody can do at all on a phone. */
+.ychips{display:flex;gap:6px;flex-wrap:wrap;margin-top:5px}
+.ychip{background:var(--card);color:var(--ink);border:1px solid var(--rule);
+  border-radius:99px;padding:6px 13px;font-size:13px;font-weight:600;
+  letter-spacing:0;text-transform:none}
+.ychip[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
 button{border:0;border-radius:8px;padding:10px 16px;font:inherit;font-weight:700;font-size:14px;
   background:var(--accent);color:#fff;cursor:pointer}
 button.ghost{background:var(--card);color:var(--ink);border:1px solid var(--rule)}
@@ -105,7 +113,8 @@ footer{margin-top:34px;padding-top:10px;border-top:1px solid var(--rule);
   </div>
 
   <div class="controls noprint">
-    <label>Financial year<select id="fy"><option value="">All years</option></select></label>
+    <label style="flex:1">Financial years
+      <div class="ychips" id="fy" role="group" aria-label="Financial years"></div></label>
     <button class="ghost" id="print">Print / save as PDF</button>
   </div>
 
@@ -146,22 +155,26 @@ const BUCKETS = [
 ];
 
 let YEARS = [], CLASSES = [];
+const SEL = new Set();       // empty means every year — no special "all" flag to keep in step
 const DRILL = new Map();     // fy -> animal rows, fetched once and kept
 
 // ── the trading account ─────────────────────────────────────────
 function render(){
-  const only = $("#fy").value;
-  const years = only ? YEARS.filter(r => String(r.fy) === only) : YEARS;
+  const years = SEL.size ? YEARS.filter(r => SEL.has(r.fy)) : YEARS;
 
-  if(!years.length){
+  if(!YEARS.length){
     $("#out").innerHTML = `<p class="none">No stock history recorded.</p>`;
+    return;
+  }
+  if(!years.length){
+    $("#out").innerHTML = `<p class="none">No years selected.</p>`;
     return;
   }
 
   let off = 0;
   let h = `<section><h2>Livestock trading account</h2>
     <p class="lede">Cattle, head only · Australian financial years
-      · ${only ? esc(years[0].fy_label) : "all years on record"}
+      · ${SEL.size ? years.map(r => esc(r.fy_label)).join(", ") : "all years on record"}
       · tap a year to see the animals behind it</p>
     <table><thead><tr><th>Year</th><th class="num">Opening</th>
       <th class="num">Purchases</th><th class="num">Natural increase</th>
@@ -197,7 +210,7 @@ function render(){
   h += `</section>`;
 
   // ── closing numbers by class ──────────────────────────────────
-  const cls = only ? CLASSES.filter(c => String(c.fy) === only) : CLASSES;
+  const cls = SEL.size ? CLASSES.filter(c => SEL.has(c.fy)) : CLASSES;
   if(cls.length){
     const names = [...new Set(cls.map(c => c.class))].sort();
     h += `<section><h2>Closing numbers by class</h2>
@@ -314,7 +327,22 @@ document.addEventListener("click", e => {
   if(tr) return toggleYear(tr);
 });
 $("#print").onclick = () => window.print();
-$("#fy").onchange = render;
+
+function paintChips(){
+  $("#fy").querySelectorAll(".ychip").forEach(b =>
+    b.setAttribute("aria-pressed",
+      b.dataset.all !== undefined ? String(!SEL.size) : String(SEL.has(+b.dataset.fy))));
+}
+$("#fy").addEventListener("click", e => {
+  const b = e.target.closest(".ychip");
+  if(!b) return;
+  if(b.dataset.all !== undefined) SEL.clear();
+  else {
+    const fy = +b.dataset.fy;
+    SEL.has(fy) ? SEL.delete(fy) : SEL.add(fy);
+  }
+  paintChips(); render();
+});
 
 window.__signOut = () => db.auth.signOut();
 
@@ -336,8 +364,10 @@ window.__signOut = () => db.auth.signOut();
     return;
   }
   YEARS = y.data || []; CLASSES = c.data || [];
-  $("#fy").innerHTML = `<option value="">All years</option>` +
-    YEARS.map(r => `<option value="${r.fy}">${esc(r.fy_label)}</option>`).join("");
+  $("#fy").innerHTML =
+    `<button type="button" class="ychip" data-all aria-pressed="true">All years</button>` +
+    YEARS.map(r => `<button type="button" class="ychip" data-fy="${r.fy}"
+      aria-pressed="false">${esc(r.fy_label)}</button>`).join("");
   render();
 })();
 </script>
