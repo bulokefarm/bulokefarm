@@ -110,6 +110,8 @@ footer{margin-top:34px;padding-top:10px;border-top:1px solid var(--rule);
   </div>
 
   <div class="controls noprint">
+    <label>Stock
+      <div class="ychips" id="sp" role="group" aria-label="Species"></div></label>
     <label style="flex:1">Financial years
       <div class="ychips" id="fy" role="group" aria-label="Financial years"></div></label>
     <button class="ghost" id="print">Print / save as PDF</button>
@@ -167,24 +169,20 @@ const BUCKETS = [
 
 let YEARS = [], CLASSES = [];
 const SEL = new Set();       // empty means every year — no special "all" flag to keep in step
+const SPP = new Set();       // same again for species
 const DRILL = new Map();     // fy -> animal rows, fetched once and kept
 
 // ── the trading account ─────────────────────────────────────────
-function render(){
-  const years = SEL.size ? YEARS.filter(r => SEL.has(r.fy)) : YEARS;
+// One schedule per species, never a combined one. A ewe and a cow are
+// not interchangeable head: adding them gives a closing number that
+// goes on no tax return and answers no question anyone asks.
+const SPECIES_LABEL = { cattle: "Cattle", sheep: "Sheep" };
+const sLabel = sp => SPECIES_LABEL[sp] || sp;
 
-  if(!YEARS.length){
-    $("#out").innerHTML = `<p class="none">No stock history recorded.</p>`;
-    return;
-  }
-  if(!years.length){
-    $("#out").innerHTML = `<p class="none">No years selected.</p>`;
-    return;
-  }
-
+function tradingTable(sp, years, cls){
   let off = 0;
-  let h = `<section><h2>Livestock trading account</h2>
-    <p class="lede">Cattle, head only · Australian financial years
+  let h = `<section><h2>Livestock trading account — ${esc(sLabel(sp))}</h2>
+    <p class="lede">Head only · Australian financial years
       · ${SEL.size ? years.map(r => esc(r.fy_label)).join(", ") : "all years on record"}
       · tap a year to see the animals behind it</p>
     <table><thead><tr><th>Year</th><th class="num">Opening</th>
@@ -200,7 +198,7 @@ function render(){
                  - r.sales - r.deaths - r.rations;
     const gap = r.closing - expect;
     if(gap) off++;
-    h += `<tr class="open-row" data-kind="buckets" data-fy="${r.fy}" aria-expanded="false">
+    h += `<tr class="open-row" data-kind="buckets" data-sp="${esc(sp)}" data-fy="${r.fy}" aria-expanded="false">
       <td class="m"><span class="caret">▸</span> ${esc(r.fy_label)}</td>
       <td class="num">${r.opening}</td><td class="num">${r.purchases}</td>
       <td class="num">${r.natural_increase}</td><td class="num">${r.sales}</td>
@@ -208,7 +206,7 @@ function render(){
       <td class="num"><b>${r.closing}</b></td>
       <td class="num">${gap ? `<span class="flag">${gap>0?"+":""}${gap}</span>`
                             : `<span class="ok">✓</span>`}</td></tr>
-      <tr class="drillrow" data-for="buckets-${r.fy}" hidden>
+      <tr class="drillrow" data-for="buckets-${esc(sp)}-${r.fy}" hidden>
         <td colspan="9" style="padding:0"></td></tr>`;
   }
   h += `</tbody></table>`;
@@ -221,31 +219,46 @@ function render(){
     : `<p class="lede">Every year reconciles.</p>`;
   h += `</section>`;
 
-  // ── closing numbers by class ──────────────────────────────────
-  // Pivoted to match the trading account above: a year is a row, and
-  // a row opens. Reading two tables that disagree about which axis is
-  // time costs more than the space it saves.
-  const cls = SEL.size ? CLASSES.filter(c => SEL.has(c.fy)) : CLASSES;
+  // Closing numbers by class, pivoted to match the table above.
   if(cls.length){
     const names = [...new Set(cls.map(c => c.class))].sort();
-    h += `<section><h2>Closing numbers by class</h2>
+    h += `<section><h2>Closing numbers by class — ${esc(sLabel(sp))}</h2>
       <p class="lede">Head alive at each balance date · tap a year to see which animals</p>
       <table><thead><tr><th>Year</th>` +
       names.map(n => `<th class="num">${esc(n)}</th>`).join("") +
       `<th class="num">Total</th></tr></thead><tbody>`;
     for(const r of years){
-      h += `<tr class="open-row" data-kind="classes" data-fy="${r.fy}" aria-expanded="false">
+      h += `<tr class="open-row" data-kind="classes" data-sp="${esc(sp)}" data-fy="${r.fy}" aria-expanded="false">
         <td class="m"><span class="caret">▸</span> ${esc(r.fy_label)}</td>` +
         names.map(n => {
           const hit = cls.find(c => c.fy===r.fy && c.class===n);
           return `<td class="num">${hit ? hit.head : "—"}</td>`;
         }).join("") +
         `<td class="num"><b>${r.closing}</b></td></tr>
-        <tr class="drillrow" data-for="classes-${r.fy}" hidden>
+        <tr class="drillrow" data-for="classes-${esc(sp)}-${r.fy}" hidden>
           <td colspan="${names.length+2}" style="padding:0"></td></tr>`;
     }
     h += `</tbody></table></section>`;
   }
+  return h;
+}
+
+function render(){
+  if(!YEARS.length){
+    $("#out").innerHTML = `<p class="none">No stock history recorded.</p>`;
+    return;
+  }
+  const inYear = r => !SEL.size || SEL.has(r.fy);
+  const kinds = [...new Set(YEARS.map(r => r.species))].sort();
+  const shown = kinds.filter(sp => !SPP.size || SPP.has(sp));
+
+  let h = "";
+  for(const sp of shown){
+    const years = YEARS.filter(r => r.species === sp && inYear(r));
+    if(!years.length) continue;
+    h += tradingTable(sp, years, CLASSES.filter(c => c.species === sp && inYear(c)));
+  }
+  if(!h) h = `<p class="none">Nothing selected.</p>`;
 
   h += `<footer><span>${esc(HOME.trading_name||"Buloke Farm")} · PIC ${esc(HOME.pic)}</span>
     <span>Produced ${new Date().toLocaleString("en-AU")}</span></footer>`;
@@ -259,7 +272,7 @@ function render(){
 async function animalsFor(fy){
   if(DRILL.has(fy)) return DRILL.get(fy);
   const { data, error } = await db.from("v_stock_year_animal")
-    .select("bucket,stock_code,name,sex,breed,dob,class,on_date,detail")
+    .select("bucket,stock_code,name,sex,breed,dob,class,on_date,detail,species")
     .eq("fy", fy).order("stock_code");
   if(error) throw error;
   DRILL.set(fy, data || []);
@@ -282,8 +295,8 @@ function card(label, mine, right){
 }
 
 async function toggleRow(tr){
-  const { fy, kind } = tr.dataset;
-  const slot = document.querySelector(`.drillrow[data-for="${kind}-${fy}"]`);
+  const { fy, kind, sp } = tr.dataset;
+  const slot = document.querySelector(`.drillrow[data-for="${kind}-${sp}-${fy}"]`);
   const cell = slot.querySelector("td");
 
   if(tr.getAttribute("aria-expanded") === "true"){
@@ -297,8 +310,8 @@ async function toggleRow(tr){
   cell.innerHTML = `<div class="drill"><p class="loading">Fetching the animals…</p></div>`;
 
   try{
-    const rows = await animalsFor(fy);
-    const yr   = YEARS.find(y => String(y.fy) === String(fy));
+    const rows = (await animalsFor(fy)).filter(r => r.species === sp);
+    const yr   = YEARS.find(y => String(y.fy) === String(fy) && y.species === sp);
     let inner;
     if(kind === "classes"){
       // Stock on hand at balance date, split the way the table splits it.
@@ -334,7 +347,17 @@ function paintChips(){
   $("#fy").querySelectorAll(".ychip").forEach(b =>
     b.setAttribute("aria-pressed",
       b.dataset.all !== undefined ? String(!SEL.size) : String(SEL.has(+b.dataset.fy))));
+  $("#sp").querySelectorAll(".ychip").forEach(b =>
+    b.setAttribute("aria-pressed",
+      b.dataset.all !== undefined ? String(!SPP.size) : String(SPP.has(b.dataset.sp))));
 }
+$("#sp").addEventListener("click", e => {
+  const b = e.target.closest(".ychip");
+  if(!b) return;
+  if(b.dataset.all !== undefined) SPP.clear();
+  else SPP.has(b.dataset.sp) ? SPP.delete(b.dataset.sp) : SPP.add(b.dataset.sp);
+  paintChips(); render();
+});
 $("#fy").addEventListener("click", e => {
   const b = e.target.closest(".ychip");
   if(!b) return;
@@ -358,7 +381,7 @@ window.__signOut = () => db.auth.signOut();
   }
   await loadHome();
   const [y, c] = await Promise.all([
-    db.from("v_stock_year").select("*").order("fy", {ascending:false}),
+    db.from("v_stock_year").select("*").order("species").order("fy", {ascending:false}),
     db.from("v_stock_year_class").select("*")
   ]);
   if(y.error){
@@ -367,10 +390,20 @@ window.__signOut = () => db.auth.signOut();
     return;
   }
   YEARS = y.data || []; CLASSES = c.data || [];
+  // One row per species per year now, so the year chips are the
+  // distinct years rather than the rows.
+  const fys = [...new Map(YEARS.map(r => [r.fy, r.fy_label])).entries()]
+    .sort((a,b) => b[0] - a[0]);
   $("#fy").innerHTML =
     `<button type="button" class="ychip" data-all aria-pressed="true">All years</button>` +
-    YEARS.map(r => `<button type="button" class="ychip" data-fy="${r.fy}"
-      aria-pressed="false">${esc(r.fy_label)}</button>`).join("");
+    fys.map(([fy,label]) => `<button type="button" class="ychip" data-fy="${fy}"
+      aria-pressed="false">${esc(label)}</button>`).join("");
+
+  const kinds = [...new Set(YEARS.map(r => r.species))].sort();
+  $("#sp").innerHTML = kinds.length < 2 ? "" :
+    `<button type="button" class="ychip" data-all aria-pressed="true">All</button>` +
+    kinds.map(k => `<button type="button" class="ychip" data-sp="${esc(k)}"
+      aria-pressed="false">${esc(sLabel(k))}</button>`).join("");
   render();
 })();
 </script>
