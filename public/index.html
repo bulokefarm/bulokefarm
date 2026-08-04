@@ -388,6 +388,10 @@ const defaultPrefs = () => ({
 // so it's still here. Sold and died are gone; they stay in the
 // pedigree but never in a head count.
 const isActive = a => !a.life_state || a.life_state === "alive";
+// paddock.head counts every animal grazing there. With two mobs on the
+// same ground that is the wrong number the moment a species scope is
+// set, so anywhere a head count is shown it is counted from the herd.
+const headIn = id => S.animals.filter(a => isActive(a) && inSpecies(a) && a.paddock_id === id).length;
 
 // ─── species ────────────────────────────────────────────────────
 // The class vocabulary differs between the two — a ewe is not a
@@ -1048,6 +1052,9 @@ function treeSVG(match){
 // library — the expensive part was done once in the editor.
 function viewMap(){
   const wrap = el(`<div></div>`);
+  const spBar = speciesBar();
+  if(spBar) wrap.appendChild(spBar);
+
   const drawn = S.paddocks.filter(p => p.geometry?.coordinates?.[0]?.length > 2);
 
   if(!drawn.length){
@@ -1083,7 +1090,7 @@ function viewMap(){
       .map(c => { const [x,y]=proj(c); return `${sx(x).toFixed(1)},${sy(y).toFixed(1)}`; }).join(" ");
     const on = S.selPk===p.id, any = !!S.selPk;
     svg += `<polygon data-id="${p.id}" points="${pts}" fill="${esc(p.colour)}"
-      fill-opacity="${on ? .66 : any ? .12 : (p.head ? .42 : .16)}"
+      fill-opacity="${on ? .66 : any ? .12 : (headIn(p.id) ? .42 : .16)}"
       stroke="${esc(p.colour)}" stroke-width="${on?6:2.5}"
       stroke-opacity="${any && !on ? .4 : 1}"
       stroke-linejoin="round" style="cursor:pointer"></polygon>`;
@@ -1096,9 +1103,10 @@ function viewMap(){
     svg += `<text x="${cx.toFixed(1)}" y="${cy.toFixed(1)}" text-anchor="middle" opacity="${fade}"
       font-size="${fs}" font-weight="700" fill="#16150F" paint-order="stroke"
       stroke="#fff" stroke-width="${fs/5}" style="pointer-events:none">${esc(p.code||p.name)}</text>`;
-    if(p.head) svg += `<text x="${cx.toFixed(1)}" y="${(cy+fs*1.05).toFixed(1)}" text-anchor="middle"
+    const hd = headIn(p.id);
+    if(hd) svg += `<text x="${cx.toFixed(1)}" y="${(cy+fs*1.05).toFixed(1)}" text-anchor="middle"
       opacity="${fade}" font-size="${fs*0.8}" font-weight="600" fill="#16150F" paint-order="stroke"
-      stroke="#fff" stroke-width="${fs/6}" style="pointer-events:none">${p.head} hd</text>`;
+      stroke="#fff" stroke-width="${fs/6}" style="pointer-events:none">${hd} hd</text>`;
   }
   svg += `</svg>`;
 
@@ -1120,7 +1128,9 @@ function viewMap(){
   // Selected paddock: everything about it, and the two things you'd
   // want to do next, right under the map rather than a scroll away.
   if(sel){
-    const inIt = S.animals.filter(a => isActive(a) && a.paddock_id===sel.id);
+    const inIt = S.animals.filter(a => isActive(a) && inSpecies(a) && a.paddock_id===sel.id);
+    // Recomputed rather than read off the view, for the same reason.
+    const perHa = sel.area_ha > 0 ? (inIt.length / sel.area_ha).toFixed(2) : null;
     const card = el(`<div class="pkcard">
       <div class="top">
         <span class="dot" style="background:${esc(sel.colour)};width:15px;height:15px"></span>
@@ -1130,7 +1140,7 @@ function viewMap(){
       <div class="pkstats">
         <span><b>${inIt.length}</b> head</span>
         <span><b>${sel.area_ha??"—"}</b> ha</span>
-        ${sel.head_per_ha?`<span><b>${sel.head_per_ha}</b> /ha</span>`:""}
+        ${perHa?`<span><b>${perHa}</b> /ha</span>`:""}
         ${sel.grazing_since?`<span>grazing since <b>${fmt(sel.grazing_since)}</b></span>`:""}
       </div>
       ${canWrite() ? `<div class="pkacts">
@@ -1145,7 +1155,9 @@ function viewMap(){
 
     if(!inIt.length){
       listPane.appendChild(el(`<div class="empty" style="padding:26px 24px">
-        <b>Empty</b>Nothing in ${esc(sel.name)} at the moment.</div>`));
+        <b>${S.species==="all" ? "Empty" : "None here"}</b>${
+          S.species==="all" ? `Nothing in ${esc(sel.name)} at the moment.`
+                            : `No ${esc(S.species)} in ${esc(sel.name)} at the moment.`}</div>`));
     } else {
       const ul = el(`<ul class="rows"></ul>`);
       for(const a of inIt){
@@ -1169,7 +1181,7 @@ function viewMap(){
       <span class="meta"><span class="nm">${esc(p.name)}</span>
       <span class="sub">${p.area_ha??"—"} ha${
         p.grazing_since?` · grazing since ${fmt(p.grazing_since)}`:" · empty"}</span></span>
-      <span class="rt">${p.head||0} hd</span></button></li>`);
+      <span class="rt">${headIn(p.id)} hd</span></button></li>`);
     li.querySelector("button").onclick = () => { S.selPk=p.id; render(); };
     ul.appendChild(li);
   }
@@ -1618,7 +1630,7 @@ function joinNatural(){
     <label><span>Out with</span><select name="paddock" required>
       <option value="">Choose a paddock…</option>
       ${S.paddocks.map(p=>`<option value="${p.id}"${S.selPk===p.id?" selected":""}>${
-        esc(p.name)} — ${p.head||0} head</option>`).join("")}
+        esc(p.name)} — ${headIn(p.id)} head</option>`).join("")}
     </select></label>
     <div class="two">
       <label><span>${w("sire")} in</span><input type="date" name="on" value="${today()}" required></label>
@@ -2240,7 +2252,7 @@ function recSell(){
   const groups = [["Harvest", () => S.animals.filter(a=>isActive(a)&&a.class==="harvest").map(a=>a.id)],
                   ["Yearlings", () => S.animals.filter(a=>isActive(a)&&a.class==="yearling").map(a=>a.id)],
                   ["None", () => []]];
-  for(const p of S.paddocks.filter(p=>p.head))
+  for(const p of S.paddocks.filter(p=>headIn(p.id)))
     groups.splice(2,0,[`All in ${p.name}`, () => S.animals.filter(a=>a.paddock_id===p.id).map(a=>a.id)]);
   for(const [label,fn] of groups){
     const b = el(`<button type="button" class="chip">${esc(label)}</button>`);
@@ -2465,7 +2477,7 @@ function recFeed(){
     <label><span>Paddock</span><select name="paddock" required>
       <option value="">Which paddock…</option>
       ${S.paddocks.map(p => `<option value="${p.id}"${S.selPk===p.id?" selected":""}>${
-        esc(p.name)} — ${p.head||0} head</option>`).join("")}
+        esc(p.name)} — ${headIn(p.id)} head</option>`).join("")}
     </select></label>
     <label><span>Date</span><input type="date" name="on" value="${today()}" required></label>
     <label><span>Feed</span><select name="source">
@@ -2555,7 +2567,8 @@ function recFeed(){
     });
     if(error) throw error;
     const p = S.paddocks.find(x => x.id===f.get("paddock"));
-    return `Feed recorded for ${p?.name||"the paddock"}${p?.head?` — ${p.head} head`:""}.`;
+    const n = p ? headIn(p.id) : 0;
+    return `Feed recorded for ${p?.name||"the paddock"}${n?` — ${n} head`:""}.`;
   });
 }
 
@@ -2569,7 +2582,7 @@ function recMove(){
     <label><span>Moving to</span><select name="to" required>
       <option value="">Choose a paddock…</option>
       ${S.paddocks.map(p => `<option value="${p.id}"${S.selPk===p.id?" selected":""}>${
-        esc(p.name)} — ${p.area_ha??"?"} ha, ${p.head||0} head</option>`).join("")}
+        esc(p.name)} — ${p.area_ha??"?"} ha, ${headIn(p.id)} head</option>`).join("")}
     </select></label>
     <label><span>Date</span><input type="date" name="on" value="${today()}" required></label>
     <label><span>Reason</span><input type="text" name="reason" placeholder="Rotation, feed, calving"></label>
@@ -2591,7 +2604,7 @@ function recMove(){
   const groups = [["Everything", () => S.animals.filter(isActive).map(a=>a.id)],
                   ["Unassigned", () => S.animals.filter(a=>isActive(a)&&!a.paddock_id).map(a=>a.id)],
                   ["None", () => []]];
-  for(const p of S.paddocks.filter(p=>p.head))
+  for(const p of S.paddocks.filter(p=>headIn(p.id)))
     groups.splice(2, 0, [`All in ${p.name}`, () => S.animals.filter(a=>a.paddock_id===p.id).map(a=>a.id), p.id]);
   for(const [label, fn, pid] of groups){
     const b = el(`<button type="button" class="chip"${pid?` data-pid="${pid}"`:""}>${esc(label)}</button>`);
