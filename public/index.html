@@ -198,6 +198,22 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-
 .msg.err{background:#F7E4E2;color:var(--danger)}
 .msg.ok{background:var(--accent-soft);color:var(--accent)}
 .empty{padding:40px 24px;text-align:center;color:var(--ink2)}
+
+/* The contents page, condensed. Dense on purpose — it is a lookup,
+   not something to read. */
+details.sum{margin:8px 14px;border:1px solid var(--rule);border-radius:10px;background:var(--card)}
+details.sum summary{padding:10px 12px;font-size:13px;font-weight:700;cursor:pointer;list-style:none}
+details.sum summary::-webkit-details-marker{display:none}
+details.sum summary::before{content:"▸ ";color:var(--ink2)}
+details.sum[open] summary::before{content:"▾ "}
+details.sum table{width:100%;border-collapse:collapse;font-size:12.5px}
+details.sum td{padding:5px 8px;border-top:1px solid var(--rule);vertical-align:top}
+details.sum td.n{text-align:right;font-family:var(--mono);white-space:nowrap}
+details.sum td.l{width:26px;color:var(--ink2);font-family:var(--mono)}
+details.sum tr.maxi td.n{font-weight:700}
+.filt{display:flex;gap:6px;flex-wrap:wrap;padding:6px 14px 0}
+.filt select{flex:1;min-width:96px;border:1px solid var(--rule);border-radius:8px;
+  padding:7px 8px;font:inherit;font-size:13px;background:var(--card)}
 /* Confirming a mob: one row per female, tick and gestation in reach of a thumb. */
 .mob{border:1px solid var(--rule);border-radius:10px;background:var(--card);margin-top:6px}
 .mob label{display:flex;align-items:center;gap:9px;padding:7px 11px;
@@ -1781,6 +1797,83 @@ const CRYO_KIND = [
   ["stocktake", "Stocktake", "Correcting the count after a look"]
 ];
 
+// Location, then marker, straw and size — the order you actually
+// narrow it down at the tank. Options are drawn from the lots in front
+// of you, so a filter never offers something that would empty the list.
+function cryoFilter(lots){
+  S.cryoF ||= {loc:"", mark:"", straw:"", size:""};
+  const F = S.cryoF;
+  return lots.filter(l =>
+    (!F.loc   || String(l.location) === F.loc) &&
+    (!F.mark  || (l.mark_colour||"") === F.mark) &&
+    (!F.straw || (l.straw_desc||"")  === F.straw) &&
+    (!F.size  || (l.straw_size||"")  === F.size));
+}
+
+function cryoFilterBar(lots, onChange){
+  S.cryoF ||= {loc:"", mark:"", straw:"", size:""};
+  const F = S.cryoF;
+  const box = el(`<div></div>`);
+
+  const locs = [...new Set(lots.map(l => l.location).filter(x => x != null))]
+    .map(Number).sort((a,b) => a-b);
+  const chips = el(`<div class="chips" style="padding:8px 14px 0"></div>`);
+  for(const [v, t] of [["", "All"], ...locs.map(x => [String(x), "Loc " + x])]){
+    const b = el(`<button type="button" class="chip" aria-pressed="${F.loc===v}">${t}</button>`);
+    b.onclick = () => { F.loc = v; onChange(); };
+    chips.appendChild(b);
+  }
+  box.appendChild(chips);
+
+  const row = el(`<div class="filt"></div>`);
+  for(const [k, field, blank] of [["mark","mark_colour","Any mark"],
+                                  ["straw","straw_desc","Any straw"],
+                                  ["size","straw_size","Any size"]]){
+    // Options come from what survives the other filters, so the
+    // choices always lead somewhere.
+    const pool = lots.filter(l =>
+      (!F.loc || String(l.location) === F.loc) &&
+      (k==="mark"  || !F.mark  || (l.mark_colour||"") === F.mark) &&
+      (k==="straw" || !F.straw || (l.straw_desc||"")  === F.straw) &&
+      (k==="size"  || !F.size  || (l.straw_size||"")  === F.size));
+    const opts = [...new Set(pool.map(l => l[field]).filter(Boolean))].sort();
+    if(opts.length < 2 && !F[k]) continue;
+    const sel = el(`<select><option value="">${blank}</option>${
+      opts.map(o => `<option value="${esc(o)}"${F[k]===o?" selected":""}>${esc(o)}</option>`).join("")
+    }</select>`);
+    sel.onchange = () => { F[k] = sel.value; onChange(); };
+    row.appendChild(sel);
+  }
+  if(row.children.length) box.appendChild(row);
+
+  if(F.loc || F.mark || F.straw || F.size){
+    const clr = el(`<div class="chips" style="padding:6px 14px 0">
+      <button type="button" class="chip">Clear filters</button></div>`);
+    clr.querySelector("button").onclick = () => {
+      S.cryoF = {loc:"", mark:"", straw:"", size:""}; onChange();
+    };
+    box.appendChild(clr);
+  }
+  return box;
+}
+
+// The contents page, on the phone. Bold count means maxi straws, the
+// same convention as the sheet.
+function cryoSummary(lots, tank){
+  const rows = [...lots].sort((a,b) =>
+    (Number(a.location)||99) - (Number(b.location)||99) || b.left - a.left);
+  const units = Math.round(rows.reduce((n,l) => n + l.left, 0));
+  return el(`<details class="sum"><summary>Tank ${esc(tank)} contents — ${
+    rows.length} lots, ${units} units</summary><table><tbody>${
+    rows.map(l => `<tr class="${l.straw_size==="maxi"?"maxi":""}">
+      <td class="l">${esc(l.location ?? "—")}</td>
+      <td>${esc(l.label || "—")}${l.mark_colour
+        ? `<br><span style="color:var(--ink2)">${esc(l.mark_colour)}${
+            l.straw_size ? " · " + esc(l.straw_size) : ""}</span>` : ""}</td>
+      <td class="n">${l.left % 1 ? l.left.toFixed(1) : l.left}</td></tr>`).join("")
+  }</tbody></table></details>`);
+}
+
 function cryoLots(){
   return [
     ...(S.refs.semen  || []).map(x => ({...x, kind:"semen",
@@ -1800,22 +1893,32 @@ function viewCryo(){
   const chips = el(`<div class="chips" style="padding-top:10px"></div>`);
   for(const t of tanks){
     const b = el(`<button class="chip" aria-pressed="${S.cryoTank===t}">Tank ${esc(t)}</button>`);
-    b.onclick = () => { S.cryoTank = t; render(); };
+    b.onclick = () => { S.cryoTank = t; S.cryoF = {loc:"",mark:"",straw:"",size:""}; render(); };
     chips.appendChild(b);
   }
   wrap.appendChild(chips);
 
   const mine = lots.filter(l => l.tank === S.cryoTank);
-  const total = mine.reduce((n,l) => n + l.left, 0);
-  wrap.appendChild(el(`<p class="hint" style="padding:0 14px">${mine.length} lots ·
-    ${Math.round(total)} units in tank ${esc(S.cryoTank)}</p>`));
+  wrap.appendChild(cryoSummary(mine, S.cryoTank));
+  wrap.appendChild(cryoFilterBar(mine, () => render()));
 
-  for(let loc = 1; loc <= 6; loc++){
-    const here = mine.filter(l => Number(l.location) === loc);
+  const shown = cryoFilter(mine);
+  wrap.appendChild(el(`<p class="hint" style="padding:6px 14px 0">${shown.length} of ${
+    mine.length} lots · ${Math.round(shown.reduce((n,l)=>n+l.left,0))} units</p>`));
+  if(!shown.length)
+    wrap.appendChild(el(`<div class="empty">Nothing matches those filters.</div>`));
+
+  const locs = S.cryoF.loc ? [Number(S.cryoF.loc)] : [1,2,3,4,5,6];
+  for(const loc of locs){
+    const here = shown.filter(l => Number(l.location) === loc);
     wrap.appendChild(el(`<h3 class="sec">Location ${loc}${here.length
       ? ` — ${Math.round(here.reduce((n,l)=>n+l.left,0))} units` : ""}</h3>`));
     if(!here.length){
-      wrap.appendChild(el(`<p class="hint" style="padding:0 14px 6px">Empty.</p>`));
+      // With a filter on, an empty location means "nothing matching
+      // here", not "nothing here" — say which of the two it is.
+      const anyHere = mine.some(l => Number(l.location) === loc);
+      wrap.appendChild(el(`<p class="hint" style="padding:0 14px 6px">${
+        anyHere ? "Nothing matching." : "Empty."}</p>`));
       continue;
     }
     const ul = el(`<ul class="rows"></ul>`);
@@ -1883,9 +1986,13 @@ async function viewCryoLot(){
 }
 
 function recCryoMove(){
-  const lots = cryoLots();
-  if(!lots.length) return el(`<div class="empty"><b>Nothing in the flasks</b></div>`);
+  const all = cryoLots();
+  if(!all.length) return el(`<div class="empty"><b>Nothing in the flasks</b></div>`);
   const sel = S.cryoLot?.id;
+  // Fifty lots in one dropdown is a scroll. Narrow it the same way as
+  // the store, with the same state, so switching between the two keeps
+  // your place.
+  const lots = cryoFilter(all);
 
   const inner = el(`<div>
     <label><span>Lot</span><select name="lot" required>
@@ -1940,10 +2047,10 @@ function recCryoMove(){
   };
   kind.onchange = tune; tune();
 
-  return formShell("Record a movement", inner, async (f) => {
+  const shell = formShell("Record a movement", inner, async (f) => {
     const [kindOf, id] = (f.get("lot") || "").split(":");
     if(!id) throw new Error("Choose the lot.");
-    const lot = lots.find(l => l.id === id);
+    const lot = all.find(l => l.id === id);
     const k = f.get("kind");
     let qty = Number(f.get("qty"));
     if(!qty) throw new Error("How many?");
@@ -1968,6 +2075,8 @@ function recCryoMove(){
     await loadRefs();
     return `${CRYO_KIND.find(c=>c[0]===k)[1]} recorded for ${lot.label}.`;
   });
+  shell.insertBefore(cryoFilterBar(all, () => render()), shell.querySelector("form"));
+  return shell;
 }
 
 function recCalving(){
