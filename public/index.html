@@ -220,6 +220,13 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-
 .sz-mid{font-size:12.5px}
 .sz-mini{font-size:10.5px}
 .sz-maxi{font-size:14px;font-weight:700}
+/* The lists are the reading surface, so the same three sizes run
+   larger there — the difference still shows without shrinking a name
+   to something you have to squint at in the shed. */
+.row .sw{align-self:center}
+.row .nm.sz-mini{font-size:14px}
+.row .nm.sz-mid {font-size:15.5px}
+.row .nm.sz-maxi{font-size:18px;font-weight:700}
 
 /* The contents page, condensed. Dense on purpose — it is a lookup,
    not something to read. */
@@ -1939,52 +1946,65 @@ function viewCryo(){
   const lots = cryoLots();
   if(!lots.length) return el(`<div class="empty"><b>Nothing in the flasks</b></div>`);
 
+  // Empty string means both. Tank 1 then tank 2, the order they are
+  // written on the register.
   const tanks = [...new Set(lots.map(l => l.tank).filter(Boolean))].sort();
-  S.cryoTank ||= tanks[0];
+  S.cryoTank ??= "";
+  if(S.cryoTank && !tanks.includes(S.cryoTank)) S.cryoTank = "";
+
   const chips = el(`<div class="chips" style="padding-top:10px"></div>`);
-  for(const t of tanks){
-    const b = el(`<button class="chip" aria-pressed="${S.cryoTank===t}">Tank ${esc(t)}</button>`);
-    b.onclick = () => { S.cryoTank = t; S.cryoF = {loc:"",mark:"",straw:"",size:""}; render(); };
+  for(const [v, t] of [["", "All"], ...tanks.map(x => [x, "Tank " + x])]){
+    const b = el(`<button class="chip" aria-pressed="${S.cryoTank===v}">${esc(t)}</button>`);
+    b.onclick = () => { S.cryoTank = v; S.cryoF = {loc:"",mark:"",straw:"",size:""}; render(); };
     chips.appendChild(b);
   }
   wrap.appendChild(chips);
 
-  const mine = lots.filter(l => l.tank === S.cryoTank);
-  wrap.appendChild(cryoSummary(mine, S.cryoTank));
-  wrap.appendChild(cryoFilterBar(mine, () => render()));
+  const show = S.cryoTank ? [S.cryoTank] : tanks;
+  for(const t of show) wrap.appendChild(cryoSummary(lots.filter(l => l.tank === t), t));
 
-  const shown = cryoFilter(mine);
+  const pool  = lots.filter(l => show.includes(l.tank));
+  wrap.appendChild(cryoFilterBar(pool, () => render()));
+  const shown = cryoFilter(pool);
   wrap.appendChild(el(`<p class="hint" style="padding:6px 14px 0">${shown.length} of ${
-    mine.length} lots · ${Math.round(shown.reduce((n,l)=>n+l.left,0))} units</p>`));
+    pool.length} lots · ${Math.round(shown.reduce((n,l)=>n+l.left,0))} units</p>`));
   if(!shown.length)
     wrap.appendChild(el(`<div class="empty">Nothing matches those filters.</div>`));
 
   const locs = S.cryoF.loc ? [Number(S.cryoF.loc)] : [1,2,3,4,5,6];
-  for(const loc of locs){
-    const here = shown.filter(l => Number(l.location) === loc);
-    wrap.appendChild(el(`<h3 class="sec">Location ${loc}${here.length
-      ? ` — ${Math.round(here.reduce((n,l)=>n+l.left,0))} units` : ""}</h3>`));
-    if(!here.length){
-      // With a filter on, an empty location means "nothing matching
-      // here", not "nothing here" — say which of the two it is.
-      const anyHere = mine.some(l => Number(l.location) === loc);
-      wrap.appendChild(el(`<p class="hint" style="padding:0 14px 6px">${
-        anyHere ? "Nothing matching." : "Empty."}</p>`));
-      continue;
+  for(const t of show){
+    const inTank = pool.filter(l => l.tank === t);
+    for(const loc of locs){
+      const here = shown.filter(l => l.tank === t && Number(l.location) === loc);
+      // The tank is only named in the heading when both are on screen;
+      // with one selected it would be repeated six times for nothing.
+      const head = show.length > 1 ? `Tank ${esc(t)} · Location ${loc}` : `Location ${loc}`;
+      wrap.appendChild(el(`<h3 class="sec">${head}${here.length
+        ? ` — ${Math.round(here.reduce((n,l)=>n+l.left,0))} units` : ""}</h3>`));
+      if(!here.length){
+        // With a filter on, an empty location means "nothing matching
+        // here", not "nothing here" — say which of the two it is.
+        const anyHere = inTank.some(l => Number(l.location) === loc);
+        wrap.appendChild(el(`<p class="hint" style="padding:0 14px 6px">${
+          anyHere ? "Nothing matching." : "Empty."}</p>`));
+        continue;
+      }
+      const ul = el(`<ul class="rows"></ul>`);
+      for(const l of here.sort((a,b) => b.left - a.left)){
+        // A count of zero is worth showing: the lot is still on the
+        // register and knowing it is empty saves a look.
+        const li = el(`<li><button class="row">
+          ${markSwatch(l.mark_colour)}
+          <span class="meta">
+          <span class="nm sz-${esc(l.straw_size || "mid")}">${esc(l.label || "—")}</span>
+          <span class="sub">${esc(l.shelf_label || l.marking || (l.kind==="embryo"?"embryo":"—"))}</span>
+          </span><span class="rt" style="${l.left ? "" : "opacity:.4"}">
+          <b>${l.left % 1 ? l.left.toFixed(1) : l.left}</b></span></button></li>`);
+        li.querySelector("button").onclick = () => { S.cryoLot = l; S.view = "rec:cryolot"; render(); };
+        ul.appendChild(li);
+      }
+      wrap.appendChild(ul);
     }
-    const ul = el(`<ul class="rows"></ul>`);
-    for(const l of here.sort((a,b) => b.left - a.left)){
-      // A count of zero is worth showing: the lot is still on the
-      // register and knowing it is empty saves a look.
-      const li = el(`<li><button class="row"><span class="meta">
-        <span class="nm">${esc(l.label || "—")}</span>
-        <span class="sub">${esc(l.shelf_label || l.marking || (l.kind==="embryo"?"embryo":"—"))}</span>
-        </span><span class="rt" style="${l.left ? "" : "opacity:.4"}">
-        <b>${l.left % 1 ? l.left.toFixed(1) : l.left}</b></span></button></li>`);
-      li.querySelector("button").onclick = () => { S.cryoLot = l; S.view = "rec:cryolot"; render(); };
-      ul.appendChild(li);
-    }
-    wrap.appendChild(ul);
   }
   const back = el(`<div class="pad"><button class="btn ghost">Back</button></div>`);
   back.querySelector("button").onclick = () => { S.view = "record"; render(); };
@@ -1996,8 +2016,10 @@ async function viewCryoLot(){
   const l = S.cryoLot;
   if(!l){ S.view = "rec:cryo"; return el(`<div></div>`); }
   const wrap = el(`<div></div>`);
-  wrap.appendChild(el(`<div class="pad"><h3 class="sec" style="padding-left:0">${
-    esc(l.label || "—")}</h3>
+  wrap.appendChild(el(`<div class="pad"><h3 class="sec" style="padding-left:0;
+    display:flex;align-items:center;gap:8px">${markSwatch(l.mark_colour)}<span
+    class="sz-${esc(l.straw_size || "mid")}" style="letter-spacing:0;text-transform:none">${
+    esc(l.label || "—")}</span></h3>
     <p class="hint">Tank ${esc(l.tank||"—")} · location ${esc(l.location||"—")}${
       l.shelf_label ? " · " + esc(l.shelf_label) : ""}</p>
     <p class="hint"><b style="font-size:20px;color:var(--ink)">${
