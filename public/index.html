@@ -403,7 +403,7 @@ const classLabel = (k, sp) => (CLASS_LABEL[sp] || CLASS_LABEL.cattle)[k]
 const shown = k => S.prefs?.fields?.[k] !== false;
 
 // ─── state ──────────────────────────────────────────────────────
-const S = { me:null, animals:[], herdMode:"list", species:"all", treeLink:null, pending:[], treeFam:undefined, treePend:false, paddocks:[], feeds:[], refs:{}, prefs:null, selFeed:null, view:"herd", filter:"all", q:"", sel:null, selPk:null, busy:false };
+const S = { me:null, animals:[], herdMode:"list", species:"all", treeLink:null, cryoTank:null, cryoLot:null, pending:[], treeFam:undefined, treePend:false, paddocks:[], feeds:[], refs:{}, prefs:null, selFeed:null, view:"herd", filter:"all", q:"", sel:null, selPk:null, busy:false };
 
 // ═══ data ═══════════════════════════════════════════════════════
 async function loadHerd(){
@@ -427,18 +427,19 @@ async function loadPaddocks(){
   S.feeds    = f.data || [];
 }
 async function loadRefs(){
-  const [h,p,b,s] = await Promise.all([
+  const [h,p,b,s,em] = await Promise.all([
     db.from("heritage").select("id,name").order("name"),
     db.from("property").select("id,pic").order("pic"),
     db.from("v_breeding_stock").select("id,label,sex,origin,species").order("label"),
-    db.from("v_ai_semen").select("*").is("retired_on", null).order("sire_name")
+    db.from("v_ai_semen").select("*").is("retired_on", null).order("sire_name"),
+    db.from("v_embryo").select("*").is("retired_on", null).order("pairing")
   ]);
   S.refs = {
     heritage: h.data||[], property: (p.data||[]).map(x=>({id:x.id,label:x.pic})),
     sire: (b.data||[]).filter(x=>x.origin==="reference"||x.sex==="male"),
     dam:  (b.data||[]).filter(x=>x.origin==="reference"||x.sex==="female"),
     _all: b.data||[],
-    semen: s.data||[]
+    semen: s.data||[], embryo: em.data||[]
   };
 }
 async function loadPrefs(){
@@ -1174,6 +1175,14 @@ function viewRecord(){
     jobs.splice(5, 0, ["shearing","Shed work","Shearing, crutching, marking"]);
   group("What are you recording?", jobs);
   const low = S.feeds.filter(f => f.pct_left != null && f.pct_left <= 20).length;
+  // Only offered once there is something in the flasks.
+  const lots = (S.refs.semen||[]).length + (S.refs.embryo||[]).length;
+  if(lots) group("The flasks", [
+    ["cryo","Tank store", `${lots} lots · ${
+      Math.round((S.refs.semen||[]).reduce((n,x)=>n+Number(x.straws_left||0),0) +
+                 (S.refs.embryo||[]).reduce((n,x)=>n+Number(x.units_left||0),0))} units on hand`],
+    ["cryomove","Straw or embryo movement","In, out, thawed, discarded"]]);
+
   group("Manage", [
     ["store","Feed store", low ? `${low} low on stock` : `${S.feeds.length} in the shed`],
     ["bulk","Bulk update","Change a field across many animals"],
@@ -1756,6 +1765,208 @@ function recShearing(){
 
     const label = SHED_KIND.find(k => k[0]===f.get("kind"))?.[1] || "Shed work";
     return `${label} recorded for ${ids.length} head.`;
+  });
+}
+
+// ─── the flasks ─────────────────────────────────────────────────
+// Browsing the store is a job done standing at the tank in the cold
+// with a phone: the question is always "which goblet, what colour" —
+// so the shelf label leads and the pedigree comes second.
+const CRYO_KIND = [
+  ["used",      "Used",      "Thawed and put in"],
+  ["received",  "Received",  "New straws in"],
+  ["discarded", "Discarded", "Thrown out"],
+  ["sent_out",  "Sent out",  "To an agent or another property"],
+  ["returned",  "Returned",  "Come back from an agent"],
+  ["stocktake", "Stocktake", "Correcting the count after a look"]
+];
+
+function cryoLots(){
+  return [
+    ...(S.refs.semen  || []).map(x => ({...x, kind:"semen",
+        label:x.sire_label || x.sire_name, left:Number(x.straws_left||0)})),
+    ...(S.refs.embryo || []).map(x => ({...x, kind:"embryo",
+        label:x.pairing, left:Number(x.units_left||0)}))
+  ];
+}
+
+function viewCryo(){
+  const wrap = el(`<div></div>`);
+  const lots = cryoLots();
+  if(!lots.length) return el(`<div class="empty"><b>Nothing in the flasks</b></div>`);
+
+  const tanks = [...new Set(lots.map(l => l.tank).filter(Boolean))].sort();
+  S.cryoTank ||= tanks[0];
+  const chips = el(`<div class="chips" style="padding-top:10px"></div>`);
+  for(const t of tanks){
+    const b = el(`<button class="chip" aria-pressed="${S.cryoTank===t}">Tank ${esc(t)}</button>`);
+    b.onclick = () => { S.cryoTank = t; render(); };
+    chips.appendChild(b);
+  }
+  wrap.appendChild(chips);
+
+  const mine = lots.filter(l => l.tank === S.cryoTank);
+  const total = mine.reduce((n,l) => n + l.left, 0);
+  wrap.appendChild(el(`<p class="hint" style="padding:0 14px">${mine.length} lots ·
+    ${Math.round(total)} units in tank ${esc(S.cryoTank)}</p>`));
+
+  for(let loc = 1; loc <= 6; loc++){
+    const here = mine.filter(l => Number(l.location) === loc);
+    wrap.appendChild(el(`<h3 class="sec">Location ${loc}${here.length
+      ? ` — ${Math.round(here.reduce((n,l)=>n+l.left,0))} units` : ""}</h3>`));
+    if(!here.length){
+      wrap.appendChild(el(`<p class="hint" style="padding:0 14px 6px">Empty.</p>`));
+      continue;
+    }
+    const ul = el(`<ul class="rows"></ul>`);
+    for(const l of here.sort((a,b) => b.left - a.left)){
+      // A count of zero is worth showing: the lot is still on the
+      // register and knowing it is empty saves a look.
+      const li = el(`<li><button class="row"><span class="meta">
+        <span class="nm">${esc(l.label || "—")}</span>
+        <span class="sub">${esc(l.shelf_label || l.marking || (l.kind==="embryo"?"embryo":"—"))}</span>
+        </span><span class="rt" style="${l.left ? "" : "opacity:.4"}">
+        <b>${l.left % 1 ? l.left.toFixed(1) : l.left}</b></span></button></li>`);
+      li.querySelector("button").onclick = () => { S.cryoLot = l; S.view = "rec:cryolot"; render(); };
+      ul.appendChild(li);
+    }
+    wrap.appendChild(ul);
+  }
+  const back = el(`<div class="pad"><button class="btn ghost">Back</button></div>`);
+  back.querySelector("button").onclick = () => { S.view = "record"; render(); };
+  wrap.appendChild(back);
+  return wrap;
+}
+
+async function viewCryoLot(){
+  const l = S.cryoLot;
+  if(!l){ S.view = "rec:cryo"; return el(`<div></div>`); }
+  const wrap = el(`<div></div>`);
+  wrap.appendChild(el(`<div class="pad"><h3 class="sec" style="padding-left:0">${
+    esc(l.label || "—")}</h3>
+    <p class="hint">Tank ${esc(l.tank||"—")} · location ${esc(l.location||"—")}${
+      l.shelf_label ? " · " + esc(l.shelf_label) : ""}</p>
+    <p class="hint"><b style="font-size:20px;color:var(--ink)">${
+      l.left % 1 ? l.left.toFixed(1) : l.left}</b> ${l.kind==="embryo"?"units":"straws"} on hand${
+      l.straws_in||l.units_in ? ` · ${l.straws_in||l.units_in} delivered` : ""}</p>
+    ${l.notes ? `<p class="hint">${esc(l.notes)}</p>` : ""}</div>`));
+
+  const col = l.kind === "embryo" ? "embryo_id" : "ai_semen_id";
+  const { data, error } = await db.from("cryo_txn")
+    .select("on_date,kind,qty,female_ref,outcome,counterparty,notes,confidence")
+    .eq(col, l.id).order("on_date", {ascending:false});
+  if(error) wrap.appendChild(el(`<div class="msg err">${esc(error.message)}</div>`));
+  else if(!data.length) wrap.appendChild(el(`<div class="empty">No movements recorded.</div>`));
+  else {
+    wrap.appendChild(el(`<h3 class="sec">Movements</h3>`));
+    const ul = el(`<ul class="rows"></ul>`);
+    for(const r of data){
+      const q = Number(r.qty);
+      const who = r.female_ref || r.counterparty || "";
+      const sub = [CRYO_KIND.find(k=>k[0]===r.kind)?.[1] || r.kind, who,
+                   r.outcome, r.confidence!=null ? Math.round(r.confidence*100)+"%" : null,
+                   r.notes].filter(Boolean).join(" · ");
+      ul.appendChild(el(`<li><span class="row" style="cursor:default"><span class="meta">
+        <span class="nm">${fmt(r.on_date)}</span>
+        <span class="sub">${esc(sub.slice(0,90))}</span></span>
+        <span class="rt" style="color:${q<0?"var(--danger)":"var(--accent)"}">
+        ${q>0?"+":""}${q % 1 ? q.toFixed(1) : q}</span></span></li>`));
+    }
+    wrap.appendChild(ul);
+  }
+  const b = el(`<div class="pad"><button class="btn">Record a movement</button>
+    <button class="btn ghost">Back to the tank</button></div>`);
+  b.querySelector(".btn").onclick = () => { S.view = "rec:cryomove"; render(); };
+  b.querySelector(".ghost").onclick = () => { S.cryoLot = null; S.view = "rec:cryo"; render(); };
+  wrap.appendChild(b);
+  return wrap;
+}
+
+function recCryoMove(){
+  const lots = cryoLots();
+  if(!lots.length) return el(`<div class="empty"><b>Nothing in the flasks</b></div>`);
+  const sel = S.cryoLot?.id;
+
+  const inner = el(`<div>
+    <label><span>Lot</span><select name="lot" required>
+      <option value="">Which straws…</option>
+      ${lots.map(l => `<option value="${l.kind}:${l.id}"${sel===l.id?" selected":""}>${
+        esc(l.label||"—")}${l.tank?` — tank ${esc(l.tank)} loc ${esc(l.location||"?")}`:""} · ${
+        l.left % 1 ? l.left.toFixed(1) : l.left} left</option>`).join("")}
+    </select></label>
+    <label><span>What happened</span><select name="kind">
+      ${CRYO_KIND.map(([k,t,sub]) => `<option value="${k}">${t} — ${sub}</option>`).join("")}
+    </select></label>
+    <div class="two">
+      <label><span>Date</span><input type="date" name="on" value="${today()}" required></label>
+      <label><span>How many</span><input type="number" name="qty" step="0.1" min="0.1"
+        value="1" inputmode="decimal" required></label>
+    </div>
+    <p class="hint" id="ck">Half straws happen — a short one or a plug. Put in what actually went.</p>
+    <label><span>Cow</span><input type="text" name="female"
+      placeholder="Her tag, as you'd write it"></label>
+    <label><span>Went to</span><input type="text" name="party"
+      placeholder="Nu-Genes, Agri-gene…"></label>
+    <div class="two">
+      <label><span>Result</span><select name="outcome">
+        <option value="">Not known yet</option>
+        <option value="held">Held</option>
+        <option value="empty">Empty</option>
+      </select></label>
+      <label><span>Confidence %</span><input type="number" name="conf" min="0" max="100"
+        step="5" inputmode="numeric" placeholder="—"></label>
+    </div>
+    <label><span>Notes</span><input type="text" name="notes" placeholder="Optional"></label>
+  </div>`);
+
+  // The fields that matter depend on what happened. A discard has no
+  // cow; a delivery has no result.
+  const kind = inner.querySelector('[name=kind]');
+  const show = (name, on) => {
+    const f = inner.querySelector(`[name=${name}]`);
+    f.parentElement.hidden = !on;
+    if(!on) f.value = "";
+  };
+  const tune = () => {
+    const k = kind.value;
+    show("female", k === "used");
+    show("party", k === "sent_out" || k === "returned");
+    show("outcome", k === "used");
+    show("conf", k === "used");
+    inner.querySelector("#ck").textContent = k === "stocktake"
+      ? "A stocktake sets the count to what you actually counted."
+      : "Half straws happen — a short one or a plug. Put in what actually went.";
+    inner.querySelector('[name=qty]').min = k === "stocktake" ? "0" : "0.1";
+  };
+  kind.onchange = tune; tune();
+
+  return formShell("Record a movement", inner, async (f) => {
+    const [kindOf, id] = (f.get("lot") || "").split(":");
+    if(!id) throw new Error("Choose the lot.");
+    const lot = lots.find(l => l.id === id);
+    const k = f.get("kind");
+    let qty = Number(f.get("qty"));
+    if(!qty) throw new Error("How many?");
+
+    // The ledger stores the sign; the form only ever asks for a count.
+    if(k === "stocktake") qty = Number(qty) - lot.left;
+    else if(["used","discarded","sent_out"].includes(k)) qty = -qty;
+    if(k === "stocktake" && !qty)
+      throw new Error(`The count already reads ${lot.left}. Nothing to correct.`);
+
+    const ref = (f.get("female")||"").trim() || null;
+    const conf = f.get("conf");
+    const { error } = await db.from("cryo_txn").insert({
+      [kindOf === "embryo" ? "embryo_id" : "ai_semen_id"]: id,
+      kind: k, qty, on_date: f.get("on"),
+      female_ref: ref, outcome: f.get("outcome") || null,
+      counterparty: (f.get("party")||"").trim() || null,
+      confidence: conf === "" || conf == null ? null : Number(conf)/100,
+      notes: (f.get("notes")||"").trim() || null
+    });
+    if(error) throw error;
+    await loadRefs();
+    return `${CRYO_KIND.find(c=>c[0]===k)[1]} recorded for ${lot.label}.`;
   });
 }
 
@@ -2491,6 +2702,9 @@ async function render(){
   else if(S.view==="rec:calving")   body = recCalving();
   else if(S.view==="rec:joining")   body = recJoining();
   else if(S.view==="rec:shearing")  body = recShearing();
+  else if(S.view==="rec:cryo")      body = viewCryo();
+  else if(S.view==="rec:cryolot")   body = await viewCryoLot();
+  else if(S.view==="rec:cryomove")  body = recCryoMove();
   else if(S.view==="rec:move")      body = recMove();
   else if(S.view==="rec:feed")      body = recFeed();
   else if(S.view==="rec:sell")      body = recSell();
