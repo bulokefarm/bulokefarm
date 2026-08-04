@@ -448,7 +448,7 @@ const classLabel = (k, sp) => (CLASS_LABEL[sp] || CLASS_LABEL.cattle)[k]
 const shown = k => S.prefs?.fields?.[k] !== false;
 
 // ─── state ──────────────────────────────────────────────────────
-const S = { me:null, animals:[], herdMode:"list", species:"all", treeLink:null, cryoTank:null, cryoLot:null, pending:[], treeFam:undefined, treePend:false, paddocks:[], feeds:[], refs:{}, prefs:null, selFeed:null, view:"herd", filter:"all", q:"", sel:null, selPk:null, busy:false };
+const S = { me:null, animals:[], herdMode:"list", species:"all", treeLink:null, cryoLot:null, pending:[], treeFam:undefined, treePend:false, paddocks:[], feeds:[], refs:{}, prefs:null, selFeed:null, view:"herd", filter:"all", q:"", sel:null, selPk:null, busy:false };
 
 // ═══ data ═══════════════════════════════════════════════════════
 async function loadHerd(){
@@ -1830,21 +1830,40 @@ const CRYO_KIND = [
 // narrow it down at the tank. Options are drawn from the lots in front
 // of you, so a filter never offers something that would empty the list.
 function cryoFilter(lots){
-  S.cryoF ||= {loc:"", mark:"", straw:"", size:""};
+  S.cryoF ||= {tank:"", loc:"", mark:"", straw:"", size:""};
   const F = S.cryoF;
   return lots.filter(l =>
+    (!F.tank  || l.tank === F.tank) &&
     (!F.loc   || String(l.location) === F.loc) &&
     (!F.mark  || (l.mark_colour||"") === F.mark) &&
     (!F.straw || (l.straw_desc||"")  === F.straw) &&
     (!F.size  || (l.straw_size||"")  === F.size));
 }
 
-function cryoFilterBar(lots, onChange){
-  S.cryoF ||= {loc:"", mark:"", straw:"", size:""};
+// withTank is for screens that have no tank control of their own. The
+// store puts its tank chips at the top where they belong; the movement
+// form has nowhere else to put them, and location 1 means two different
+// canisters without one.
+function cryoFilterBar(lots, onChange, withTank){
+  S.cryoF ||= {tank:"", loc:"", mark:"", straw:"", size:""};
   const F = S.cryoF;
   const box = el(`<div></div>`);
 
-  const locs = [...new Set(lots.map(l => l.location).filter(x => x != null))]
+  if(withTank){
+    const tanks = [...new Set(lots.map(l => l.tank).filter(Boolean))].sort();
+    if(tanks.length > 1){
+      const row = el(`<div class="chips" style="padding:8px 14px 0"></div>`);
+      for(const [v, t] of [["", "All tanks"], ...tanks.map(x => [x, "Tank " + x])]){
+        const b = el(`<button type="button" class="chip" aria-pressed="${F.tank===v}">${esc(t)}</button>`);
+        b.onclick = () => { F.tank = v; F.loc = ""; onChange(); };
+        row.appendChild(b);
+      }
+      box.appendChild(row);
+    }
+  }
+
+  const inTank = F.tank ? lots.filter(l => l.tank === F.tank) : lots;
+  const locs = [...new Set(inTank.map(l => l.location).filter(x => x != null))]
     .map(Number).sort((a,b) => a-b);
   const chips = el(`<div class="chips" style="padding:8px 14px 0"></div>`);
   for(const [v, t] of [["", "All"], ...locs.map(x => [String(x), "Loc " + x])]){
@@ -1860,7 +1879,7 @@ function cryoFilterBar(lots, onChange){
                                   ["size","straw_size","Any size"]]){
     // Options come from what survives the other filters, so the
     // choices always lead somewhere.
-    const pool = lots.filter(l =>
+    const pool = inTank.filter(l =>
       (!F.loc || String(l.location) === F.loc) &&
       (k==="mark"  || !F.mark  || (l.mark_colour||"") === F.mark) &&
       (k==="straw" || !F.straw || (l.straw_desc||"")  === F.straw) &&
@@ -1875,11 +1894,11 @@ function cryoFilterBar(lots, onChange){
   }
   if(row.children.length) box.appendChild(row);
 
-  if(F.loc || F.mark || F.straw || F.size){
+  if(F.tank || F.loc || F.mark || F.straw || F.size){
     const clr = el(`<div class="chips" style="padding:6px 14px 0">
       <button type="button" class="chip">Clear filters</button></div>`);
     clr.querySelector("button").onclick = () => {
-      S.cryoF = {loc:"", mark:"", straw:"", size:""}; onChange();
+      S.cryoF = {tank:"", loc:"", mark:"", straw:"", size:""}; onChange();
     };
     box.appendChild(clr);
   }
@@ -1949,18 +1968,20 @@ function viewCryo(){
   // Empty string means both. Tank 1 then tank 2, the order they are
   // written on the register.
   const tanks = [...new Set(lots.map(l => l.tank).filter(Boolean))].sort();
-  S.cryoTank ??= "";
-  if(S.cryoTank && !tanks.includes(S.cryoTank)) S.cryoTank = "";
+  S.cryoF ||= {tank:"", loc:"", mark:"", straw:"", size:""};
+  if(S.cryoF.tank && !tanks.includes(S.cryoF.tank)) S.cryoF.tank = "";
 
   const chips = el(`<div class="chips" style="padding-top:10px"></div>`);
   for(const [v, t] of [["", "All"], ...tanks.map(x => [x, "Tank " + x])]){
-    const b = el(`<button class="chip" aria-pressed="${S.cryoTank===v}">${esc(t)}</button>`);
-    b.onclick = () => { S.cryoTank = v; S.cryoF = {loc:"",mark:"",straw:"",size:""}; render(); };
+    const b = el(`<button class="chip" aria-pressed="${S.cryoF.tank===v}">${esc(t)}</button>`);
+    // Changing tank clears the rest: a marker in one tank may not exist
+    // in the other, and a filter that empties the screen looks broken.
+    b.onclick = () => { S.cryoF = {tank:v, loc:"", mark:"", straw:"", size:""}; render(); };
     chips.appendChild(b);
   }
   wrap.appendChild(chips);
 
-  const show = S.cryoTank ? [S.cryoTank] : tanks;
+  const show = S.cryoF.tank ? [S.cryoF.tank] : tanks;
   for(const t of show) wrap.appendChild(cryoSummary(lots.filter(l => l.tank === t), t));
 
   const pool  = lots.filter(l => show.includes(l.tank));
@@ -2148,7 +2169,7 @@ function recCryoMove(){
     await loadRefs();
     return `${CRYO_KIND.find(c=>c[0]===k)[1]} recorded for ${lot.label}.`;
   });
-  shell.insertBefore(cryoFilterBar(all, () => render()), shell.querySelector("form"));
+  shell.insertBefore(cryoFilterBar(all, () => render(), true), shell.querySelector("form"));
   return shell;
 }
 
