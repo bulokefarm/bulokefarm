@@ -199,6 +199,28 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-
 .msg.ok{background:var(--accent-soft);color:var(--accent)}
 .empty{padding:40px 24px;text-align:center;color:var(--ink2)}
 
+/* The six canisters, laid out as six canisters. A tank is a physical
+   thing and the summary should look like the thing. */
+.cans{display:grid;grid-template-columns:repeat(auto-fill,minmax(158px,1fr));
+  gap:9px;padding:10px 14px 2px}
+.can{border:1px solid var(--rule);border-radius:10px;background:var(--card);overflow:hidden}
+.can > h4{margin:0;padding:6px 9px;background:var(--paper);border-bottom:1px solid var(--rule);
+  font-size:10.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--ink2);
+  display:flex;justify-content:space-between;gap:6px}
+.can ul{list-style:none;margin:0;padding:0}
+.can li{display:flex;align-items:center;gap:6px;padding:5px 8px;border-top:1px solid var(--rule)}
+.can li:first-child{border-top:0}
+.can .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.25}
+.can .ct{font-family:var(--mono);flex:none;color:var(--ink2)}
+.can .none{padding:9px;color:var(--ink2);font-style:italic;font-size:12px}
+/* The marker is a colour, so it is shown as one. */
+.sw{width:13px;height:13px;border-radius:4px;flex:none;border:1px solid rgba(0,0,0,.28)}
+.sw.nomk{background:repeating-linear-gradient(45deg,#fff,#fff 3px,var(--rule) 3px,var(--rule) 6px)}
+/* Mini and maxi are literally different sizes of straw. */
+.sz-mid{font-size:12.5px}
+.sz-mini{font-size:10.5px}
+.sz-maxi{font-size:14px;font-weight:700}
+
 /* The contents page, condensed. Dense on purpose — it is a lookup,
    not something to read. */
 details.sum{margin:8px 14px;border:1px solid var(--rule);border-radius:10px;background:var(--card)}
@@ -1857,21 +1879,50 @@ function cryoFilterBar(lots, onChange){
   return box;
 }
 
-// The contents page, on the phone. Bold count means maxi straws, the
-// same convention as the sheet.
+// A marker written as a colour is shown as that colour. Anything the
+// sheet doesn't name a colour for gets a hatched swatch rather than a
+// guess — 'No Mrk' is a real answer and should look different from an
+// unrecorded one.
+const MARK_HEX = {
+  green:"#2E7D32", yellow:"#F2C230", blue:"#1F63C4", red:"#C0392B",
+  orange:"#E07B22", pink:"#E48AAE", purple:"#6B4BA8", peach:"#F2B58C",
+  white:"#FFFFFF", black:"#1A1A1A", grey:"#8E8E8E", gray:"#8E8E8E", clear:"#EDEDED"
+};
+function markSwatch(mark){
+  const t = (mark || "").toLowerCase();
+  if(!mark || /no\s*m[kr]/.test(t)) return `<span class="sw nomk" title="${
+    esc(mark || "not recorded")}"></span>`;
+  const hit = Object.keys(MARK_HEX).find(c => t.includes(c));
+  return hit
+    ? `<span class="sw" style="background:${MARK_HEX[hit]}" title="${esc(mark)}"></span>`
+    : `<span class="sw nomk" title="${esc(mark)}"></span>`;
+}
+
+// Six canisters, drawn as six canisters. Mini and maxi are different
+// sizes of straw, so the name is set at different sizes — you can read
+// the shape of a tank without reading a single word.
 function cryoSummary(lots, tank){
-  const rows = [...lots].sort((a,b) =>
-    (Number(a.location)||99) - (Number(b.location)||99) || b.left - a.left);
-  const units = Math.round(rows.reduce((n,l) => n + l.left, 0));
-  return el(`<details class="sum"><summary>Tank ${esc(tank)} contents — ${
-    rows.length} lots, ${units} units</summary><table><tbody>${
-    rows.map(l => `<tr class="${l.straw_size==="maxi"?"maxi":""}">
-      <td class="l">${esc(l.location ?? "—")}</td>
-      <td>${esc(l.label || "—")}${l.mark_colour
-        ? `<br><span style="color:var(--ink2)">${esc(l.mark_colour)}${
-            l.straw_size ? " · " + esc(l.straw_size) : ""}</span>` : ""}</td>
-      <td class="n">${l.left % 1 ? l.left.toFixed(1) : l.left}</td></tr>`).join("")
-  }</tbody></table></details>`);
+  const units = Math.round(lots.reduce((n, l) => n + l.left, 0));
+  const cans = [1,2,3,4,5,6].map(loc => {
+    const here = lots.filter(l => Number(l.location) === loc)
+                     .sort((a,b) => b.left - a.left);
+    const sum = Math.round(here.reduce((n,l) => n + l.left, 0));
+    return `<div class="can"><h4><span>Loc ${loc}</span><span>${
+      here.length ? sum : "—"}</span></h4>${
+      here.length
+        ? `<ul>${here.map(l => `<li>${markSwatch(l.mark_colour)}
+            <span class="nm sz-${esc(l.straw_size || "mid")}" title="${
+              esc([l.label, l.mark_colour, l.straw_desc, l.straw_size]
+                  .filter(Boolean).join(" · "))}">${esc(l.label || "—")}</span>
+            <span class="ct">${l.left % 1 ? l.left.toFixed(1) : l.left}</span></li>`).join("")}</ul>`
+        : `<div class="none">Empty</div>`}</div>`;
+  }).join("");
+  return el(`<details class="sum" style="padding-bottom:8px">
+    <summary>Tank ${esc(tank)} contents — ${lots.length} lots, ${units} units</summary>
+    <div class="cans">${cans}</div>
+    <p class="hint" style="padding:2px 14px 8px">Swatch is the cane marker.
+      Small text is a mini straw, large is a maxi. Hatched means no marker recorded.</p>
+  </details>`);
 }
 
 function cryoLots(){
