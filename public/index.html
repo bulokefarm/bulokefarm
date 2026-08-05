@@ -1563,7 +1563,13 @@ function joinAI(){
   // An AI is a straw out of a tank. If it is not in the register it
   // cannot be used, so the register is the only way in — and putting
   // one in here is putting it in the register.
-  const straws = (S.refs.semen || []).filter(x => Number(x.straws_left) > 0);
+  //
+  // Lots with none left are not offered: you cannot thaw a straw that
+  // is not there, and leaving them in the list only lengthens it.
+  const inStock = (S.refs.semen || []).filter(x => Number(x.straws_left) > 0);
+  // Same filters and the same state as the tank store, so narrowing
+  // down at the flask carries straight into recording the job.
+  const straws  = cryoFilter(inStock);
 
   const inner = el(`<div>
     <label><span>${w("dam")}</span><select name="dam" required>
@@ -1572,7 +1578,8 @@ function joinAI(){
         esc(a.stock_code)}${a.name?" · "+esc(a.name):""}</option>`).join("")}
     </select></label>
     <label><span>Straw</span><select name="semen" required>
-      <option value="">Which straw…</option>
+      <option value="">Which straw…${straws.length < inStock.length
+        ? ` (${straws.length} of ${inStock.length})` : ""}</option>
       ${straws.map(s=>`<option value="${s.id}">${esc(s.sire_label||s.sire_name)}${
         s.tank?` — tank ${esc(s.tank)} loc ${esc(s.location||"?")}`:""} · ${
         s.straws_left} left${s.shelf_label?` · ${esc(s.shelf_label)}`:""}</option>`).join("")}
@@ -1641,7 +1648,7 @@ function joinAI(){
   due.oninput = () => due.dataset.touched = "1";
   loadGest();
 
-  return formShell(`AI — one ${wl("dam")}`, inner, async (f) => {
+  const shell = formShell(`AI — one ${wl("dam")}`, inner, async (f) => {
     if(!f.get("dam")) throw new Error(`Choose the ${wl("dam")}.`);
     let semenId = f.get("semen") || null, sireId = null;
     if(!semenId) throw new Error("Choose the straw from the register.");
@@ -1666,7 +1673,7 @@ function joinAI(){
         qty: n, on_date: f.get("ncollected") || f.get("on") || today(),
         notes: "Registered while recording an AI" });
     } else {
-      sireId = straws.find(s => s.id===semenId)?.sire_id || null;
+      sireId = inStock.find(s => s.id===semenId)?.sire_id || null;
     }
 
     // sire_id is filled from the straw as well as ai_semen_id, so the
@@ -1700,10 +1707,13 @@ function joinAI(){
     if(e3) throw new Error(`AI saved, but the straw wasn't taken off the count: ${e3.message}`);
     await loadRefs();
 
-    const left = straws.find(x => x.id===semenId);
+    const left = inStock.find(x => x.id===semenId);
     return `AI recorded for ${cow?.stock_code}${
       left ? ` — ${Math.max(0, Number(left.straws_left) - 1)} straws left` : ""}.`;
   });
+  if(inStock.length > 6)
+    shell.insertBefore(cryoFilterBar(inStock, () => render(), true), shell.querySelector("form"));
+  return shell;
 }
 
 // ─── bull out: one bull, one mob ────────────────────────────────
