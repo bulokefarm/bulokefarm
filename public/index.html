@@ -459,7 +459,7 @@ const classLabel = (k, sp) => (CLASS_LABEL[sp] || CLASS_LABEL.cattle)[k]
 const shown = k => S.prefs?.fields?.[k] !== false;
 
 // ─── state ──────────────────────────────────────────────────────
-const S = { me:null, animals:[], herdMode:"list", species:"all", treeLink:null, cryoLot:null, pending:[], treeFam:undefined, treePend:false, paddocks:[], feeds:[], refs:{}, prefs:null, selFeed:null, view:"herd", filter:"all", q:"", sel:null, selPk:null, busy:false };
+const S = { me:null, animals:[], herdMode:"list", species:"all", treeLink:null, cryoLot:null, joinMode:"natural", pending:[], treeFam:undefined, treePend:false, paddocks:[], feeds:[], refs:{}, prefs:null, selFeed:null, view:"herd", filter:"all", q:"", sel:null, selPk:null, busy:false };
 
 // ═══ data ═══════════════════════════════════════════════════════
 async function loadHerd(){
@@ -1542,14 +1542,19 @@ function recJoining(){
   const chips = el(`<div class="chips" style="padding:12px 0 2px"></div>`);
   const slot  = el(`<div></div>`);
   const build = { natural: joinNatural, ai: joinAI };
-  let mode = "natural";
+  // Which kind of joining lives in S, not here. Anything that calls
+  // render — the species bar, the straw filters — rebuilds this whole
+  // function, and a local variable would drop you back on Bull out
+  // halfway through recording an AI.
+  S.joinMode = build[S.joinMode] ? S.joinMode : "natural";
   const show = () => {
-    chips.querySelectorAll(".chip").forEach(b => b.setAttribute("aria-pressed", b.dataset.m===mode));
-    slot.replaceChildren(build[mode]());
+    chips.querySelectorAll(".chip")
+      .forEach(b => b.setAttribute("aria-pressed", b.dataset.m === S.joinMode));
+    slot.replaceChildren(build[S.joinMode]());
   };
   for(const [m,label] of [["natural", `${w("sire")} out`],["ai","AI"]]){
     const b = el(`<button type="button" class="chip" data-m="${m}">${esc(label)}</button>`);
-    b.onclick = () => { mode = m; show(); };
+    b.onclick = () => { S.joinMode = m; show(); };
     chips.appendChild(b);
   }
   wrap.append(chips, slot); show();
