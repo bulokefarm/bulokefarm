@@ -404,6 +404,13 @@ const speciesOf = a => a?.species || "cattle";
 const hasBoth = () => new Set(S.animals.map(speciesOf)).size > 1;
 const hasSpecies = sp => S.animals.some(a => speciesOf(a) === sp);
 
+// A bull out has to be a bull that is here. Not every male ever
+// recorded, and not a reference sire that has never set foot on the
+// place — those exist to hang a pedigree on, not to join a mob.
+const sireWord = sp => (sp === "sheep" ? "ram" : "bull");
+const workingSires = () => S.animals.filter(a =>
+  isActive(a) && inSpecies(a) && a.class === sireWord(speciesOf(a)));
+
 const CLASS_ORDER = {
   cattle: ["breeder","harvest","yearling","weaner","calf","protector","bull"],
   sheep:  ["breeder","harvest","yearling","lamb","ram"]
@@ -1553,7 +1560,10 @@ function recJoining(){
 function joinAI(){
   const cows = S.animals.filter(a => a.sex==="female" && isActive(a) && inSpecies(a));
   if(!cows.length) return el(`<div class="empty"><b>No ${wl("dam")}s on record</b></div>`);
-  const straws = S.refs.semen || [];
+  // An AI is a straw out of a tank. If it is not in the register it
+  // cannot be used, so the register is the only way in — and putting
+  // one in here is putting it in the register.
+  const straws = (S.refs.semen || []).filter(x => Number(x.straws_left) > 0);
 
   const inner = el(`<div>
     <label><span>${w("dam")}</span><select name="dam" required>
@@ -1561,29 +1571,27 @@ function joinAI(){
       ${cows.map(a=>`<option value="${a.id}"${S.sel===a.id?" selected":""}>${
         esc(a.stock_code)}${a.name?" · "+esc(a.name):""}</option>`).join("")}
     </select></label>
-    <label><span>Straw</span><select name="semen">
-      <option value="">Not recorded</option>
+    <label><span>Straw</span><select name="semen" required>
+      <option value="">Which straw…</option>
       ${straws.map(s=>`<option value="${s.id}">${esc(s.sire_label||s.sire_name)}${
-        s.straw_code?" · "+esc(s.straw_code):""}${
-        s.straws_left!=null?` — ${s.straws_left} left`:""}</option>`).join("")}
+        s.tank?` — tank ${esc(s.tank)} loc ${esc(s.location||"?")}`:""} · ${
+        s.straws_left} left${s.shelf_label?` · ${esc(s.shelf_label)}`:""}</option>`).join("")}
       <option value="__new">＋ Register a new straw…</option>
     </select></label>
     <div class="newstraw" hidden>
-      <div class="note">Registering it here puts it in the tank list for next time.</div>
-      <label><span>${w("sire")}</span><select name="nsire">
-        <option value="">Not on file — type the name below</option>
-        ${(S.refs.sire||[]).filter(o => S.species==="all" || (o.species||"cattle")===S.species)
-          .map(o=>`<option value="${o.id}">${esc(o.label)}</option>`).join("")}
-      </select></label>
+      <div class="note">This adds it to the register, so it will be in the tank list next time.</div>
       <label><span>Name on the straw</span><input type="text" name="nname" placeholder="${w("sire")} name"></label>
+      <div class="two">
+        <label><span>Tank</span><select name="ntank">
+          <option value="1">Tank 1</option><option value="2">Tank 2</option></select></label>
+        <label><span>Location</span><select name="nloc">
+          ${[1,2,3,4,5,6].map(i=>`<option value="${i}">${i}</option>`).join("")}</select></label>
+      </div>
       <div class="two">
         <label><span>Straw code</span><input type="text" name="ncode"></label>
         <label><span>Breed</span><input type="text" name="nbreed"></label>
       </div>
-      <div class="two">
-        <label><span>Supplier</span><input type="text" name="nsupplier"></label>
-        <label><span>Tank</span><input type="text" name="ntank" placeholder="Flask 1"></label>
-      </div>
+      <label><span>Supplier</span><input type="text" name="nsupplier"></label>
       <div class="two">
         <label><span>Collected</span><input type="date" name="ncollected"></label>
         <label><span>Straws in</span><input type="number" name="nstraws" min="0" inputmode="numeric"></label>
@@ -1636,13 +1644,13 @@ function joinAI(){
   return formShell(`AI — one ${wl("dam")}`, inner, async (f) => {
     if(!f.get("dam")) throw new Error(`Choose the ${wl("dam")}.`);
     let semenId = f.get("semen") || null, sireId = null;
+    if(!semenId) throw new Error("Choose the straw from the register.");
 
     if(semenId === "__new"){
-      const label = (S.refs.sire||[]).find(o => o.id===f.get("nsire"))?.label;
-      const name  = (f.get("nname")||"").trim() || label;
+      const name = (f.get("nname")||"").trim();
       if(!name) throw new Error(`Name the ${wl("sire")} the straw is from.`);
       const { data, error } = await db.from("ai_semen").insert({
-        sire_id: f.get("nsire")||null, sire_name: name,
+        sire_name: name, tank: f.get("ntank"), location: Number(f.get("nloc")),
         breed:(f.get("nbreed")||"").trim()||null, straw_code:(f.get("ncode")||"").trim()||null,
         supplier:(f.get("nsupplier")||"").trim()||null, tank:(f.get("ntank")||"").trim()||null,
         collected_on: f.get("ncollected")||null,
@@ -1651,7 +1659,13 @@ function joinAI(){
       }).select("id,sire_id").single();
       if(error) throw error;
       semenId = data.id; sireId = data.sire_id;
-    } else if(semenId){
+      // A new lot has to arrive before it can be drawn on, or the
+      // ledger goes straight to minus one.
+      const n = Number(f.get("nstraws")) || 1;
+      await db.from("cryo_txn").insert({ ai_semen_id: semenId, kind:"received",
+        qty: n, on_date: f.get("ncollected") || f.get("on") || today(),
+        notes: "Registered while recording an AI" });
+    } else {
       sireId = straws.find(s => s.id===semenId)?.sire_id || null;
     }
 
@@ -1675,12 +1689,29 @@ function joinAI(){
     if(g !== gestFor(cow))
       await db.from("animal").update({gestation_days:g}).eq("id", cow.id);
 
-    return `AI recorded for ${cow?.stock_code}. Result goes on in the register once she's tested.`;
+    // The straw left the tank. Without this the joining records which
+    // straw was used and the count never moves.
+    const { error:e3 } = await db.from("cryo_txn").insert({
+      ai_semen_id: semenId, kind: "used", qty: -1, on_date: f.get("on") || today(),
+      female_id: cow.id, female_ref: cow.stock_code,
+      confidence: conf === "" || conf == null ? null : Number(conf)/100,
+      notes: (f.get("notes")||"").trim() || null
+    });
+    if(e3) throw new Error(`AI saved, but the straw wasn't taken off the count: ${e3.message}`);
+    await loadRefs();
+
+    const left = straws.find(x => x.id===semenId);
+    return `AI recorded for ${cow?.stock_code}${
+      left ? ` — ${Math.max(0, Number(left.straws_left) - 1)} straws left` : ""}.`;
   });
 }
 
 // ─── bull out: one bull, one mob ────────────────────────────────
 function joinNatural(){
+  const sires = workingSires();
+  if(!sires.length) return el(`<div class="empty"><b>No ${wl("sire")}s on the place</b>
+    A ${wl("sire")} has to be alive here and classed as a ${wl("sire")} before he can go out
+    with a mob. Set his class on his own screen.</div>`);
   if(!S.paddocks.length)
     return el(`<div class="empty"><b>No paddocks yet</b>
       A ${wl("sire")} goes out to a mob, so there needs to be a paddock to put him in.</div>`);
@@ -1688,8 +1719,8 @@ function joinNatural(){
   const inner = el(`<div>
     <label><span>${w("sire")}</span><select name="sire" required>
       <option value="">Which ${wl("sire")}…</option>
-      ${(S.refs.sire||[]).filter(o => S.species==="all" || (o.species||"cattle")===S.species)
-        .map(o=>`<option value="${o.id}">${esc(o.label)}</option>`).join("")}
+      ${sires.map(a=>`<option value="${a.id}">${esc(a.stock_code)}${
+        a.name?" · "+esc(a.name):""}${a.paddock_name?" — "+esc(a.paddock_name):""}</option>`).join("")}
     </select></label>
     <label><span>Out with</span><select name="paddock" required>
       <option value="">Choose a paddock…</option>
