@@ -170,6 +170,15 @@ group by r.animal_id;
 -- feedstuff from this view. `create or replace` can only APPEND, so
 -- the list from 034 is reproduced verbatim with the two new columns
 -- on the end. Do not reorder it.
+-- Guarded like 034's copy: 038 appends the last-finished-run columns
+-- here, and `create or replace view` cannot drop columns. If they are
+-- already present, 038 owns this view and 035 steps aside.
+do $guard$
+begin
+  if not exists (select 1 from information_schema.columns
+                  where table_name = 'v_animal_current'
+                    and column_name = 'off_feed_on') then
+    execute $v$
 create or replace view v_animal_current with (security_invoker = on) as
 select
   a.id, a.stock_code, a.year_letter, a.herd_number, a.name, a.nlis_tag,
@@ -241,6 +250,9 @@ left join paddock pk on pk.id = st.paddock_id
 left join v_animal_clearance cl on cl.animal_id = a.id
 left join v_animal_feed fd on fd.animal_id = a.id
 where a.origin <> 'reference';
+$v$;
+  end if;
+end $guard$;
 
 -- ------------------------------------------------------------
 -- 6. Ending a run, by hand, on a date you choose.
