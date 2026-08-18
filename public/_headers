@@ -1,5 +1,35 @@
 # The HTML must never be served stale — a cached index.html means a fix
 # you shipped this morning is invisible in the yards this afternoon.
+#
+# Pages serves clean URLs, so the browser asks for `/` and `/reports`, not
+# `/index.html`. A `/*.html` rule alone matches the file name nobody
+# requests and silently applies to nothing — verified: the root response
+# was missing X-Frame-Options entirely. Both forms are listed so the rule
+# holds however the page is reached. Add a line here for every new page.
+/
+  Cache-Control: no-cache, must-revalidate
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+
+/reports
+  Cache-Control: no-cache, must-revalidate
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+
+/stock
+  Cache-Control: no-cache, must-revalidate
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+
+/map
+  Cache-Control: no-cache, must-revalidate
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+
 /*.html
   Cache-Control: no-cache, must-revalidate
   X-Frame-Options: DENY
