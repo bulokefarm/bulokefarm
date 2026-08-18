@@ -126,7 +126,8 @@ const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFz
 
 let createClient;
 try      { ({ createClient } = await import("/vendor/supabase.js")); }
-catch(e) { ({ createClient } = await import("https://esm.sh/@supabase/supabase-js@2")); }
+catch(e) { console.warn("vendor/supabase.js failed — falling back to esm.sh", e);
+           ({ createClient } = await import("https://esm.sh/@supabase/supabase-js@2")); }
 
 const timedFetch = (url, opts = {}) => {
   const c = new AbortController();

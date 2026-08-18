@@ -149,7 +149,8 @@ const SUPABASE_URL  = "https://hgnzignikbpdbbyubahu.supabase.co";
 const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhnbnppZ25pa2JwZGJieXViYWh1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU1NTgzNTcsImV4cCI6MjEwMTEzNDM1N30.U5vvmmZfSP0SOXsvLaxpjJ6LjWjOvaOYwTZ9VKyfFs0";
 let createClient;
 try      { ({ createClient } = await import("/vendor/supabase.js")); }
-catch(e) { ({ createClient } = await import("https://esm.sh/@supabase/supabase-js@2")); }
+catch(e) { console.warn("vendor/supabase.js failed — falling back to esm.sh", e);
+           ({ createClient } = await import("https://esm.sh/@supabase/supabase-js@2")); }
 
 const timedFetch = (url, opts = {}) => {
   const c = new AbortController();
