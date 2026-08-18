@@ -145,6 +145,13 @@ ul.rows li{border-bottom:1px solid var(--rule)}
 .row .nm{display:block;font-weight:600;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .row .sub{display:block;font-size:13px;color:var(--ink2);margin-top:3px;line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px;vertical-align:baseline}
+/* Days on feed. Its own pill rather than another item in the sub line:
+   the sub line already ellipses on a phone, and this is the number a
+   buyer asks for, so it must not be the thing that gets cut. */
+.dof{display:inline-block;font-family:var(--mono);font-size:11.5px;line-height:1;
+     padding:3px 6px;border-radius:999px;background:var(--accent-soft);
+     color:var(--accent);white-space:nowrap;margin-left:6px;vertical-align:1px}
+.dof.low{background:#F6EADA;color:var(--warn)}
 .row .rt{font-family:var(--mono);font-size:13px;color:var(--ink2);text-align:right;flex:none}
 
 /* ---------- detail ---------- */
@@ -193,6 +200,9 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-
 .pick[aria-pressed="true"]{outline:2.5px solid var(--accent);outline-offset:1px}
 .hint{font-size:12.5px;color:var(--ink2);margin:6px 0 0}
 .note{background:var(--accent-soft);border-radius:10px;padding:11px 13px;font-size:13.5px;margin:14px 0 0}
+label.chk{display:flex;align-items:center;gap:10px;min-height:var(--tap)}
+label.chk input{width:22px;height:22px;flex:none}
+label.chk span{font-size:15px}
 
 .msg{margin:12px 14px;padding:12px 13px;border-radius:10px;font-size:14px}
 .msg.err{background:#F7E4E2;color:var(--danger)}
@@ -459,6 +469,19 @@ const classLabel = (k, sp) => (CLASS_LABEL[sp] || CLASS_LABEL.cattle)[k]
   || (CLASS_LABEL.cattle[k] || CLASS_LABEL.sheep[k] || k);
 const shown = k => S.prefs?.fields?.[k] !== false;
 
+// Days on feed comes down on the animal row already — v_animal_current
+// carries it — so showing it costs no extra query. Null means not on a
+// run: either never started or the load was marked run out, which closes
+// the run and stops the clock rather than letting it count forever.
+// The estimate is advisory only — it tints the pill and nothing more.
+// A run ends when someone has looked in the feeder, never on a date
+// arithmetic picked.
+const feedLow = a => a.est_days_left != null && a.est_days_left <= 7;
+const dofHTML = a => a.days_on_feed == null ? ""
+  : `<span class="dof${feedLow(a)?" low":""}" title="On ${esc(a.on_feed_feedstuff||"feed")} since ${
+      fmt(a.on_feed_since)}${a.est_empty_on?" — est. empty "+fmt(a.est_empty_on):""}">${
+      a.days_on_feed} d fed</span>`;
+
 // ─── state ──────────────────────────────────────────────────────
 const S = { me:null, animals:[], herdMode:"list", species:"all", treeLink:null, cryoLot:null, joinMode:"natural", pending:[], treeFam:undefined, treePend:false, paddocks:[], feeds:[], refs:{}, prefs:null, selFeed:null, view:"herd", filter:"all", q:"", sel:null, selPk:null, busy:false };
 
@@ -603,7 +626,8 @@ function viewHerd(){
           <span class="sub">${esc(a.class||"")}${
             a.in_paddock_since?" · in since "+fmt(a.in_paddock_since):""}</span></span>
           <span class="rt">${age(a.age_years)}${
-            a.last_weight_kg?"<br>"+Math.round(a.last_weight_kg)+" kg":""}</span></button></li>`);
+            a.last_weight_kg?"<br>"+Math.round(a.last_weight_kg)+" kg":""}${
+            a.days_on_feed!=null?"<br>"+a.days_on_feed+" d fed":""}</span></button></li>`);
         li.querySelector("button").onclick = () => { S.sel=a.id; S.view="detail"; render(); };
         ul.appendChild(li);
       }
@@ -648,7 +672,8 @@ function viewHerd(){
                   ? `<span class="dot" style="background:${esc(a.paddock_colour||"#999")}"></span>`+esc(a.paddock_name)
                   : "<span style='opacity:.6'>no paddock</span>") + ` · ${esc(a.breed||"")}`}</span>
         </span>
-        <span class="rt">${age(a.age_years)}${a.last_weight_kg?"<br>"+Math.round(a.last_weight_kg)+" kg":""}</span>
+        <span class="rt">${age(a.age_years)}${a.last_weight_kg?"<br>"+Math.round(a.last_weight_kg)+" kg":""}${
+          a.days_on_feed!=null?"<br>"+a.days_on_feed+" d fed":""}</span>
       </button></li>`);
       li.querySelector("button").onclick = () => { S.sel=a.id; S.view="detail"; render(); };
       ul.appendChild(li);
@@ -716,7 +741,7 @@ async function viewDetail(){
 
   wrap.appendChild(el(`<div class="hero">${tagHTML(a.stock_code,"lg")}
     <div><h2>${esc(a.name||"Unnamed")}</h2>
-    <div class="sub">${esc(a.breed||"")} · ${esc(a.sex||"")} · ${age(a.age_years)}</div></div></div>`));
+    <div class="sub">${esc(a.breed||"")} · ${esc(a.sex||"")} · ${age(a.age_years)}${dofHTML(a)}</div></div></div>`));
 
   const facts = [];
   const F = (label, val, wide, mono) => facts.push(
@@ -735,6 +760,15 @@ async function viewDetail(){
       ? `<span class="dot" style="background:${esc(a.paddock_colour||"#999")}"></span>`+esc(a.paddock_name)
         +`<span style="font-weight:400;color:var(--ink2)"> · since ${fmt(a.in_paddock_since)}</span>`
       : "Not assigned", true);
+  if(a.days_on_feed != null)
+    F("On feed", `${a.days_on_feed} days`
+      + `<span style="font-weight:400;color:var(--ink2)"> · ${esc(a.on_feed_feedstuff||"ration not named")}`
+      + `<br>since ${fmt(a.on_feed_since)}</span>`
+      + (a.est_empty_on
+          ? `<br><span style="font-weight:400;color:${feedLow(a)?"var(--warn)":"var(--ink2)"}">`
+            + `est. empty ${fmt(a.est_empty_on)}`
+            + `${a.est_days_left>=0?` · about ${a.est_days_left} d left`:" · past the estimate"}`
+            + `</span>` : ""), true);
   if(shown("dam_id"))  F("Dam", esc(a.dam_code||a.dam_name||"—"));
   if(shown("sire_id")) F("Sire", esc(a.sire_name||"—"));
   if(shown("last_weight_kg")) F("Last weight",
@@ -2554,13 +2588,29 @@ function recStockAdj(){
     <p class="hint">Put in what's actually there now. The difference is recorded as the adjustment,
       so the original load quantity stays untouched.</p>
     <label><span>Note</span><input type="text" name="notes" placeholder="Optional"></label>
-    <button type="button" class="btn ghost" id="usedup">Mark as all used up</button>
+    <button type="button" class="btn ghost" id="rundry">The feeder ran dry — take them off</button>
+    <button type="button" class="btn ghost" id="usedup">Store is empty — nothing left to feed out</button>
+    <p class="hint">Two different days. The store empties when the last of it leaves the silo;
+      the mob comes off when the feeder is actually bare. Only the second one stops the
+      days-on-feed count, and only you can see it.</p>
   </div>`);
 
   inner.querySelector("#usedup").onclick = async () => {
-    if(!confirm(`Mark ${f.feedstuff} as finished? It comes off the feed-out list.`)) return;
+    if(!confirm(`Mark ${f.feedstuff} as finished? It comes off the feed-out list.\n\n`
+      + `Anything still on it stays on feed until you say the feeder ran dry.`)) return;
     await db.from("feed_source").update({exhausted_on: today()}).eq("id", f.id);
     await loadPaddocks(); S.view="rec:store"; render();
+  };
+
+  inner.querySelector("#rundry").onclick = async () => {
+    const on = prompt("What day did the feeder run out?", today());
+    if(!on) return;
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(on)){ alert("Use the form 2026-08-18."); return; }
+    const { data, error } = await db.rpc("feed_run_end", {p_source:f.id, p_on:on});
+    if(error){ alert(error.message); return; }
+    await Promise.all([loadPaddocks(), loadHerd()]);
+    S.view="rec:store"; render();
+    alert(`${data} feeding run${data===1?"":"s"} closed on ${on}. Days on feed stop there.`);
   };
 
   return formShell("Adjust stock", inner, async (fd) => {
@@ -2630,6 +2680,11 @@ function recFeed(){
       <option>Rolled out</option><option>Ring feeder</option>
       <option>Self feeder</option><option>Trough</option><option>Bale in paddock</option>
     </select></label>
+    <label class="chk"><input type="checkbox" name="is_run">
+      <span>They stay on this — count their days on feed</span></label>
+    <p class="hint">Tick for a self feeder or any ration they stay on. Leave it for a
+      one-off drop like rolling out a bale: that still counts against the store and
+      still shows in Section 3C, it just doesn't start a days-on-feed clock.</p>
     <label><span>Notes</span><input type="text" name="notes" placeholder="Optional"></label>
     <div class="note">Who ate it is worked out from what's in the paddock that day —
       no need to pick animals.</div>
@@ -2643,6 +2698,13 @@ function recFeed(){
     other.hidden = sel.value !== "";
   };
   sel.onchange = sync;
+  // A self feeder is the ordinary case for a run, so the box follows the
+  // method rather than making it a second thing to remember. Still a
+  // checkbox, because "ad lib in a trough" is a run too and the method
+  // list can't know that.
+  const mSel = inner.querySelector('[name="method"]'),
+        runBox = inner.querySelector('[name="is_run"]');
+  mSel.onchange = () => { runBox.checked = /self feeder/i.test(mSel.value); };
   if(!S.feeds.length) sel.value = "__new";
   sync();
 
@@ -2674,7 +2736,8 @@ function recFeed(){
       fed_on: f.get("on"), paddock_id: f.get("paddock"),
       feed_source_id: src, ration: src ? null : ration,
       qty: f.get("qty") ? Number(f.get("qty")) : null,
-      method: f.get("method")||null, notes: f.get("notes")||null
+      method: f.get("method")||null, notes: f.get("notes")||null,
+      is_run: f.get("is_run") === "on"
     });
     if(error) throw error;
     const p = S.paddocks.find(x => x.id===f.get("paddock"));
