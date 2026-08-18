@@ -41,6 +41,13 @@ joinings.
 calvings, shed work, sale/consignment. Plus the flasks (tank store and
 straw movements) and Manage (feed store, bulk update, field visibility).
 
+**Days on feed** — every herd row and animal card shows how long stock
+have been on a ration, what it is, and the projected empty date; and for
+90 days afterwards, how long the finished run lasted. Costs no extra
+query: it rides on `v_animal_current`. Taking a mob off is
+**Record → Manage → Feed store → the load → "the feeder ran dry"**, or
+the *Fed until* field on the row in `/reports`.
+
 **Stock account** — opening, purchases, natural increase, sales, deaths,
 rations, closing. One schedule per species per financial year, with the
 animals behind every figure.
@@ -84,7 +91,21 @@ improvement. `cryo_ref_code()` resolves what it can and is re-run
 whenever a herd is imported.
 
 **Feeding targets a paddock, not animals.** You record that the back
-gully got two rolls; who ate it comes from `paddock_stay`.
+gully got two rolls; who ate it comes from `paddock_stay`. The Irwins
+grain runs are the exception — they came from a per-animal sheet and
+name their animals directly, so both shapes have to be counted.
+
+**A run is not a drop.** Rolling out a bale feeds them that day. A self
+feeder they stay on for weeks. Both are LPA 3C records and both count
+against the store, but only a run (`feed_event.is_run`) accrues days on
+feed. Without the distinction, every cow in a paddock that once got a
+bale reads as on a finishing ration, climbing daily, forever.
+
+**An empty silo is not a mob off feed.** `feed_source.exhausted_on`
+means there is nothing left to feed out. `feed_event.ended_on` means the
+animals came off. For a self feeder those are weeks apart, and only the
+second stops the clock. Nothing infers one from the other: the estimate
+says when it is likely, the yard says when it is true.
 
 **PIC is ownership, not location.** `animal.property_id` is whose the
 animal is — for NVD, NLIS and tax. `paddock.property_id` is which land.
@@ -113,8 +134,10 @@ animal ──┬─ animal_status       dated life state + class transitions
 ai_semen ─┬─ cryo_txn ───────── animal         straw ledger, female as written
 embryo  ──┘                                    two tanks, six locations each
 
-feed_source ─┬─ feed_event ──── paddock        LPA 3C / 3D
-             └─ feed_adjustment                recounts, spoilage
+feed_source ─┬─ feed_event ──┬─ paddock         LPA 3C / 3D
+             │               ├─ feed_event_animal
+             │               └─ feed_event_ref   tags as written on paper
+             └─ feed_adjustment                  recounts, spoilage
 
 property            PIC. is_primary drives the page letterheads
 farm_user           roles: viewer / manager / owner
@@ -133,6 +156,10 @@ species** — `R 97` is a cow and also a ewe, and both are right.
 | `v_paddock_current` | Paddocks with live head count and stocking rate |
 | `v_treatment_report` | LPA section 2, with which PICs and species were on the run |
 | `v_feed_event` / `v_feed_store` | LPA 3C / 3D, with what's left in the shed |
+| `v_feed_cover` | Who a feeding event covers, by paddock or by name |
+| `v_feed_load` | Per load: head, intake rate, projected empty date |
+| `v_animal_feed` / `v_animal_feed_last` | The run an animal is on, and the one it came off |
+| `v_feed_unmapped` | Animals named on the paper feed record but not on file |
 | `v_consignment` | LPA 5A / 5B |
 | `v_shearing` | Shed work with head count and tags |
 | `v_animal_clearance` | Withholding and export interval per animal |
@@ -153,13 +180,25 @@ needed is polygon area, which is a dozen lines.
 
 **A frontend framework.** Four files, no build, no `node_modules`.
 
+**A CDN at runtime.** `vendor/supabase.js` must be a real self-contained
+bundle, ~210 KB with no `import` statements in it. What esm.sh serves at
+`/@supabase/supabase-js@2` is a four-line *stub* whose imports are
+absolute paths relative to esm.sh; saved locally they resolve against
+our own origin, Pages answers with its 404 HTML, and the module fails on
+MIME type. The `try/catch` in each page then falls through to esm.sh, so
+the app still works and the vendored copy silently does nothing. That
+shipped and ran for months. Check with
+`grep -n 'import "' public/vendor/supabase.js` — it must print nothing.
+Build instructions are in `public/vendor/readme.md`.
+
 ---
 
 ## 4. Repository
 
 ```
 public/                 served as-is by Cloudflare Pages
-  vendor/supabase.js    the client, self-hosted, not a CDN
+  vendor/supabase.js    the client, self-hosted, not a CDN (see its readme)
+  _headers              cache and security headers, per clean URL
 supabase/
   migrations/           schema, applied in filename order
   seed/                 data loads, run once, in numeric order
@@ -193,6 +232,11 @@ rebuild, so anything depending on imported records has to be a seed.
 | 31 | The cryo store: tanks, locations, embryos, ledger |
 | 32 | Straw markings split into marker, straw, size, goblet |
 | 33 | Resolving the females named on the register |
+| 34 | Days on feed on the herd view; store balance from the written amounts |
+| 35 | Feeder dry ≠ silo empty. Intake rate, projected empty date, `feed_run_end()` |
+| 36 | The two Irwins loads rebuilt; `feed_event_ref` for tags not yet on file |
+| 37 | A run they stay on vs a one-off drop (`is_run`) |
+| 38 | The run they just came off, kept alongside the one they are on |
 
 ### Seeds
 
@@ -219,7 +263,23 @@ reproduce the database. `supabase/schema.sql` is the check — the backup
 job rewrites it weekly, so drift surfaces as a commit.
 
 Every migration is written to be **safely re-runnable** — `if not
-exists`, `or replace`, `drop policy if exists`. Keep it that way.
+exists`, `or replace`, `drop policy if exists`. Keep it that way, and
+**prove it by actually re-running them**, in order, three times, against
+a scratch database with realistic data. A single forward pass hides a
+whole class of bug: migrations 34–38 each applied perfectly the first
+time and, on the second, variously aborted, deleted a delivery record
+that had just been created, and silently took an entire mob off feed.
+None of it was visible until the second run.
+
+```bash
+# a scratch Postgres is enough; no Supabase needed for the shape
+initdb -D /tmp/pg/data -A trust && pg_ctl -D /tmp/pg/data -o "-p 5433" start
+for pass in 1 2 3; do
+  for f in supabase/migrations/*.sql; do
+    psql -p 5433 -d scratch -v ON_ERROR_STOP=1 -f "$f" || echo "FAIL $f pass $pass"
+  done
+done
+```
 
 ### Rules learned the hard way
 
@@ -229,6 +289,44 @@ exists`, `or replace`, `drop policy if exists`. Keep it that way.
   gained columns and silently drop them.
 - **`create or replace view` can only append columns.** Adding one at
   the front, renaming, or reordering needs `drop view if exists` first.
+- **Appending to a view breaks every earlier migration that built it.**
+  Once migration 38 adds a column to `v_animal_current`, re-running 34
+  or 35 tries to replace it with fewer columns and aborts with *cannot
+  drop columns from view*. Every migration that appends to a view a
+  later one also appends to needs a guard that steps aside:
+
+  ```sql
+  do $guard$
+  begin
+    if not exists (select 1 from information_schema.columns
+                    where table_name = 'v_animal_current'
+                      and column_name = 'off_feed_on') then
+      execute $v$ create or replace view v_animal_current ... $v$;
+    end if;
+  end $guard$;
+  ```
+
+  Guarded so far: `v_animal_current` and `v_animal_feed` (34),
+  `v_feed_load` and `v_animal_current` (35). The nested `$guard$` /
+  `$v$` quoting is required — plain `$$` collides with the body.
+- **A backfill is a one-time statement with a permanent trigger.** A
+  repair `update` at the end of a migration re-fires on every later run,
+  against data a subsequent migration has since changed its mind about.
+  Migration 34 closed feeding runs when the store emptied; 35 overturned
+  that rule, but 34's backfill kept enforcing it on every re-run, zeroing
+  days-on-feed for the whole mob. Guard backfills on whether the later
+  migration exists, not just on whether the rows look untouched.
+- **Key an idempotent update on something stable.** "Update any row that
+  isn't already correct" matches the row a previous run of the same
+  migration just inserted. Migration 36 keyed the June feed source that
+  way and, on the second run, rewrote the March delivery into a duplicate
+  June one. Key on the relationship — the event that points at it —
+  rather than on the values being set.
+- **An insert matching zero rows is not an error.** `insert ... select
+  ... from animal where stock_code = any(array[...])` silently writes
+  nothing if none of the tags exist. That is how 3.95 tonne of grain
+  never reached Section 3C: seed 20 referenced animals that seed 30
+  creates. Order seeds so references exist first, or check the row count.
 - **Drop dependent views before touching a column they read**, and
   recreate them explicitly. `cascade` drops them silently and leaves
   them gone. Current chains: `v_animal_current` ← `v_animal_clearance`;
@@ -250,6 +348,13 @@ exists`, `or replace`, `drop policy if exists`. Keep it that way.
 - **Match on more than a name.** One bull can hold three blocks in a
   register and one cow two joinings in a season; taking the first match
   loses the others.
+- **Single-letter globals get shadowed.** `viewDetail` destructured its
+  queries as `const [w, t, c, sh] = await Promise.all(...)`, shadowing
+  the module-level vocabulary helper `w(key, species)` for the whole
+  function. Every female's detail page threw *w is not a function*, and
+  because it was an `async` view called from `render`, it surfaced as an
+  unhandled rejection with a blank screen rather than an obvious error.
+  `node --check` will not catch this; shadowing is legal JavaScript.
 
 ### Deploying
 
@@ -258,6 +363,16 @@ is no build step — it serves `public/` as-is.
 
 Pages settings: framework preset **None**, build command **empty**,
 output directory **public**.
+
+**`_headers` must name the clean URLs.** Pages serves `/` and `/reports`,
+not `/index.html`, so a `/*.html` rule matches the filename nobody
+requests and applies to nothing — `X-Frame-Options` was missing from
+every page for months without a symptom. Add a block per page path.
+Verify with `curl -sI https://admin.bulokefarm.com.au/`, which is also
+the quickest confirmation a deploy has actually landed.
+
+**Never add `_redirects`** rewriting `/foo` to `/foo.html`. Pages already
+serves clean URLs and the rule causes a redirect loop.
 
 ---
 
@@ -353,8 +468,16 @@ sign-in too. The setting you want is "Allow new users to sign up".
 
 **Rupari's herd.** The second PIC exists in the schema but the animals
 aren't in. Until they are, 212 straw and embryo movements name a cow the
-database doesn't hold — `select * from v_cryo_unmapped`. Re-run the
-update in migration 33 afterwards and that number should drop hard.
+database doesn't hold — `select * from v_cryo_unmapped` — and six lines
+of the Irwins feed record name stock that isn't on file:
+**V 06, V 10, V 11, V 17, W 05** — `select * from v_feed_unmapped`.
+Afterwards, re-run the update in migration 33 and
+`select feed_resolve_refs();`. Both numbers should drop hard.
+
+Head counts on `v_feed_load` already include the unresolved tags, so the
+projected empty dates are right today — the paper says six head ate the
+June load and six is what the tonnage divides by. Counting only animals
+on file read 148 days instead of 74.
 
 **The valuation side of the trading account.** Head counts are done and
 reconcile. Values need a purchase price on `animal`, a per-year
@@ -378,6 +501,13 @@ this is settled.
 contains eight joinings with `due_on = 1900-10-11` and no service date.
 Migration 27 clears them and constrains against a repeat, but the seed
 carries them.
+
+**Seed order.** `30_historical.sql` creates V 23 and V 25, but
+`20_treatments_2026.sql` attaches the 17 March grain feeding to them and
+runs first, so it matched nothing and the load vanished. Migration 36
+rebuilds it, but a clean rebuild would lose it again. Renumber the
+historical seed ahead of the treatments, or make the treatment inserts
+report a zero row count instead of passing silently.
 
 **Smaller things.** The masthead head count ignores the species scope.
 `n/B/R` (`marking_code`) meaning still unknown. `TOL 20-P1065`'s EID is
