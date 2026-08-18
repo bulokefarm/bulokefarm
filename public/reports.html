@@ -574,7 +574,9 @@ const FIELDS = {
     ["fed_on","Date","date"],["ended_on","Fed until","date"],
     ["ration","Feed (if not a stored source)","text"],
     ["qty","Quantity used","number"],["amount","Amount (as written)","text"],
-    ["method","Method","text"],["notes","Notes","area"]]},
+    ["method","Method","text"],
+    ["is_run","They stay on this — counts days on feed","bool"],
+    ["notes","Notes","area"]]},
   consignment: { title:"Consignment", table:"consignment", date:"consigned_on", fields:[
     ["consigned_on","Date","date"],
     ["nvd_kind","NVD from","pick:book|envd"],["nvd_serial","NVD serial","text"],
@@ -620,6 +622,7 @@ const FIELDS = {
     ["cvd_ref","CVD reference","text"],["residue_cert","Residue certificate held","bool"],
     ["ram_free","Certified RAM free","bool"],["storage","Stored","text"],
     ["signed_by","Signed by","text"],["exhausted_on","All used up","date"],
+    ["intake_kg_head_day","Est. intake kg/head/day","number"],
     ["notes","Notes","area"]]}
 };
 

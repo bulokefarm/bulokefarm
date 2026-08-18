@@ -516,7 +516,7 @@ const dofHTML = a => a.days_on_feed == null ? ""
       a.days_on_feed} d fed</span>`;
 
 // ─── state ──────────────────────────────────────────────────────
-const S = { me:null, animals:[], herdMode:"list", species:"all", treeLink:null, cryoLot:null, joinMode:"natural", pending:[], treeFam:undefined, treePend:false, paddocks:[], feeds:[], refs:{}, prefs:null, selFeed:null, view:"herd", filter:"all", q:"", sel:null, selPk:null, busy:false };
+const S = { me:null, animals:[], herdMode:"list", species:"all", treeLink:null, cryoLot:null, joinMode:"natural", pending:[], treeFam:undefined, treePend:false, paddocks:[], feeds:[], feedsDone:[], refs:{}, prefs:null, selFeed:null, view:"herd", filter:"all", q:"", sel:null, selPk:null, busy:false };
 
 // ═══ data ═══════════════════════════════════════════════════════
 async function loadHerd(){
@@ -531,13 +531,21 @@ async function loadPending(){
   S.pending = data || [];
 }
 async function loadPaddocks(){
-  const [p,f] = await Promise.all([
+  const [p,f,d] = await Promise.all([
     db.from("v_paddock_current").select("*").order("name"),
     db.from("v_feed_store").select("*")
-      .is("exhausted_on", null).order("feedstuff")
+      .is("exhausted_on", null).order("feedstuff"),
+    // Finished loads stay reachable. Marking a load used up used to
+    // drop it out of the store list entirely, which also took away
+    // the only way to say the feeder later ran dry — so the animals
+    // could be stuck on feed with no screen left to take them off.
+    db.from("v_feed_store").select("*")
+      .not("exhausted_on", "is", null)
+      .order("exhausted_on", {ascending:false}).limit(20)
   ]);
-  S.paddocks = p.data || [];
-  S.feeds    = f.data || [];
+  S.paddocks  = p.data || [];
+  S.feeds     = f.data || [];
+  S.feedsDone = d.data || [];
 }
 async function loadRefs(){
   const [h,p,b,s,em] = await Promise.all([
@@ -2543,6 +2551,24 @@ function recStore(){
       ul.appendChild(li);
     }
     wrap.appendChild(ul);
+
+    if(S.feedsDone.length){
+      wrap.appendChild(el(`<h3 class="sec">Finished</h3>`));
+      const ul3 = el(`<ul class="rows"></ul>`);
+      for(const f of S.feedsDone){
+        const open = (S.animals||[]).filter(a => a.on_feed_feedstuff === f.feedstuff
+                                              && a.days_on_feed != null).length;
+        const li = el(`<li><button class="row" style="opacity:.7">
+          <span class="meta"><span class="nm">${esc(f.feedstuff)}</span>
+          <span class="sub">used up ${fmt(f.exhausted_on)}${
+            f.batch_ref?" · "+esc(f.batch_ref):""}${
+            open?` · <b style="color:var(--warn)">${open} still on feed</b>`:""}</span></span>
+          <span class="rt">—</span></button></li>`);
+        li.querySelector("button").onclick = () => { S.selFeed = f.id; S.view="rec:stockadj"; render(); };
+        ul3.appendChild(li);
+      }
+      wrap.appendChild(ul3);
+    }
   }
 
   const add = el(`<div class="pad"><button class="btn">Add feed to the store</button></div>`);
@@ -2607,7 +2633,8 @@ function recNewFeed(){
 }
 
 function recStockAdj(){
-  const f = S.feeds.find(x => x.id===S.selFeed);
+  const f = S.feeds.find(x => x.id===S.selFeed)
+           || S.feedsDone.find(x => x.id===S.selFeed);
   if(!f) return el(`<div class="empty">Feed not found.</div>`);
 
   const inner = el(`<div>
@@ -2626,13 +2653,15 @@ function recStockAdj(){
       so the original load quantity stays untouched.</p>
     <label><span>Note</span><input type="text" name="notes" placeholder="Optional"></label>
     <button type="button" class="btn ghost" id="rundry">The feeder ran dry — take them off</button>
-    <button type="button" class="btn ghost" id="usedup">Store is empty — nothing left to feed out</button>
+    ${f.exhausted_on ? `<p class="hint">Store marked empty ${fmt(f.exhausted_on)}.</p>`
+      : `<button type="button" class="btn ghost" id="usedup">Store is empty — nothing left to feed out</button>`}
     <p class="hint">Two different days. The store empties when the last of it leaves the silo;
       the mob comes off when the feeder is actually bare. Only the second one stops the
       days-on-feed count, and only you can see it.</p>
   </div>`);
 
-  inner.querySelector("#usedup").onclick = async () => {
+  const usedupBtn = inner.querySelector("#usedup");
+  if(usedupBtn) usedupBtn.onclick = async () => {
     if(!confirm(`Mark ${f.feedstuff} as finished? It comes off the feed-out list.\n\n`
       + `Anything still on it stays on feed until you say the feeder ran dry.`)) return;
     await db.from("feed_source").update({exhausted_on: today()}).eq("id", f.id);
