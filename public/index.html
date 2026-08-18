@@ -152,6 +152,16 @@ ul.rows li{border-bottom:1px solid var(--rule)}
      padding:3px 6px;border-radius:999px;background:var(--accent-soft);
      color:var(--accent);white-space:nowrap;margin-left:6px;vertical-align:1px}
 .dof.low{background:#F6EADA;color:var(--warn)}
+/* The on-feed block on a herd row. Deliberately allowed to wrap where
+   .sub does not: this is the number a buyer asks for, so it should not
+   be the thing that ellipses away on a phone. */
+.row .feed{display:block;font-size:12.5px;line-height:1.4;margin-top:4px;
+  color:var(--ink2);white-space:normal}
+.row .feed b{color:var(--accent);font-weight:700}
+.row .feed.low b{color:var(--warn)}
+.row .feed.off b{color:var(--ink2)}
+.row .feed .ttl{text-transform:uppercase;letter-spacing:.06em;font-size:10.5px;
+  color:var(--ink2);opacity:.8;display:block}
 .row .rt{font-family:var(--mono);font-size:13px;color:var(--ink2);text-align:right;flex:none}
 
 /* ---------- detail ---------- */
@@ -477,6 +487,29 @@ const shown = k => S.prefs?.fields?.[k] !== false;
 // A run ends when someone has looked in the feeder, never on a date
 // arithmetic picked.
 const feedLow = a => a.est_days_left != null && a.est_days_left <= 7;
+// The same block the detail screen shows, sized for a list row. Kept in
+// one place so the herd and the animal card can never drift apart.
+// Recently-off is shown for 90 days: after that it is history, not
+// something you need while walking the mob.
+const recentlyOff = a => a.off_feed_on != null &&
+  (Date.now() - new Date(a.off_feed_on).getTime()) / 864e5 <= 90;
+function feedBlockHTML(a){
+  if(a.days_on_feed != null){
+    const l2 = [`since ${fmt(a.on_feed_since)}`,
+      a.est_empty_on ? `est. empty ${fmt(a.est_empty_on)}` : null,
+      a.est_days_left != null
+        ? (a.est_days_left >= 0 ? `about ${a.est_days_left} d left` : "past the estimate")
+        : null].filter(Boolean).join(" · ");
+    return `<span class="feed${feedLow(a)?" low":""}"><span class="ttl">On feed</span>`
+      + `<b>${a.days_on_feed} days</b> · ${esc(a.on_feed_feedstuff||"ration not named")}`
+      + `<br>${l2}</span>`;
+  }
+  if(recentlyOff(a))
+    return `<span class="feed off"><span class="ttl">Came off feed</span>`
+      + `<b>${a.days_fed_last} days</b> · ${esc(a.last_feedstuff||"ration not named")}`
+      + `<br>finished ${fmt(a.off_feed_on)}</span>`;
+  return "";
+}
 const dofHTML = a => a.days_on_feed == null ? ""
   : `<span class="dof${feedLow(a)?" low":""}" title="On ${esc(a.on_feed_feedstuff||"feed")} since ${
       fmt(a.on_feed_since)}${a.est_empty_on?" — est. empty "+fmt(a.est_empty_on):""}">${
@@ -624,10 +657,10 @@ function viewHerd(){
         const li = el(`<li><button class="row">${tagHTML(a.stock_code)}
           <span class="meta"><span class="nm">${esc(a.name||"Unnamed")}</span>
           <span class="sub">${esc(a.class||"")}${
-            a.in_paddock_since?" · in since "+fmt(a.in_paddock_since):""}</span></span>
+            a.in_paddock_since?" · in since "+fmt(a.in_paddock_since):""}</span>
+          ${feedBlockHTML(a)}</span>
           <span class="rt">${age(a.age_years)}${
-            a.last_weight_kg?"<br>"+Math.round(a.last_weight_kg)+" kg":""}${
-            a.days_on_feed!=null?"<br>"+a.days_on_feed+" d fed":""}</span></button></li>`);
+            a.last_weight_kg?"<br>"+Math.round(a.last_weight_kg)+" kg":""}</span></button></li>`);
         li.querySelector("button").onclick = () => { S.sel=a.id; S.view="detail"; render(); };
         ul.appendChild(li);
       }
@@ -671,9 +704,9 @@ function viewHerd(){
               : (a.paddock_name
                   ? `<span class="dot" style="background:${esc(a.paddock_colour||"#999")}"></span>`+esc(a.paddock_name)
                   : "<span style='opacity:.6'>no paddock</span>") + ` · ${esc(a.breed||"")}`}</span>
+          ${feedBlockHTML(a)}
         </span>
-        <span class="rt">${age(a.age_years)}${a.last_weight_kg?"<br>"+Math.round(a.last_weight_kg)+" kg":""}${
-          a.days_on_feed!=null?"<br>"+a.days_on_feed+" d fed":""}</span>
+        <span class="rt">${age(a.age_years)}${a.last_weight_kg?"<br>"+Math.round(a.last_weight_kg)+" kg":""}</span>
       </button></li>`);
       li.querySelector("button").onclick = () => { S.sel=a.id; S.view="detail"; render(); };
       ul.appendChild(li);
@@ -769,6 +802,10 @@ async function viewDetail(){
             + `est. empty ${fmt(a.est_empty_on)}`
             + `${a.est_days_left>=0?` · about ${a.est_days_left} d left`:" · past the estimate"}`
             + `</span>` : ""), true);
+  else if(recentlyOff(a))
+    F("Came off feed", `${a.days_fed_last} days`
+      + `<span style="font-weight:400;color:var(--ink2)"> · ${esc(a.last_feedstuff||"ration not named")}`
+      + `<br>finished ${fmt(a.off_feed_on)}</span>`, true);
   if(shown("dam_id"))  F("Dam", esc(a.dam_code||a.dam_name||"—"));
   if(shown("sire_id")) F("Sire", esc(a.sire_name||"—"));
   if(shown("last_weight_kg")) F("Last weight",
