@@ -85,6 +85,12 @@ catch(e) { console.warn("vendor/supabase.js failed — falling back to esm.sh", 
            ({ createClient } = await import("https://esm.sh/@supabase/supabase-js@2")); }
 const db = createClient(SUPABASE_URL, SUPABASE_ANON);
 
+// Local calendar day. toISOString() gives the UTC day, which is still
+// yesterday here until 10am AEST — so a date recorded first thing in
+// the morning would be written a day early.
+const localToday = () => { const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`
+       + `-${String(d.getDate()).padStart(2,"0")}`; };
 const HOME = [-38.1837289, 146.1161005];
 const PALETTE = ["#4F7A1F","#1F6FB2","#A8760D","#B4552A","#0E7C6B","#6B4E9E",
                  "#96324B","#14708A","#7A5C12","#54595E"];
@@ -252,7 +258,7 @@ grazing history and boundary are kept. Reason:`, "Subdivided");
   if(why===null) return;
   if(p.head) return say("err", `${p.head} head are still in ${p.name}. Move them out first.`);
   const { error } = await db.from("paddock")
-    .update({retired_on:new Date().toISOString().slice(0,10), retired_reason:why||null}).eq("id",p.id);
+    .update({retired_on:localToday(), retired_reason:why||null}).eq("id",p.id);
   if(error) return say("err", error.message);
   S.sel=null; say("ok",`${p.name} retired.`); await load();
 }

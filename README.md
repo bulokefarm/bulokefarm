@@ -180,6 +180,16 @@ needed is polygon area, which is a dozen lines.
 
 **A frontend framework.** Four files, no build, no `node_modules`.
 
+**UTC.** The session timezone is `Australia/Melbourne` (migration 39),
+because `current_date` on UTC is yesterday here until 10am AEST. In the
+browser, **never `toISOString()` for a calendar date** — it returns the
+UTC day, so anything recorded before 10am was dated a day early on the
+LPA record. Build dates from local parts (`today()` in `index.html`,
+`localDay()` in `reports.html`, `localToday()` in `map.html`), and do
+date arithmetic anchored at UTC midnight with `setUTCDate` so no zone
+enters into it at all. `fmt()` already parses `d+"T00:00:00"` as local
+and is correct — that was the model to follow.
+
 **A CDN at runtime.** `vendor/supabase.js` must be a real self-contained
 bundle, ~210 KB with no `import` statements in it. What esm.sh serves at
 `/@supabase/supabase-js@2` is a four-line *stub* whose imports are
@@ -237,6 +247,7 @@ rebuild, so anything depending on imported records has to be a seed.
 | 36 | The two Irwins loads rebuilt; `feed_event_ref` for tags not yet on file |
 | 37 | A run they stay on vs a one-off drop (`is_run`) |
 | 38 | The run they just came off, kept alongside the one they are on |
+| 39 | Melbourne time, not UTC. `farm_today()`, and the due dates it exposed |
 
 ### Seeds
 
@@ -508,6 +519,15 @@ runs first, so it matched nothing and the load vanished. Migration 36
 rebuilds it, but a clean rebuild would lose it again. Renumber the
 historical seed ahead of the treatments, or make the treatment inserts
 report a zero row count instead of passing silently.
+
+**Due dates that may be a day early.** The browser computed `due_on` by
+mixing a UTC anchor with local day arithmetic, so a joining and a due
+date on opposite sides of a daylight-saving change land a day short —
+the ordinary June-joined, March-due pattern. Fixed going forward in
+migration 39; the stored values are listed by
+`select * from v_due_date_check`. A `drift` of exactly 1 is the bug,
+anything else was a deliberate adjustment, so they are not rewritten
+automatically. The one-line accept is in the migration's comments.
 
 **Smaller things.** The masthead head count ignores the species scope.
 `n/B/R` (`marking_code`) meaning still unknown. `TOL 20-P1065`'s EID is
