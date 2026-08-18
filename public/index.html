@@ -758,7 +758,7 @@ async function viewDetail(){
   if(shown("notes") && a.notes) F("Notes", esc(a.notes), true);
   wrap.appendChild(el(`<dl class="facts">${facts.join("")}</dl>`));
 
-  const [w, t, c, sh] = await Promise.all([
+  const [wts, t, c, sh] = await Promise.all([
     db.from("weight_event").select("weighed_on,weight_kg,method").eq("animal_id",a.id).order("weighed_on",{ascending:false}),
     db.from("treatment_animal").select("treatment:treatment_id(treated_on,product_name,batch_number,withholding_days,safe_for_slaughter)").eq("animal_id",a.id),
     db.from("calving").select("calved_on,outcome,assisted,notes,calf:calf_id(stock_code,name)").eq("dam_id",a.id).order("calved_on",{ascending:false}),
@@ -776,7 +776,7 @@ async function viewDetail(){
     wrap.appendChild(ul);
   };
 
-  timeline("Weights", (w.data||[]).map(r => ({d:r.weighed_on, t:`${r.weight_kg} kg`, s:r.method||""})),
+  timeline("Weights", (wts.data||[]).map(r => ({d:r.weighed_on, t:`${r.weight_kg} kg`, s:r.method||""})),
            "No weights recorded yet.");
 
   const treats = (t.data||[]).map(r => r.treatment).filter(Boolean)
@@ -2684,9 +2684,9 @@ function recFeed(){
 
 function recMove(){
   if(!S.paddocks.length){
-    const w = el(`<div class="empty"><b>No paddocks yet</b>
+    const empty = el(`<div class="empty"><b>No paddocks yet</b>
       Draw your fence lines in the paddock editor first.</div>`);
-    return w;
+    return empty;
   }
   const inner = el(`<div>
     <label><span>Moving to</span><select name="to" required>
