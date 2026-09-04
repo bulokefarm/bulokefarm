@@ -158,6 +158,21 @@ animal is — for NVD, NLIS and tax. `paddock.property_id` is which land.
 With two PICs on one property those are different things, and the
 paddock's PIC must never be used to filter a herd.
 
+**A calving puts the calf on the ground.** Recording a calving used to
+write one row against the cow, and the calf was a line in her history
+with nothing in the herd to tag, sex or drench. `record_calving()`
+writes the calving, the calf, its status and its paddock in one
+transaction, the same shape as `record_spray()`. The calf carries this
+year's letter and no number — `stock_code` stays null until a tag is
+decided in the yard, so it shows as `X ?` under the year's drop and
+twins don't collide on the unique index. The open joining nearest the
+date names the sire and is resolved by it. When the tag is written
+later, `animal_code_parts` fills the letter and number in from it.
+`year_letter()` takes the letter the herd already uses for that year,
+falling back to the NLIS cycle (no I or O; 2005 was A, so 2026 is X).
+A row on **Due** opens the cow's card, so the calving is two taps from
+the list of who is due.
+
 **Reference animals.** `animal` also holds sires and dams that were
 never on the property (`origin = 'reference'`). Pedigree stays a single
 self-join instead of nullable text columns.
@@ -299,6 +314,8 @@ rebuild, so anything depending on imported records has to be a seed.
 | 37 | A run they stay on vs a one-off drop (`is_run`) |
 | 38 | The run they just came off, kept alongside the one they are on |
 | 39 | Melbourne time, not UTC. `farm_today()`, and the due dates it exposed |
+| 40–42 | Spraying: LPA 3B, `record_spray()`, many paddocks per pass, grazing withholds on `move_animals` |
+| 43 | A calving creates the calf: `record_calving()`, `year_letter()`, tag parts filled from `stock_code` |
 
 ### Seeds
 

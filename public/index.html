@@ -414,6 +414,10 @@ const defaultPrefs = () => ({
 // so it's still here. Sold and died are gone; they stay in the
 // pedigree but never in a head count.
 const isActive = a => !a.life_state || a.life_state === "alive";
+// A calf on the ground carries this year's letter and no number yet —
+// stock_code stays null until a tag is chosen in the yard. Wherever a
+// tag is shown, show the letter with a placeholder rather than "? ?".
+const codeOf = a => a.stock_code || (a.year_letter ? `${a.year_letter} ?` : "? ?");
 // paddock.head counts every animal grazing there. With two mobs on the
 // same ground that is the wrong number the moment a species scope is
 // set, so anywhere a head count is shown it is counted from the herd.
@@ -644,7 +648,7 @@ function viewHerd(){
     : S.filter.startsWith("pk:") ? isActive(a) && a.paddock_id===S.filter.slice(3)
     : isActive(a) && (S.filter==="all" || a.class===S.filter));
   const match = a => inScope(a) &&
-    (!q || [a.stock_code,a.name,a.breed,a.nlis_tag].some(v => (v||"").toLowerCase().includes(q)));
+    (!q || [codeOf(a),a.name,a.breed,a.nlis_tag].some(v => (v||"").toLowerCase().includes(q)));
 
   if(S.herdMode==="paddock"){
     const groups = [];
@@ -667,7 +671,7 @@ function viewHerd(){
           p?.area_ha ? ` · ${p.area_ha} ha` : ""}</span></h3>`));
       const ul = el(`<ul class="rows"></ul>`);
       for(const a of list){
-        const li = el(`<li><button class="row">${tagHTML(a.stock_code)}
+        const li = el(`<li><button class="row">${tagHTML(codeOf(a))}
           <span class="meta"><span class="nm">${esc(a.name||"Unnamed")}</span>
           <span class="sub">${esc(a.class||"")}${
             a.in_paddock_since?" · in since "+fmt(a.in_paddock_since):""}</span>
@@ -708,7 +712,7 @@ function viewHerd(){
     const ul = el(`<ul class="rows"></ul>`);
     for(const a of list){
       const li = el(`<li><button class="row"${isActive(a)?"":' style="opacity:.62"'}>
-        ${tagHTML(a.stock_code)}
+        ${tagHTML(codeOf(a))}
         <span class="meta">
           <span class="nm">${esc(a.name||"Unnamed")}</span>
           <span class="sub">${!isActive(a)
@@ -744,7 +748,7 @@ async function viewDue(){
   if(spBar) wrap.appendChild(spBar);
 
   const { data, error } = await db.from("expected_calving")
-    .select("id,due_on,season,cycle,dam:dam_id(stock_code,name,species),sire:sire_id(name,stock_code)")
+    .select("id,dam_id,due_on,season,cycle,dam:dam_id(stock_code,name,species),sire:sire_id(name,stock_code)")
     .is("resolved_calving_id", null).order("due_on");
   if(error){ wrap.appendChild(el(`<div class="msg err">${esc(error.message)}</div>`)); return wrap; }
 
@@ -765,7 +769,9 @@ async function viewDue(){
     const ul = el(`<ul class="rows"></ul>`);
     for(const r of rows){
       const days = Math.round((new Date(r.due_on) - new Date())/864e5);
-      ul.appendChild(el(`<li><div class="row" style="cursor:default">
+      // Tapping the row opens her card, the same as from the herd, so
+      // the calving can be recorded from here without a search.
+      const li = el(`<li><button class="row">
         ${tagHTML(r.dam?.stock_code)}
         <span class="meta">
           <span class="nm">${esc(r.dam?.name||"")}</span>
@@ -773,7 +779,9 @@ async function viewDue(){
             ? "to " + esc(r.sire.name || r.sire.stock_code) : "sire not recorded"}</span>
         </span>
         <span class="rt">${fmt(r.due_on)}<br>${days>0?"in "+days+"d":"overdue"}</span>
-      </div></li>`));
+      </button></li>`);
+      li.querySelector("button").onclick = () => { S.sel = r.dam_id; S.view = "detail"; render(); };
+      ul.appendChild(li);
     }
     wrap.appendChild(ul);
   }
@@ -785,7 +793,7 @@ async function viewDetail(){
   const wrap = el(`<div></div>`);
   if(!a){ wrap.appendChild(el(`<div class="empty">Animal not found.</div>`)); return wrap; }
 
-  wrap.appendChild(el(`<div class="hero">${tagHTML(a.stock_code,"lg")}
+  wrap.appendChild(el(`<div class="hero">${tagHTML(codeOf(a),"lg")}
     <div><h2>${esc(a.name||"Unnamed")}</h2>
     <div class="sub">${esc(a.breed||"")} · ${esc(a.sex||"")} · ${age(a.age_years)}${dofHTML(a)}</div></div></div>`));
 
@@ -905,8 +913,9 @@ async function viewDetail(){
     })), "No calvings recorded yet.");
 
   if(canWrite()){
-    const b = el(`<div class="pad"><button class="btn">Record something for ${esc(a.stock_code)}</button>
-      <button class="btn ghost" id="edit-a">Edit ${esc(a.stock_code)}'s details</button></div>`);
+    const b = el(`<div class="pad"><button class="btn">Record something for ${esc(codeOf(a))}</button>
+      <button class="btn ghost" id="edit-a">${a.stock_code
+        ? `Edit ${esc(codeOf(a))}'s details` : "Give it a tag, a name and a sex"}</button></div>`);
     b.querySelector(".btn").onclick = () => { S.view="record"; render(); };
     b.querySelector("#edit-a").onclick = () => { S.view="editAnimal"; render(); };
     wrap.appendChild(b);
@@ -1104,7 +1113,7 @@ function treeSVG(match){
         stroke-dasharray="${gone?"5 3":"none"}"/>
       <rect x="${x}" y="${y}" width="7" height="${NH}" rx="3.5" fill="${col}"/>
       <text x="${x+16}" y="${y+21}" font-size="14" font-weight="700"
-        font-family="ui-monospace,Menlo,monospace" fill="#16150F">${esc(a.stock_code||"untagged")}</text>
+        font-family="ui-monospace,Menlo,monospace" fill="#16150F">${esc((a.stock_code||a.year_letter) ? codeOf(a) : "untagged")}</text>
       <text x="${x+16}" y="${y+38}" font-size="12" fill="#16150F">${esc((a.name||"").slice(0,20))}</text>
       <text x="${x+16}" y="${y+55}" font-size="10.5" fill="#5A574E">${
         sexMark(a)} ${esc(age(a.age_years))}</text>
@@ -1317,7 +1326,7 @@ function viewMap(){
     } else {
       const ul = el(`<ul class="rows"></ul>`);
       for(const a of inIt){
-        const li = el(`<li><button class="row">${tagHTML(a.stock_code)}
+        const li = el(`<li><button class="row">${tagHTML(codeOf(a))}
           <span class="meta"><span class="nm">${esc(a.name||"Unnamed")}</span>
           <span class="sub">${esc(a.class||"")} · in since ${fmt(a.in_paddock_since)}</span></span>
           <span class="rt">${age(a.age_years)}</span></button></li>`);
@@ -1429,7 +1438,7 @@ function animalPicker(multi=true, preset=[]){
   box.list = list;
   for(const a of list){
     const b = el(`<button type="button" class="pick" aria-pressed="${chosen.has(a.id)}"
-      title="${esc(a.name||"")}">${tagHTML(a.stock_code)}</button>`);
+      title="${esc(a.name||"")}">${tagHTML(codeOf(a))}</button>`);
     b.onclick = () => {
       if(!multi){ chosen.clear(); box.querySelectorAll(".pick").forEach(x => x.setAttribute("aria-pressed","false")); }
       chosen.has(a.id) ? chosen.delete(a.id) : chosen.add(a.id);
@@ -1509,18 +1518,18 @@ function recWeight(){
     extra.replaceChildren();
     if(!a) return;
     const box = el(`<div>
-      <h3 class="sec" style="padding-left:0">${esc(a.stock_code)}</h3>
+      <h3 class="sec" style="padding-left:0">${esc(codeOf(a))}</h3>
       <label><span>Notes</span><textarea name="notes" rows="2"
         placeholder="Anything you noticed">${esc(a.notes||"")}</textarea></label>
       <p class="hint">Her notes as they stand — edit or add to them. Saved with the
         weight, and the change is logged like any other correction.</p>
-      <button type="button" class="btn ghost" id="edit-a">Edit ${esc(a.stock_code)}'s details</button>
+      <button type="button" class="btn ghost" id="edit-a">Edit ${esc(codeOf(a))}'s details</button>
     </div>`);
     box.querySelector("#edit-a").onclick = () => {
       // Leaving here loses a typed weight, so say so rather than
       // discovering it on the way back.
       if(inner.querySelector('[name=kg]').value &&
-         !confirm(`The weight for ${a.stock_code} hasn't been saved yet.\n\n`
+         !confirm(`The weight for ${codeOf(a)} hasn't been saved yet.\n\n`
                 + `Go to her details anyway? The weight will be lost.`)) return;
       S.sel = a.id; S.view = "editAnimal"; render();
     };
@@ -1543,7 +1552,7 @@ function recWeight(){
     if(now === was) return "Weight saved.";
     const { error:e2 } = await db.from("animal").update({notes: now || null}).eq("id", ids[0]);
     if(e2) throw new Error(`Weight saved, but the note didn't: ${e2.message}`);
-    return `Weight and note saved for ${a?.stock_code||"the animal"}.`;
+    return `Weight and note saved for ${a ? codeOf(a) : "the animal"}.`;
   });
 }
 
@@ -1671,7 +1680,7 @@ function joinAI(){
     <label><span>${w("dam")}</span><select name="dam" required>
       <option value="">Which ${wl("dam")}…</option>
       ${cows.map(a=>`<option value="${a.id}"${S.sel===a.id?" selected":""}>${
-        esc(a.stock_code)}${a.name?" · "+esc(a.name):""}</option>`).join("")}
+        esc(codeOf(a))}${a.name?" · "+esc(a.name):""}</option>`).join("")}
     </select></label>
     <label><span>Straw</span><select name="semen" required>
       <option value="">Which straw…${straws.length < inStock.length
@@ -1732,8 +1741,8 @@ function joinAI(){
     const a = cows.find(c => c.id===dam.value);
     gest.value = gestFor(a);
     hint.textContent = !a ? ""
-      : a.gestation_days ? `${a.stock_code} runs ${a.gestation_days} days.`
-      : `No gestation on file for ${a.stock_code} — using ${gestFor(a)} for ${speciesOf(a)}. Change it and it's remembered.`;
+      : a.gestation_days ? `${codeOf(a)} runs ${a.gestation_days} days.`
+      : `No gestation on file for ${codeOf(a)} — using ${gestFor(a)} for ${speciesOf(a)}. Change it and it's remembered.`;
     calc();
   };
   const calc = () => {
@@ -1804,7 +1813,7 @@ function joinAI(){
     await loadRefs();
 
     const left = inStock.find(x => x.id===semenId);
-    return `AI recorded for ${cow?.stock_code}${
+    return `AI recorded for ${cow ? codeOf(cow) : ""}${
       left ? ` — ${Math.max(0, Number(left.straws_left) - 1)} straws left` : ""}.`;
   });
   if(inStock.length > 6)
@@ -1825,7 +1834,7 @@ function joinNatural(){
   const inner = el(`<div>
     <label><span>${w("sire")}</span><select name="sire" required>
       <option value="">Which ${wl("sire")}…</option>
-      ${sires.map(a=>`<option value="${a.id}">${esc(a.stock_code)}${
+      ${sires.map(a=>`<option value="${a.id}">${esc(codeOf(a))}${
         a.name?" · "+esc(a.name):""}${a.paddock_name?" — "+esc(a.paddock_name):""}</option>`).join("")}
     </select></label>
     <label><span>Out with</span><select name="paddock" required>
@@ -1872,7 +1881,7 @@ function joinNatural(){
       const g   = gestFor(a);
       const row = el(`<label data-id="${a.id}" data-g="${g}">
         <input type="checkbox"${on?" checked":""}>
-        ${tagHTML(a.stock_code)}
+        ${tagHTML(codeOf(a))}
         <span class="sub">${esc(a.class||"unclassed")} · ${age(a.age_years)}</span>
         <input type="number" class="gd" value="${g}" min="250" max="310"
           inputmode="numeric" aria-label="Gestation days">
@@ -1897,7 +1906,7 @@ function joinNatural(){
     // screen is noticing here that the steers never got shifted.
     if(others.length)
       listWrap.appendChild(el(`<div class="note">Also in ${esc(p.name)}:
-        ${others.map(a => `${esc(a.stock_code)} (${esc(a.class||a.sex||"?")})`).join(", ")}.
+        ${others.map(a => `${esc(codeOf(a))} (${esc(a.class||a.sex||"?")})`).join(", ")}.
         Not joined — check they're meant to be there.</div>`));
     listWrap.appendChild(el(`<p class="hint">Due dates are the earliest possible: ${wl("sire")} in
       plus each ${wl("dam")}'s own gestation. Change a number and it's remembered against her.
@@ -2387,30 +2396,44 @@ function recCryoMove(){
 }
 
 function recCalving(){
+  const young = wl("young");
   const inner = el(`<div>
-    <label><span>Date calved</span><input type="date" name="on" value="${today()}" required></label>
+    <label><span>Date ${wl("birthed")}</span><input type="date" name="on" value="${today()}" required></label>
     <label><span>Outcome</span><select name="outcome">
-      <option value="live">Live calf</option><option value="stillborn">Stillborn</option>
+      <option value="live">Live ${young}</option><option value="stillborn">Stillborn</option>
       <option value="died">Died soon after</option></select></label>
+    <label><span>Sex</span><select name="sex">
+      <option value="unknown">Not checked yet</option>
+      <option value="female">Female</option><option value="male">Male</option></select></label>
     <label style="display:flex;align-items:center;gap:10px;margin-top:16px">
       <input type="checkbox" name="assisted" style="width:22px;height:22px;min-height:0;flex:none">
       <span style="margin:0;text-transform:none;letter-spacing:0;font-size:15px;font-weight:500;color:var(--ink)">Assisted</span>
     </label>
     <label><span>Notes</span><textarea name="notes" placeholder="unassisted, quick"></textarea></label>
-    <div class="note">This records the calving against the cow. Give the calf its own tag later,
-      once you've decided on a number.</div>
-    <label><span>Cow</span></label></div>`);
+    <div class="note">The ${young} goes into the herd straight away, under this year's letter
+      with no number, in the same paddock as its ${wl("dam")}. Open it from the herd to give
+      it a tag and a name.</div>
+    <label><span>${w("dam")}</span></label></div>`);
   const pick = animalPicker(false, S.sel?[S.sel]:[]);
   inner.appendChild(pick);
-  return formShell("Record a calving", inner, async (f) => {
+  return formShell(`Record a ${wl("birth")}`, inner, async (f) => {
     const ids = [...pick.chosen];
-    if(!ids.length) throw new Error("Choose the cow that calved.");
-    const { error } = await db.from("calving").insert({
-      dam_id: ids[0], calved_on: f.get("on"), outcome: f.get("outcome"),
-      assisted: f.get("assisted")==="on", notes: f.get("notes")||null
+    if(!ids.length) throw new Error(`Choose the ${wl("dam")} that ${wl("birthed")}.`);
+    // One call, one transaction: the calving, the calf, its status and
+    // its paddock all land or none do. See record_calving() in
+    // migration 43.
+    const { data:calfId, error } = await db.rpc("record_calving", {
+      p_dam_id: ids[0], p_calved_on: f.get("on"), p_outcome: f.get("outcome"),
+      p_assisted: f.get("assisted")==="on", p_notes: f.get("notes")||null,
+      p_sex: f.get("sex")||"unknown"
     });
     if(error) throw error;
-    return "Calving saved.";
+    if(calfId){
+      // Land on the calf's card, where the tag, name and sex get set.
+      S.sel = calfId;
+      return `${w("birth")} saved. The ${young} is in the herd — give it a tag when you have one.`;
+    }
+    return `${w("birth")} saved.`;
   });
 }
 
@@ -2481,14 +2504,14 @@ function recSell(){
     if(bad.length){
       warn.hidden = false;
       warn.innerHTML = `<b>Inside a withholding period:</b> ${
-        bad.map(b=>esc(b.stock_code)+" until "+fmt(b.clear_domestic)).join(", ")}.
+        bad.map(b=>esc(codeOf(b))+" until "+fmt(b.clear_domestic)).join(", ")}.
         These can't go for slaughter yet.`;
     } else if(esi.length){
       warn.hidden = false;
       warn.className = "msg";
       warn.style.background = "#FCF3E3"; warn.style.color = "#8F5A0C";
       warn.innerHTML = `<b>Inside the export slaughter interval:</b> ${
-        esi.map(b=>esc(b.stock_code)+" until "+fmt(b.clear_export)).join(", ")}.
+        esi.map(b=>esc(codeOf(b))+" until "+fmt(b.clear_export)).join(", ")}.
         Fine domestically, not for export.`;
     } else { warn.hidden = true; }
   }
@@ -3124,7 +3147,7 @@ function editAnimal(){
   if(!a) return el(`<div class="empty">Animal not found.</div>`);
 
   const inner = el(`<div></div>`);
-  inner.appendChild(el(`<div class="hero" style="padding:10px 0;border:0">${tagHTML(a.stock_code,"lg")}
+  inner.appendChild(el(`<div class="hero" style="padding:10px 0;border:0">${tagHTML(codeOf(a),"lg")}
     <div><h2 style="font-size:18px">${esc(a.name||"Unnamed")}</h2>
     <div class="sub">Only the fields you've switched on are shown.</div></div></div>`));
 
@@ -3151,7 +3174,7 @@ function editAnimal(){
       status stays in the animal's history. If the state is already right and only the
       date is wrong, the existing transition is corrected instead of a new one added.</p>`));
 
-  return formShell(`Edit ${a.stock_code}`, inner, async (fd) => {
+  return formShell(`Edit ${codeOf(a)}`, inner, async (fd) => {
     const patch = {};
     for(const f of AF) if(shown(f[0])) patch[f[0]] = readField(fd, f);
     const { error } = await db.from("animal").update(patch).eq("id", a.id);
@@ -3180,7 +3203,7 @@ function editAnimal(){
       const { error:e3 } = await db.from("animal_status")
         .update({ effective_on: on }).eq("id", a.exit_status_id);
       if(e3) throw new Error(e3.code === "23505"
-        ? `${a.stock_code} already has a status change recorded on that date.`
+        ? `${codeOf(a)} already has a status change recorded on that date.`
         : e3.message);
       S.view = "detail";
       return `Date corrected to ${fmt(on)}.`;
