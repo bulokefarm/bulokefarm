@@ -1381,11 +1381,13 @@ function viewRecord(){
     ["move","Move mob","Shift stock to another paddock"],
     ["weight","Weights","Scale or tape, one or many head"],
     ["treatment","Treatment","Vaccination, drench — full LPA detail"],
+    ["spray","Spraying","Chemical onto a paddock — LPA 3B"],
     ["joining","Joining","Mating, pregnancy test, empty result"],
     ["calving", w("birth"), `A ${wl("young")} on the ground`],
     ["sell","Sell / consign","NVD, waybill, off the property"]];
   if(hasSpecies("sheep"))
-    jobs.splice(5, 0, ["shearing","Shed work","Shearing, crutching, marking"]);
+    jobs.splice(jobs.findIndex(j => j[0] === "calving"), 0,
+                ["shearing","Shed work","Shearing, crutching, marking"]);
   group("What are you recording?", jobs);
   const low = S.feeds.filter(f => f.pct_left != null && f.pct_left <= 20).length;
   // Only offered once there is something in the flasks.
@@ -2704,6 +2706,151 @@ function recStockAdj(){
   });
 }
 
+// ── spraying ────────────────────────────────────────────────────
+// LPA 3B. Recorded against a paddock, never against animals — the
+// withholding period here governs grazing, and the paddock is what
+// `move_animals` checks before it lets stock in.
+//
+// The first product is part of this form rather than a second screen:
+// a pass with nothing in the tank is not a record, and the batch
+// number is only legible while you are standing next to the drum.
+function sprayProductBlock(first){
+  return el(`<div class="sprayprod" style="border:1px solid var(--rule);border-radius:11px;
+      padding:2px 12px 12px;margin-top:8px">
+    <label><span>Product</span><input type="text" name="p_name"
+      placeholder="Nufarm MCPA Amine 750" ${first?"required":""}></label>
+    <div class="two">
+      <label><span>Rate</span><input type="text" name="p_rate" placeholder="1 L/ha"></label>
+      <label><span>Batch number</span><input type="text" name="p_batch" placeholder="Off the drum"></label>
+    </div>
+    <div class="two">
+      <label><span>Graze WHP, days</span><input type="number" name="p_graze" min="0"
+        inputmode="numeric" placeholder="7"></label>
+      <label><span>Cut WHP, days</span><input type="number" name="p_cut" min="0"
+        inputmode="numeric" placeholder="Optional"></label>
+    </div>
+    <label><span>ESI, days</span><input type="number" name="p_esi" min="0"
+      inputmode="numeric" placeholder="Only if the label carries one"></label>
+    ${first ? `<p class="hint">The grazing withholding period is what keeps stock out of the
+      paddock afterwards. Leave it blank and nothing can clear the paddock by date.</p>` : ""}
+  </div>`);
+}
+
+function recSpray(){
+  if(!S.paddocks.length)
+    return el(`<div class="empty"><b>No paddocks yet</b>
+      Spraying is recorded against a paddock, so draw your fence lines first.</div>`);
+
+  const inner = el(`<div>
+    <label><span>Paddock</span><select name="paddock" required>
+      <option value="">Which paddock…</option>
+      ${S.paddocks.map(p => `<option value="${p.id}"${S.selPk===p.id?" selected":""}>${
+        esc(p.name)}${p.area_ha?` — ${p.area_ha} ha`:""}</option>`).join("")}
+    </select></label>
+    <label><span>Date</span><input type="date" name="on" value="${today()}" required></label>
+    <label><span>Where in it</span><input type="text" name="spot"
+      placeholder="Optional — north fenceline, around the troughs"></label>
+    <div class="two">
+      <label><span>Crop or pasture</span><input type="text" name="crop" placeholder="Pasture"></label>
+      <label><span>Area, ha</span><input type="number" name="area" step="0.1" min="0"
+        inputmode="decimal"></label>
+    </div>
+    <div class="two">
+      <label><span>Method</span><select name="method">
+        <option>Boom spray</option><option>Spot spray</option><option>Knapsack</option>
+        <option>Weed wiper</option><option>Aerial</option></select></label>
+      <label><span>Spray volume, L/ha</span><input type="number" name="water" step="1" min="0"
+        inputmode="decimal" placeholder="100"></label>
+    </div>
+    <div class="two">
+      <label><span>Wind from</span><select name="wdir">
+        <option value="">—</option><option>N</option><option>NE</option><option>E</option>
+        <option>SE</option><option>S</option><option>SW</option><option>W</option>
+        <option>NW</option><option>still</option></select></label>
+      <label><span>Wind, km/h</span><input type="number" name="wkmh" step="1" min="0"
+        inputmode="decimal"></label>
+    </div>
+    <p class="hint">Wind direction and speed are the whole point of Section 3B — they are what
+      shows the chemical went where it was aimed. Worth thirty seconds now.</p>
+    <label><span>Applied by</span><input type="text" name="by"
+      placeholder="Leave blank if it was you"></label>
+    <h3 class="sec" style="margin-top:18px">In the tank</h3>
+    <div id="prods"></div>
+    <label><span>Notes</span><input type="text" name="notes" placeholder="Optional"></label>
+  </div>`);
+
+  const prods = inner.querySelector("#prods");
+  prods.appendChild(sprayProductBlock(true));
+  const more = el(`<button type="button" class="btn ghost">+ Another product in the tank</button>`);
+  more.onclick = () => prods.appendChild(sprayProductBlock(false));
+  prods.after(more);
+
+  // Most passes cover the whole paddock, so offer its area — into an
+  // empty box only. A part-paddock figure you measured is not a default
+  // to be overwritten.
+  const pk = inner.querySelector('[name="paddock"]'),
+        ha = inner.querySelector('[name="area"]');
+  const offerArea = () => {
+    const p = S.paddocks.find(x => x.id === pk.value);
+    if(p && p.area_ha != null && ha.value === "") ha.value = p.area_ha;
+  };
+  pk.onchange = offerArea;
+  offerArea();
+
+  return formShell("Record spraying", inner, async (f) => {
+    if(!f.get("paddock")) throw new Error("Choose a paddock.");
+
+    // FormData repeats the product field names once per block, so read
+    // them as parallel lists rather than single values.
+    const names = f.getAll("p_name").map(s => s.trim());
+    if(!names.some(Boolean)) throw new Error("Say what went in the tank.");
+
+    const { data:ev, error:e1 } = await db.from("spray_event").insert({
+      applied_on:      f.get("on"),
+      paddock_id:      f.get("paddock"),
+      location_note:   (f.get("spot")||"").trim() || null,
+      crop_treated:    (f.get("crop")||"").trim() || null,
+      area_ha:         f.get("area")  ? Number(f.get("area"))  : null,
+      water_rate_l_ha: f.get("water") ? Number(f.get("water")) : null,
+      method:          f.get("method") || null,
+      wind_direction:  f.get("wdir") || null,
+      wind_speed_kmh:  f.get("wkmh") ? Number(f.get("wkmh")) : null,
+      applied_by:      (f.get("by")||"").trim() || null,
+      notes:           (f.get("notes")||"").trim() || null
+    }).select("id").single();
+    if(e1) throw e1;
+
+    const rates = f.getAll("p_rate"), batches = f.getAll("p_batch");
+    const graze = f.getAll("p_graze"), cuts = f.getAll("p_cut"), esis = f.getAll("p_esi");
+    const rows = names.map((nm,i) => !nm ? null : ({
+      spray_event_id:        ev.id,
+      product_name:          nm,
+      chemical_rate:         (rates[i]||"").trim()   || null,
+      batch_number:          (batches[i]||"").trim() || null,
+      graze_withhold_days:   graze[i] ? Number(graze[i]) : null,
+      harvest_withhold_days: cuts[i]  ? Number(cuts[i])  : null,
+      esi_days:              esis[i]  ? Number(esis[i])  : null
+    })).filter(Boolean);
+
+    const { error:e2 } = await db.from("spray_product").insert(rows);
+    // The pass is already on file. Say so rather than letting it look
+    // like nothing saved, or the same spray gets entered twice.
+    if(e2) throw new Error(`The application saved but the product did not: ${e2.message}. `
+      + `Add it from Records & reports.`);
+
+    // Tell them what they can't do now, not just that it worked.
+    const days = rows.map(r => r.graze_withhold_days).filter(d => d != null);
+    const paddockName = S.paddocks.find(p => p.id === f.get("paddock"))?.name || "the paddock";
+    if(rows.some(r => r.graze_withhold_days == null))
+      return `Recorded. No grazing withholding period on file, so ${paddockName} `
+        + `stays flagged until you add one.`;
+    const clear = new Date(f.get("on") + "T00:00:00");
+    clear.setDate(clear.getDate() + Math.max(...days));
+    return `Recorded. Keep stock out of ${paddockName} until `
+      + clear.toLocaleDateString("en-AU",{day:"2-digit",month:"short",year:"numeric"}) + ".";
+  });
+}
+
 function recFeed(){
   if(!S.paddocks.length)
     return el(`<div class="empty"><b>No paddocks yet</b>
@@ -3184,6 +3331,7 @@ async function render(){
   else if(S.view==="rec:cryomove")  body = recCryoMove();
   else if(S.view==="rec:move")      body = recMove();
   else if(S.view==="rec:feed")      body = recFeed();
+  else if(S.view==="rec:spray")     body = recSpray();
   else if(S.view==="rec:sell")      body = recSell();
   else if(S.view==="rec:bulk")      body = bulkEdit();
   else if(S.view==="rec:settings")  body = viewSettings();

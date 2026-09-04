@@ -37,8 +37,12 @@ aside header p{margin:4px 0 0;font-size:12.5px;color:var(--ink2)}
 label{display:block;margin-bottom:10px}
 label span{display:block;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
   color:var(--ink2);margin-bottom:4px}
-input[type=text],textarea{width:100%;border:1px solid var(--rule);border-radius:8px;padding:9px 11px;
+input[type=text],input[type=date],input[type=number],select,textarea{width:100%;
+  border:1px solid var(--rule);border-radius:8px;padding:9px 11px;
   font:inherit;font-size:14px;background:var(--card)}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.prod{border:1px solid var(--rule);border-radius:9px;padding:10px 11px 2px;margin-bottom:8px}
+.stat.warn{background:#F7E4E2;color:var(--danger)}
 input:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color:transparent}
 .swatches{display:flex;gap:6px;flex-wrap:wrap}
 .sw-btn{width:26px;height:26px;border-radius:6px;border:2px solid transparent;cursor:pointer;padding:0}
@@ -122,7 +126,10 @@ function areaHa(ring){
 
 // ── state ───────────────────────────────────────────────────────
 const S = { user:null, paddocks:[], layers:new Map(), sel:null,
-            drawing:null, pts:[], colour:PALETTE[0] };
+            drawing:null, pts:[], colour:PALETTE[0],
+            // paddock_id -> row from v_paddock_withhold. Empty is the
+            // normal state; a key here means stock should be off it.
+            withheld:new Map(), spraying:false };
 
 function say(kind, text){
   document.querySelectorAll(".msg").forEach(m=>m.remove());
@@ -132,9 +139,15 @@ function say(kind, text){
 
 // ── load & draw ─────────────────────────────────────────────────
 async function load(){
-  const { data, error } = await db.from("v_paddock_current").select("*").order("sort_order").order("name");
+  const [{ data, error }, wh] = await Promise.all([
+    db.from("v_paddock_current").select("*").order("sort_order").order("name"),
+    db.from("v_paddock_withhold").select("*")
+  ]);
   if(error){ say("err", error.message); return; }
   S.paddocks = data || [];
+  // A missing view means the spray migrations have not been applied.
+  // That is not a reason to lose the map, so it fails quietly.
+  S.withheld = new Map((wh.data || []).map(r => [r.paddock_id, r]));
   S.layers.forEach(l => map.removeLayer(l));
   S.layers.clear();
 
@@ -143,9 +156,14 @@ async function load(){
     if(!p.geometry?.coordinates?.[0]) continue;
     const latlngs = p.geometry.coordinates[0].map(([lng,lat]) => [lat,lng]);
     bounds.push(...latlngs);
-    const poly = L.polygon(latlngs, {color:p.colour, weight:2, fillOpacity:.32, opacity:.95})
+    // A paddock inside a spray grazing withhold is hatched rather than
+    // recoloured — the colour is how you know which paddock it is, and
+    // losing that to say one temporary thing about it is a bad trade.
+    const wh = S.withheld.get(p.id);
+    const poly = L.polygon(latlngs, {color:p.colour, weight: wh?4:2,
+        fillOpacity:.32, opacity:.95, dashArray: wh ? "9 6" : null})
       .addTo(map).on("click", () => select(p.id));
-    poly.bindTooltip(`${p.code||p.name}${p.head?` · ${p.head}`:""}`,
+    poly.bindTooltip(`${p.code||p.name}${p.head?` · ${p.head}`:""}${wh?" · NO GRAZE":""}`,
       {permanent:true, direction:"center", className:"lbl"});
     S.layers.set(p.id, poly);
   }
@@ -164,7 +182,8 @@ function renderList(){
     const row = el(`<div class="pk ${S.sel===p.id?"on":""}">
       <span class="sw" style="background:${esc(p.colour)}"></span>
       <span class="nm">${esc(p.name)}</span>
-      <span class="ha">${p.area_ha??"—"} ha${p.head?` · ${p.head}hd`:""}</span></div>`);
+      <span class="ha">${p.area_ha??"—"} ha${p.head?` · ${p.head}hd`:""}${
+        S.withheld.has(p.id)?` · <b style="color:var(--danger)">no graze</b>`:""}</span></div>`);
     row.onclick = () => select(p.id);
     box.appendChild(row);
   }
@@ -172,6 +191,7 @@ function renderList(){
 
 function select(id){
   S.sel = S.sel===id ? null : id;
+  S.spraying = false;
   const l = S.layers.get(S.sel);
   if(l) map.fitBounds(l.getBounds(), {padding:[60,60]});
   S.layers.forEach((lay,k) => lay.setStyle({weight: k===S.sel?4:2, fillOpacity: k===S.sel?.5:.32}));
@@ -263,6 +283,121 @@ grazing history and boundary are kept. Reason:`, "Subdivided");
   S.sel=null; say("ok",`${p.name} retired.`); await load();
 }
 
+// ── spraying ────────────────────────────────────────────────────
+// LPA Section 3B, recorded where the job actually gets thought about:
+// standing on the paddock. The paddock is already chosen, which is the
+// single field most likely to be got wrong from a list.
+function prodBlock(first){
+  return el(`<div class="prod">
+    <label><span>Product${first?" *":""}</span>
+      <input type="text" class="p-name" placeholder="Nufarm MCPA Amine 750"></label>
+    <div class="two">
+      <label><span>Rate</span><input type="text" class="p-rate" placeholder="1 L/ha"></label>
+      <label><span>Batch</span><input type="text" class="p-batch" placeholder="Off the drum"></label>
+    </div>
+    <div class="two">
+      <label><span>Graze WHP days</span><input type="number" class="p-graze" min="0" placeholder="7"></label>
+      <label><span>Cut WHP days</span><input type="number" class="p-cut" min="0"></label>
+    </div>
+    <label><span>ESI days</span><input type="number" class="p-esi" min="0"></label>
+  </div>`);
+}
+
+async function saveSpray(){
+  const p = S.paddocks.find(x => x.id === S.sel); if(!p) return;
+  const box  = $("#panel");
+  const val  = s => (box.querySelector(s)?.value ?? "").trim();
+  const num  = s => val(s) === "" ? null : Number(val(s));
+
+  const prods = [...box.querySelectorAll(".prod")].map(d => ({
+    product_name:          d.querySelector(".p-name").value.trim(),
+    chemical_rate:         d.querySelector(".p-rate").value.trim()  || null,
+    batch_number:          d.querySelector(".p-batch").value.trim() || null,
+    graze_withhold_days:   d.querySelector(".p-graze").value === "" ? null : Number(d.querySelector(".p-graze").value),
+    harvest_withhold_days: d.querySelector(".p-cut").value   === "" ? null : Number(d.querySelector(".p-cut").value),
+    esi_days:              d.querySelector(".p-esi").value   === "" ? null : Number(d.querySelector(".p-esi").value)
+  })).filter(r => r.product_name);
+
+  if(!val("#s-on"))  return say("err","Put a date on it.");
+  if(!prods.length)  return say("err","Say what went in the tank.");
+
+  const { data:ev, error } = await db.from("spray_event").insert({
+    applied_on:      val("#s-on"),
+    paddock_id:      p.id,
+    location_note:   val("#s-spot")  || null,
+    crop_treated:    val("#s-crop")  || null,
+    area_ha:         num("#s-area"),
+    water_rate_l_ha: num("#s-water"),
+    method:          val("#s-method") || null,
+    wind_direction:  val("#s-wdir")   || null,
+    wind_speed_kmh:  num("#s-wkmh"),
+    applied_by:      val("#s-by")     || null,
+    notes:           val("#s-notes")  || null
+  }).select("id").single();
+  if(error) return say("err", error.message);
+
+  const { error:e2 } = await db.from("spray_product")
+    .insert(prods.map(r => ({ ...r, spray_event_id: ev.id })));
+  // The pass is on file either way. Saying "failed" here would get the
+  // same spray entered a second time.
+  if(e2) return say("err", `Application saved, product did not: ${e2.message}`);
+
+  S.spraying = false;
+  const days = prods.map(r => r.graze_withhold_days).filter(d => d != null);
+  if(prods.some(r => r.graze_withhold_days == null))
+    say("ok", `Recorded. No grazing WHP on file, so ${p.name} stays flagged.`);
+  else {
+    const c = new Date(val("#s-on") + "T00:00:00");
+    c.setDate(c.getDate() + Math.max(...days));
+    say("ok", `Recorded. ${p.name} clears ${c.toLocaleDateString("en-AU",
+      {day:"2-digit",month:"short",year:"numeric"})}.`);
+  }
+  await load();
+}
+
+function sprayPanel(p){
+  const box = $("#panel");
+  box.appendChild(el(`<p class="hint">Spraying <b>${esc(p.name)}</b>${
+    p.area_ha?` · ${p.area_ha} ha`:""}. Section 3B record.</p>`));
+  box.appendChild(el(`<label><span>Date</span><input type="date" id="s-on" value="${localToday()}"></label>`));
+  box.appendChild(el(`<label><span>Where in it</span><input type="text" id="s-spot"
+    placeholder="Optional — north fenceline"></label>`));
+  box.appendChild(el(`<div class="two">
+    <label><span>Crop / pasture</span><input type="text" id="s-crop" placeholder="Pasture"></label>
+    <label><span>Area ha</span><input type="number" id="s-area" step="0.1" min="0"
+      value="${p.area_ha ?? ""}"></label></div>`));
+  box.appendChild(el(`<div class="two">
+    <label><span>Method</span><select id="s-method">
+      <option>Boom spray</option><option>Spot spray</option><option>Knapsack</option>
+      <option>Weed wiper</option><option>Aerial</option></select></label>
+    <label><span>Volume L/ha</span><input type="number" id="s-water" step="1" min="0"></label></div>`));
+  box.appendChild(el(`<div class="two">
+    <label><span>Wind from</span><select id="s-wdir"><option value="">—</option>
+      <option>N</option><option>NE</option><option>E</option><option>SE</option>
+      <option>S</option><option>SW</option><option>W</option><option>NW</option>
+      <option>still</option></select></label>
+    <label><span>Wind km/h</span><input type="number" id="s-wkmh" step="1" min="0"></label></div>`));
+  box.appendChild(el(`<p class="hint">Wind is what Section 3B exists to show — that the chemical
+    went where it was aimed.</p>`));
+  box.appendChild(el(`<label><span>Applied by</span><input type="text" id="s-by"
+    placeholder="Blank if it was you"></label>`));
+
+  const prods = el(`<div id="s-prods"></div>`);
+  prods.appendChild(prodBlock(true));
+  box.appendChild(prods);
+  const more = el(`<button class="act ghost">+ Another product in the tank</button>`);
+  more.onclick = () => prods.appendChild(prodBlock(false));
+  box.appendChild(more);
+
+  box.appendChild(el(`<label style="margin-top:10px"><span>Notes</span>
+    <textarea id="s-notes" rows="2"></textarea></label>`));
+  const s = el(`<button class="act">Save spray record</button>`); s.onclick = saveSpray;
+  box.appendChild(s);
+  const c = el(`<button class="act ghost">Cancel</button>`);
+  c.onclick = () => { S.spraying = false; renderPanel(); };
+  box.appendChild(c);
+}
+
 // ── panel ───────────────────────────────────────────────────────
 function swatches(){
   const box = el(`<div class="swatches"></div>`);
@@ -311,10 +446,26 @@ function renderPanel(){
   }
 
   const p = S.paddocks.find(x=>x.id===S.sel);
+  if(p && S.spraying){ sprayPanel(p); return; }
   if(p){
     S.colour = p.colour;
     box.appendChild(el(`<div class="stat">${p.area_ha??"—"} ha · ${p.head||0} head${
       p.head_per_ha?` · ${p.head_per_ha}/ha`:""}</div>`));
+
+    // The withhold goes above the edit fields: it is the thing that
+    // changes what you do today, not a detail about the paddock.
+    const wh = S.withheld.get(p.id);
+    if(wh){
+      box.appendChild(el(`<div class="stat warn">No graze · sprayed ${wh.last_sprayed}${
+        wh.safe_to_graze ? ` · clears ${wh.safe_to_graze}` : ""}${
+        wh.withhold_unknown ? " · no WHP recorded" : ""}</div>`));
+      box.appendChild(el(`<p class="hint">${esc(wh.products||"")}. Moving stock in will be
+        queried${p.head ? `, and ${p.head} head are already in here` : ""}.</p>`));
+    }
+
+    const sp = el(`<button class="act ghost">Record spraying</button>`);
+    sp.onclick = () => { S.spraying = true; renderPanel(); };
+    box.appendChild(sp);
     if(p.has_history) box.appendChild(el(`<p class="hint">This paddock has grazing history,
       so it can be retired but not deleted.</p>`));
     box.appendChild(el(`<label><span>Name</span><input type="text" id="f-name" value="${esc(p.name)}"></label>`));

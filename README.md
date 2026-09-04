@@ -19,7 +19,7 @@ Live at **https://admin.bulokefarm.com.au**
 | `public/index.html` | `/` | Phone. Herd, paddock map, family tree, tank store, all recording. |
 | `public/reports.html` | `/reports` | Laptop. LPA records, shed work, joining register. Printable, editable, with change history. |
 | `public/stock.html` | `/stock` | Laptop. Livestock trading account by financial year, for tax. |
-| `public/map.html` | `/map` | Laptop. Tracing paddock boundaries on satellite imagery. |
+| `public/map.html` | `/map` | Laptop. Tracing paddock boundaries on satellite imagery, and spraying. |
 
 The phone app links to the others under **Record → Manage → On a
 laptop**. `public/nav.js` is the shared menu.
@@ -102,6 +102,13 @@ time and its withholding period governs *grazing*, not slaughter — so
 they are separate tables. A tank mix is one `spray_event` with a
 `spray_product` row per product, each carrying its own batch number and
 withholds, because that is how the labels read and how the mix clears.
+
+**Three ways in, one record.** Spraying can be entered from **Record →
+Spraying** on the phone, from a selected paddock on `/map`, or from
+**+ Record spraying** on `/reports`. The map is where the job is
+usually thought about, so it also hatches any paddock inside a grazing
+withhold and labels it `NO GRAZE`. All three write the same
+`spray_event` plus one `spray_product` per thing in the tank.
 
 **Every spray names a paddock.** `spray_event.paddock_id` is NOT NULL,
 and the paddock cannot be deleted while it holds spray history.
