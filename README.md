@@ -204,9 +204,10 @@ recorded, or her joining marked empty, before the mob is closed.
 **Sheep run a different alphabet.** Cattle stock codes carry the NLIS
 year letter — X for 2026 — and the app colours them from a palette of
 its own. Sheep tags are coloured on the NLIS eight-year cycle and the
-code starts with the colour: B black 2024, W white 2025, O orange
+code starts with the colour: BK black 2024, W white 2025, O orange
 2026, G light green 2027, P purple 2028, Y yellow 2029, R red 2030,
-S sky blue 2031, then round again. `year_letter(date, species)` hands
+BU sky blue 2031, then round again — two letters where one would be
+ambiguous, so a sheep's "letter" can be two characters. `year_letter(date, species)` hands
 out both. For cattle the herd is the record — the letter tagged cattle
 born that year already carry wins over the arithmetic; untagged
 placeholders don't vote, since they are this function's own output.
@@ -360,7 +361,7 @@ rebuild, so anything depending on imported records has to be a seed.
 | 43 | A calving creates the calf: `record_calving()`, `year_letter()`, tag parts filled from `stock_code` |
 | 44 | A lamb seen in a paddock, ewe not known: `record_drop()` |
 | 45 | Lambing over for a mob: joining outcome `closed`, `close_expectations()`, closed is untested in the rate views |
-| 46 | A sheep's letter is its tag colour: `year_letter(date, species)`, the callers pass species, today's `X ?` lambs repaired to `O ?` |
+| 46 | A sheep's letter is its tag colour (BK W O G P Y R BU): `year_letter(date, species)`, `animal_code_parts` reads one or two letters, today's `X ?` lambs repaired to `O ?` |
 
 ### Seeds
 

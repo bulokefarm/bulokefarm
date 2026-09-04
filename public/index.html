@@ -350,14 +350,14 @@ const LETTER = {L:"#6B4E9E",M:"#7A4B2A",N:"#1F6FB2",O:"#4A6B8A",P:"#8A4E6B",
 const hue = l => LETTER[(l||"").toUpperCase()] || "#54595E";
 
 // Sheep run a different alphabet. The code starts with the tag colour,
-// on the NLIS eight-year cycle — B black 2024, W white 2025, O orange
+// on the NLIS eight-year cycle — BK black 2024, W white 2025, O orange
 // 2026, G light green 2027, P purple 2028, Y yellow 2029, R red 2030,
-// S sky blue 2031 — and that colour is what is in the ear, so it is
-// what the tag block shows. year_letter() in the database hands the
-// same letters out.
-const SHEEP_COLOUR = {B:["Black","#1B1B1B"], W:["White","#F4F4F1"], O:["Orange","#F28C1E"],
+// BU sky blue 2031 — and that colour is what is in the ear, so it is
+// what the tag block shows. Two letters where one would be ambiguous.
+// year_letter() in the database hands the same letters out.
+const SHEEP_COLOUR = {BK:["Black","#1B1B1B"], W:["White","#F4F4F1"], O:["Orange","#F28C1E"],
   G:["Light green","#8FD46E"], P:["Purple","#7B3FA0"], Y:["Yellow","#F5D327"],
-  R:["Red","#D42B2B"], S:["Sky blue","#63B8EA"]};
+  R:["Red","#D42B2B"], BU:["Sky blue","#63B8EA"]};
 const sheepColour = l => SHEEP_COLOUR[(l||"").toUpperCase()] || null;
 const tagColour   = (l, sp) => sp === "sheep" ? (sheepColour(l)?.[1] || "#54595E") : hue(l);
 // White, yellow and the light greens and blues need dark ink on them.

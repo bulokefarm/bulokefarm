@@ -6,10 +6,15 @@
 -- two mobs run two alphabets, and year_letter() (43) only knew one, so
 -- a lamb recorded today was put on the ground as X ?.
 --
---   2024 B black      2028 P purple
+--   2024 BK black     2028 P purple
 --   2025 W white      2029 Y yellow
 --   2026 O orange     2030 R red
---   2027 G light green   2031 S sky blue
+--   2027 G light green   2031 BU sky blue
+--
+-- Black and blue share an initial, so those two are two letters, and
+-- a sheep's "letter" can be two characters. year_letter is text and
+-- always was; the one thing that assumed a single character was
+-- animal_code_parts (43), redefined below to read one or two.
 --
 -- year_letter() gains a species. For cattle the herd is still the
 -- record — the letter the cattle born that year actually carry wins
@@ -33,7 +38,8 @@ create or replace function year_letter(p_on date, p_species species_t default 'c
 returns text language sql stable set search_path = public as $$
   with cycle as (
     select case when p_species = 'sheep'
-      then substr('BWOGPYRS', ((((extract(year from p_on)::int - 2024) % 8) + 8) % 8) + 1, 1)
+      then (array['BK','W','O','G','P','Y','R','BU'])
+             [((((extract(year from p_on)::int - 2024) % 8) + 8) % 8) + 1]
       else substr('ABCDEFGHJKLMNPQRSTUVWXYZ',
                   ((((extract(year from p_on)::int - 2005) % 24) + 24) % 24) + 1, 1)
       end as letter)
@@ -54,7 +60,7 @@ returns text language sql stable set search_path = public as $$
 $$;
 
 comment on function year_letter(date, species_t) is
-  'The stock-code year letter for a date and species. Cattle: what tagged cattle born that year already carry, else the NLIS letter cycle (no I or O; 2005 = A). Sheep: the tag-colour initial, B W O G P Y R S from 2024, always.';
+  'The stock-code year letter for a date and species. Cattle: what tagged cattle born that year already carry, else the NLIS letter cycle (no I or O; 2005 = A). Sheep: the tag colour, BK W O G P Y R BU from 2024, always.';
 
 -- ------------------------------------------------------------
 -- 1. record_calving, as in 43, with the dam's species passed through.
@@ -221,7 +227,24 @@ begin
 end $$;
 
 -- ------------------------------------------------------------
--- 3. The lambs already on the ground under the wrong letter.
+-- 3. A typed tag is one or two letters, then the number. Three
+--    letters is not a tag and is kept as written, untouched.
+-- ------------------------------------------------------------
+
+create or replace function animal_code_parts()
+returns trigger language plpgsql as $$
+declare m text[];
+begin
+  m := regexp_match(coalesce(new.stock_code, ''), '^\s*([A-Za-z]{1,2})\s*(\d{1,4})\s*$');
+  if m is not null then
+    new.year_letter := upper(m[1]);
+    new.herd_number := m[2]::int;
+  end if;
+  return new;
+end $$;
+
+-- ------------------------------------------------------------
+-- 4. The lambs already on the ground under the wrong letter.
 --
 -- Only placeholders: an animal with a tag has the letter its tag
 -- carries, whatever this function thinks. Keyed on the letter being
@@ -239,9 +262,10 @@ update animal a
 notify pgrst, 'reload schema';
 
 -- ------------------------------------------------------------
--- 4. Verification, once applied:
+-- 5. Verification, once applied:
 --
 --   select year_letter(farm_today(), 'sheep'), year_letter(farm_today(), 'cattle');  -- O, X
+--   select year_letter(date '2024-06-01', 'sheep'), year_letter(date '2031-06-01', 'sheep');  -- BK, BU
 --   select year_letter, count(*) from animal
 --    where species = 'sheep' and stock_code is null group by 1;                        -- O only
 -- ------------------------------------------------------------
