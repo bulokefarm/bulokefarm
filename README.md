@@ -200,6 +200,15 @@ counting as a failure. An expectation with no joining behind it is
 refused by name, not deleted. A ewe you do know about gets her lambing
 recorded, or her joining marked empty, before the mob is closed.
 
+**A sheep's tag block is the colour in its ear.** Cattle tags in the
+app are coloured by year letter from a palette of the app's own.
+Sheep visual tags follow the NLIS eight-year colour cycle, and that is
+what the tag block shows for a sheep: black 2024, white 2025, orange
+2026, light green 2027, purple 2028, yellow 2029, red 2030, sky blue
+2031, then round again. The letter still names the year and the year
+picks the colour, so nothing is stored; a sheep's card also names the
+colour and the drop. Light tags get dark ink.
+
 **Reference animals.** `animal` also holds sires and dams that were
 never on the property (`origin = 'reference'`). Pedigree stays a single
 self-join instead of nullable text columns.

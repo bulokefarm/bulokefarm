@@ -349,6 +349,30 @@ const LETTER = {L:"#6B4E9E",M:"#7A4B2A",N:"#1F6FB2",O:"#4A6B8A",P:"#8A4E6B",
   W:"#14708A",X:"#3C6E2F",Y:"#7A5C12",Z:"#54595E"};
 const hue = l => LETTER[(l||"").toUpperCase()] || "#54595E";
 
+// Sheep are different: their visual tag follows the NLIS eight-year
+// colour cycle, and that colour is what is actually in the ear, so it
+// is what the tag block shows. The letter still names the year — the
+// 24-letter cycle skips I and O, 2005 was A — and the year picks the
+// colour. 2024 was black.
+const LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+const SHEEP_COLOUR = [["Black","#1B1B1B"],["White","#F4F4F1"],["Orange","#F28C1E"],
+  ["Light green","#8FD46E"],["Purple","#7B3FA0"],["Yellow","#F5D327"],["Red","#D42B2B"],
+  ["Sky blue","#63B8EA"]];
+const yearOfLetter = l => {
+  const i = LETTERS.indexOf((l||"").toUpperCase());
+  if(i < 0) return null;
+  // The most recent year that letter stood for, allowing next year's
+  // drop to be tagged ahead of time.
+  let y = 2005 + i; const lim = new Date().getFullYear() + 1;
+  while(y + 24 <= lim) y += 24;
+  return y;
+};
+const sheepColour = l => { const y = yearOfLetter(l); return y == null ? null : SHEEP_COLOUR[((y - 2024) % 8 + 8) % 8]; };
+const tagColour   = (l, sp) => sp === "sheep" ? (sheepColour(l)?.[1] || "#54595E") : hue(l);
+// White, yellow and the light greens and blues need dark ink on them.
+const lightHex = c => { const n = parseInt(c.slice(1), 16);
+  return (0.299*(n>>16) + 0.587*((n>>8)&255) + 0.114*(n&255)) / 255 > 0.62; };
+
 // Returns the node, or a fragment when the string holds more than one.
 // It used to return firstChild only, which meant any template with
 // sibling elements silently lost everything after the first — the bulk
@@ -369,9 +393,11 @@ const today= () => { const d = new Date();
 const fmt  = (d) => d ? new Date(d+"T00:00:00").toLocaleDateString("en-AU",{day:"2-digit",month:"short",year:"2-digit"}) : "—";
 const age  = (y) => y==null ? "—" : (y<1 ? Math.round(y*12)+" mo" : (Math.round(y*10)/10)+" yr");
 
-function tagHTML(code, size="sm"){
+function tagHTML(code, size="sm", sp="cattle"){
   const [l,n] = (code||"? ?").split(" ");
-  return `<span class="tag ${size}"><i style="background:${hue(l)}">${esc(l)}</i><b>${esc(n||"")}</b></span>`;
+  const bg = tagColour(l, sp), light = lightHex(bg);
+  return `<span class="tag ${size}"><i style="background:${bg}${
+    light ? ";color:#16150F;box-shadow:inset 0 0 0 1px rgba(0,0,0,.28)" : ""}">${esc(l)}</i><b>${esc(n||"")}</b></span>`;
 }
 
 // ─── animal fields ──────────────────────────────────────────────
@@ -671,7 +697,7 @@ function viewHerd(){
           p?.area_ha ? ` · ${p.area_ha} ha` : ""}</span></h3>`));
       const ul = el(`<ul class="rows"></ul>`);
       for(const a of list){
-        const li = el(`<li><button class="row">${tagHTML(codeOf(a))}
+        const li = el(`<li><button class="row">${tagHTML(codeOf(a), "sm", speciesOf(a))}
           <span class="meta"><span class="nm">${esc(a.name||"Unnamed")}</span>
           <span class="sub">${esc(a.class||"")}${
             a.in_paddock_since?" · in since "+fmt(a.in_paddock_since):""}</span>
@@ -712,7 +738,7 @@ function viewHerd(){
     const ul = el(`<ul class="rows"></ul>`);
     for(const a of list){
       const li = el(`<li><button class="row"${isActive(a)?"":' style="opacity:.62"'}>
-        ${tagHTML(codeOf(a))}
+        ${tagHTML(codeOf(a), "sm", speciesOf(a))}
         <span class="meta">
           <span class="nm">${esc(a.name||"Unnamed")}</span>
           <span class="sub">${!isActive(a)
@@ -792,7 +818,7 @@ async function viewDue(){
       // Tapping the row opens her card, the same as from the herd, so
       // the calving can be recorded from here without a search.
       const li = el(`<li><button class="row">
-        ${tagHTML(r.dam?.stock_code)}
+        ${tagHTML(r.dam?.stock_code, "sm", r.dam?.species)}
         <span class="meta">
           <span class="nm">${esc(r.dam?.name||"")}</span>
           <span class="sub">${(r.sire?.name || r.sire?.stock_code)
@@ -846,7 +872,7 @@ async function viewDetail(){
   const wrap = el(`<div></div>`);
   if(!a){ wrap.appendChild(el(`<div class="empty">Animal not found.</div>`)); return wrap; }
 
-  wrap.appendChild(el(`<div class="hero">${tagHTML(codeOf(a),"lg")}
+  wrap.appendChild(el(`<div class="hero">${tagHTML(codeOf(a), "lg", speciesOf(a))}
     <div><h2>${esc(a.name||"Unnamed")}</h2>
     <div class="sub">${esc(a.breed||"")} · ${esc(a.sex||"")} · ${age(a.age_years)}${dofHTML(a)}</div></div></div>`));
 
@@ -856,6 +882,8 @@ async function viewDetail(){
      <dd${mono?' class="mono"':""}>${val}</dd></div>`);
 
   if(hasBoth())           F("Species", esc(speciesOf(a)));
+  if(speciesOf(a) === "sheep" && sheepColour(a.year_letter))
+    F("Tag colour", `${esc(sheepColour(a.year_letter)[0])} · ${yearOfLetter(a.year_letter)} drop`);
   if(shown("dob"))        F("Born", fmt(a.dob));
   if(shown("life_state")||shown("class"))
     F("Status", `${esc(a.life_state||"—")}${shown("class")?" · "+esc(a.class||"—"):""}`);
@@ -1157,7 +1185,7 @@ function treeSVG(match){
         <text x="${x+12}" y="${y+30}" font-size="13" font-weight="700" fill="#8F5A0C">Due ${fmt(n.label)}</text>
         <text x="${x+12}" y="${y+50}" font-size="11" fill="#5A574E">${esc(n.sire||n.season||"")}</text></g>`;
 
-    const a = n.animal, on = match(a), col = hue(a.year_letter);
+    const a = n.animal, on = match(a), col = tagColour(a.year_letter, speciesOf(a));
     const gone = !isActive(a);
     const dim = on ? (gone ? .72 : 1) : .28;
     return `<g class="tnode" data-id="${a.id}" opacity="${dim}">
@@ -1379,7 +1407,7 @@ function viewMap(){
     } else {
       const ul = el(`<ul class="rows"></ul>`);
       for(const a of inIt){
-        const li = el(`<li><button class="row">${tagHTML(codeOf(a))}
+        const li = el(`<li><button class="row">${tagHTML(codeOf(a), "sm", speciesOf(a))}
           <span class="meta"><span class="nm">${esc(a.name||"Unnamed")}</span>
           <span class="sub">${esc(a.class||"")} · in since ${fmt(a.in_paddock_since)}</span></span>
           <span class="rt">${age(a.age_years)}</span></button></li>`);
@@ -1494,7 +1522,7 @@ function animalPicker(multi=true, preset=[]){
   box.list = list;
   for(const a of list){
     const b = el(`<button type="button" class="pick" aria-pressed="${chosen.has(a.id)}"
-      title="${esc(a.name||"")}">${tagHTML(codeOf(a))}</button>`);
+      title="${esc(a.name||"")}">${tagHTML(codeOf(a), "sm", speciesOf(a))}</button>`);
     b.onclick = () => {
       if(!multi){ chosen.clear(); box.querySelectorAll(".pick").forEach(x => x.setAttribute("aria-pressed","false")); }
       chosen.has(a.id) ? chosen.delete(a.id) : chosen.add(a.id);
@@ -1939,7 +1967,7 @@ function joinNatural(){
       const g   = gestFor(a);
       const row = el(`<label data-id="${a.id}" data-g="${g}">
         <input type="checkbox"${on?" checked":""}>
-        ${tagHTML(codeOf(a))}
+        ${tagHTML(codeOf(a), "sm", speciesOf(a))}
         <span class="sub">${esc(a.class||"unclassed")} · ${age(a.age_years)}</span>
         <input type="number" class="gd" value="${g}" min="250" max="310"
           inputmode="numeric" aria-label="Gestation days">
@@ -3309,7 +3337,7 @@ function editAnimal(){
   if(!a) return el(`<div class="empty">Animal not found.</div>`);
 
   const inner = el(`<div></div>`);
-  inner.appendChild(el(`<div class="hero" style="padding:10px 0;border:0">${tagHTML(codeOf(a),"lg")}
+  inner.appendChild(el(`<div class="hero" style="padding:10px 0;border:0">${tagHTML(codeOf(a), "lg", speciesOf(a))}
     <div><h2 style="font-size:18px">${esc(a.name||"Unnamed")}</h2>
     <div class="sub">Only the fields you've switched on are shown.</div></div></div>`));
 
@@ -3399,7 +3427,7 @@ function tagDrop(){
     }
     const sexes = speciesOf(a) === "sheep" ? ["female","male","wether"] : ["female","male","steer"];
     const row = el(`<div style="display:flex;gap:8px;align-items:center;margin:6px 0">
-      ${tagHTML(codeOf(a))}
+      ${tagHTML(codeOf(a), "sm", speciesOf(a))}
       <span class="sub" style="flex:1;font-size:12px;line-height:1.3">${fmt(a.dob)}${
         a.sire_name ? "<br>by " + esc(a.sire_name) : ""}${a.dam_code ? "<br>out of " + esc(a.dam_code) : ""}</span>
       <input type="number" min="1" max="9999" inputmode="numeric" placeholder="No."
