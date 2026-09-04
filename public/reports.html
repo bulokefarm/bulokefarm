@@ -535,7 +535,8 @@ function shedSection(rows, range, error){
 // as clutter in a document meant to be handed to a processor.
 let JOININGS = [];
 const OUTCOMES = {unknown:"Not tested", in_calf:"In calf", empty:"Empty",
-                  aborted:"Aborted", lost:"Lost the calf", calved:"Calved"};
+                  aborted:"Aborted", lost:"Lost the calf", calved:"Calved",
+                  closed:"Closed — not recorded per dam"};
 
 function joiningSection(rows, range, error){
   JOININGS = rows;

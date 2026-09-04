@@ -186,6 +186,20 @@ because guessing a ewe would say something the record doesn't know.
 Numbers go on at marking through **Record → Manage → Tag the drop**,
 one row per untagged animal by paddock.
 
+**A mob comes off Due as a group.** A mob joining writes one joining
+per ewe and one expectation per ewe, and since lambs are recorded by
+paddock none of those rows ever resolves on its own. When lambing is
+over, the mob's heading on **Due** offers *Lambing over*:
+`close_expectations()` marks every joining behind the mob with the
+outcome `closed` — season over, result not recorded per dam — with a
+note, and `refresh_expectation()` drops the expectations as it always
+has when no live joining remains. No ewe is called lambed or empty;
+the joining's change log keeps the before and after; a closed joining
+sits with the untested ones in the conception-rate views rather than
+counting as a failure. An expectation with no joining behind it is
+refused by name, not deleted. A ewe you do know about gets her lambing
+recorded, or her joining marked empty, before the mob is closed.
+
 **Reference animals.** `animal` also holds sires and dams that were
 never on the property (`origin = 'reference'`). Pedigree stays a single
 self-join instead of nullable text columns.
@@ -330,6 +344,7 @@ rebuild, so anything depending on imported records has to be a seed.
 | 40–42 | Spraying: LPA 3B, `record_spray()`, many paddocks per pass, grazing withholds on `move_animals` |
 | 43 | A calving creates the calf: `record_calving()`, `year_letter()`, tag parts filled from `stock_code` |
 | 44 | A lamb seen in a paddock, ewe not known: `record_drop()` |
+| 45 | Lambing over for a mob: joining outcome `closed`, `close_expectations()`, closed is untested in the rate views |
 
 ### Seeds
 
@@ -434,7 +449,10 @@ done
   `move_animals`.
 - **`alter type ... add value` cannot be used in the transaction that
   added it.** The migration adding an enum value and the load using it
-  are two separate runs.
+  are two separate runs. The SQL editor runs a paste as one
+  transaction, so a view in the same file that names the new value as
+  a literal fails too — migration 45 compares `outcome::text` for that
+  reason. A plpgsql body may name it; that is not checked until it runs.
 - **`on conflict` cannot infer a partial unique index** unless the
   statement repeats the predicate. Usually the predicate was
   unnecessary — nulls are already distinct.

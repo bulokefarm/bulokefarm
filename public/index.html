@@ -525,7 +525,7 @@ const dofHTML = a => a.days_on_feed == null ? ""
       a.days_on_feed} d fed</span>`;
 
 // ─── state ──────────────────────────────────────────────────────
-const S = { me:null, animals:[], herdMode:"list", species:"all", treeLink:null, cryoLot:null, joinMode:"natural", pending:[], treeFam:undefined, treePend:false, paddocks:[], feeds:[], feedsDone:[], refs:{}, prefs:null, selFeed:null, view:"herd", filter:"all", q:"", sel:null, selPk:null, busy:false };
+const S = { me:null, animals:[], herdMode:"list", species:"all", treeLink:null, cryoLot:null, joinMode:"natural", pending:[], treeFam:undefined, treePend:false, paddocks:[], feeds:[], feedsDone:[], refs:{}, prefs:null, selFeed:null, closeDue:null, view:"herd", filter:"all", q:"", sel:null, selPk:null, busy:false };
 
 // ═══ data ═══════════════════════════════════════════════════════
 async function loadHerd(){
@@ -748,7 +748,7 @@ async function viewDue(){
   if(spBar) wrap.appendChild(spBar);
 
   const { data, error } = await db.from("expected_calving")
-    .select("id,dam_id,due_on,season,cycle,dam:dam_id(stock_code,name,species),sire:sire_id(name,stock_code)")
+    .select("id,dam_id,joining_id,due_on,season,cycle,dam:dam_id(stock_code,name,species),sire:sire_id(name,stock_code),joining:joining_id(paddock_id,paddock:paddock_id(name))")
     .is("resolved_calving_id", null).order("due_on");
   if(error){ wrap.appendChild(el(`<div class="msg err">${esc(error.message)}</div>`)); return wrap; }
 
@@ -762,12 +762,32 @@ async function viewDue(){
       wl("birth")}s appear here once joinings are recorded.</div>`));
     return wrap;
   }
+  // Cattle are due one cow at a time. Sheep are due as a mob — the
+  // ewes joined in one paddock in one season — and the mob comes off
+  // Due together once lambing is over, since the lambs were recorded
+  // by paddock and no ewe's row will ever resolve on its own.
   const groups = {};
-  for(const r of rows0) (groups[`${r.season} ${r.cycle||""}`.trim()] ||= []).push(r);
-  for(const [head, rows] of Object.entries(groups)){
-    wrap.appendChild(el(`<h3 class="sec">${esc(head)} — ${rows.length} head</h3>`));
+  for(const r of rows0){
+    const sp  = r.dam?.species || "cattle";
+    const mob = sp === "sheep" ? (r.joining?.paddock?.name || "paddock not recorded") : null;
+    const key = `${r.season} ${r.cycle||""}`.trim() + (mob ? ` · ${mob}` : "");
+    (groups[key] ||= {rows:[], sp, mob, pkId:r.joining?.paddock_id || null}).rows.push(r);
+  }
+  for(const [head, g] of Object.entries(groups)){
+    const h = el(`<h3 class="sec" style="display:flex;align-items:center;gap:8px">
+      <span style="flex:1">${esc(head)} — ${g.rows.length} head</span></h3>`);
+    if(g.mob && canWrite() && g.rows.every(r => r.joining_id)){
+      const b = el(`<button type="button" class="chip">${w("birth", g.sp)} over</button>`);
+      b.onclick = () => {
+        S.closeDue = { ids:g.rows.map(r => r.id), label:head, sp:g.sp, pkId:g.pkId,
+                       from:g.rows[0].due_on };
+        S.view = "rec:closedue"; render();
+      };
+      h.appendChild(b);
+    }
+    wrap.appendChild(h);
     const ul = el(`<ul class="rows"></ul>`);
-    for(const r of rows){
+    for(const r of g.rows){
       const days = Math.round((new Date(r.due_on) - new Date())/864e5);
       // Tapping the row opens her card, the same as from the herd, so
       // the calving can be recorded from here without a search.
@@ -786,6 +806,39 @@ async function viewDue(){
     wrap.appendChild(ul);
   }
   return wrap;
+}
+
+// ─── the season is over for a mob ───────────────────────────────
+// Reached from a mob's heading on Due. Every joining behind the mob
+// is marked closed — season over, result not recorded per ewe — and
+// the expectations go with them. Nothing is claimed about which ewes
+// lambed: the lambs are on file by paddock, and that is the record.
+function closeDue(){
+  const c = S.closeDue;
+  if(!c) return el(`<div class="empty"><b>Nothing chosen</b>Pick a mob on the Due screen.</div>`);
+  const sp = c.sp, young = wl("young", sp), dam = wl("dam", sp);
+  // What went on file by paddock, for the note. Approximate on purpose:
+  // it counts this species' young born in that paddock since a month
+  // before the first due date, and it is there to be edited.
+  const since = c.from ? addDays(c.from, -30) : null;
+  const born = S.animals.filter(a => speciesOf(a) === sp && a.origin === "bred" && a.dob
+    && (!since || a.dob >= since) && (!c.pkId || a.paddock_id === c.pkId));
+  const inner = el(`<div>
+    <label><span>Date</span><input type="date" name="on" value="${today()}" required></label>
+    <label><span>Note</span><textarea name="note">${esc(`${born.length} ${young}${born.length===1?"":"s"} recorded by paddock`)}</textarea></label>
+    <div class="note">${c.ids.length} ${dam}${c.ids.length===1?"":"s"} in <b>${esc(c.label)}</b> come off Due.
+      Each joining is marked <b>closed</b> — ${wl("birth", sp)} over, result not recorded per ${dam} —
+      with this note, and the change is logged. Which ${dam}s actually ${wl("birthed", sp)} isn't
+      claimed, because the record doesn't know. A ${dam} you do know about: record her
+      ${wl("birth", sp)}, or mark her joining empty on the reports page, before closing.</div>
+  </div>`);
+  return formShell(`${w("birth", sp)} over — ${esc(c.label)}`, inner, async (f) => {
+    const { data:n, error } = await db.rpc("close_expectations", {
+      p_ids: c.ids, p_on: f.get("on"), p_note: f.get("note")||null });
+    if(error) throw error;
+    S.closeDue = null;
+    return `${n} joining${n===1?"":"s"} closed. ${c.label} is off Due.`;
+  });
 }
 
 async function viewDetail(){
@@ -1473,7 +1526,9 @@ function formShell(title, inner, onSave){
   const save = el(`<button type="submit" class="btn">Save</button>`);
   form.appendChild(save);
   const cancel = el(`<button type="button" class="btn ghost">Cancel</button>`);
-  cancel.onclick = () => { S.view = S.sel ? "detail" : "record"; render(); };
+  // Closing a season is reached from Due, so it goes back there.
+  const home = () => S.view === "rec:closedue" ? "due" : (S.sel ? "detail" : "record");
+  cancel.onclick = () => { S.view = home(); render(); };
   form.appendChild(cancel);
   form.onsubmit = async (e) => {
     e.preventDefault();
@@ -1487,7 +1542,7 @@ function formShell(title, inner, onSave){
       setTimeout(() => {
         if(!["detail","record","rec:store"].includes(S.view))
           S.view = S.view.startsWith("rec:stock") || S.view==="rec:newfeed"
-            ? "rec:store" : (S.sel ? "detail" : "record");
+            ? "rec:store" : home();
         render();
       }, 900);
     }catch(err){
@@ -3554,6 +3609,7 @@ async function render(){
   else if(S.view==="rec:sell")      body = recSell();
   else if(S.view==="rec:bulk")      body = bulkEdit();
   else if(S.view==="rec:tagdrop")   body = tagDrop();
+  else if(S.view==="rec:closedue")  body = closeDue();
   else if(S.view==="rec:settings")  body = viewSettings();
   else if(S.view==="editAnimal")    body = editAnimal();
   else if(S.view==="rec:store")     body = recStore();
