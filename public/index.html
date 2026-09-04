@@ -349,25 +349,16 @@ const LETTER = {L:"#6B4E9E",M:"#7A4B2A",N:"#1F6FB2",O:"#4A6B8A",P:"#8A4E6B",
   W:"#14708A",X:"#3C6E2F",Y:"#7A5C12",Z:"#54595E"};
 const hue = l => LETTER[(l||"").toUpperCase()] || "#54595E";
 
-// Sheep are different: their visual tag follows the NLIS eight-year
-// colour cycle, and that colour is what is actually in the ear, so it
-// is what the tag block shows. The letter still names the year — the
-// 24-letter cycle skips I and O, 2005 was A — and the year picks the
-// colour. 2024 was black.
-const LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ";
-const SHEEP_COLOUR = [["Black","#1B1B1B"],["White","#F4F4F1"],["Orange","#F28C1E"],
-  ["Light green","#8FD46E"],["Purple","#7B3FA0"],["Yellow","#F5D327"],["Red","#D42B2B"],
-  ["Sky blue","#63B8EA"]];
-const yearOfLetter = l => {
-  const i = LETTERS.indexOf((l||"").toUpperCase());
-  if(i < 0) return null;
-  // The most recent year that letter stood for, allowing next year's
-  // drop to be tagged ahead of time.
-  let y = 2005 + i; const lim = new Date().getFullYear() + 1;
-  while(y + 24 <= lim) y += 24;
-  return y;
-};
-const sheepColour = l => { const y = yearOfLetter(l); return y == null ? null : SHEEP_COLOUR[((y - 2024) % 8 + 8) % 8]; };
+// Sheep run a different alphabet. The code starts with the tag colour,
+// on the NLIS eight-year cycle — B black 2024, W white 2025, O orange
+// 2026, G light green 2027, P purple 2028, Y yellow 2029, R red 2030,
+// S sky blue 2031 — and that colour is what is in the ear, so it is
+// what the tag block shows. year_letter() in the database hands the
+// same letters out.
+const SHEEP_COLOUR = {B:["Black","#1B1B1B"], W:["White","#F4F4F1"], O:["Orange","#F28C1E"],
+  G:["Light green","#8FD46E"], P:["Purple","#7B3FA0"], Y:["Yellow","#F5D327"],
+  R:["Red","#D42B2B"], S:["Sky blue","#63B8EA"]};
+const sheepColour = l => SHEEP_COLOUR[(l||"").toUpperCase()] || null;
 const tagColour   = (l, sp) => sp === "sheep" ? (sheepColour(l)?.[1] || "#54595E") : hue(l);
 // White, yellow and the light greens and blues need dark ink on them.
 const lightHex = c => { const n = parseInt(c.slice(1), 16);
@@ -883,7 +874,7 @@ async function viewDetail(){
 
   if(hasBoth())           F("Species", esc(speciesOf(a)));
   if(speciesOf(a) === "sheep" && sheepColour(a.year_letter))
-    F("Tag colour", `${esc(sheepColour(a.year_letter)[0])} · ${yearOfLetter(a.year_letter)} drop`);
+    F("Tag colour", `${esc(sheepColour(a.year_letter)[0])}${a.dob ? " · " + a.dob.slice(0,4) + " drop" : ""}`);
   if(shown("dob"))        F("Born", fmt(a.dob));
   if(shown("life_state")||shown("class"))
     F("Status", `${esc(a.life_state||"—")}${shown("class")?" · "+esc(a.class||"—"):""}`);

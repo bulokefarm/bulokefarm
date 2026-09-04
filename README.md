@@ -169,7 +169,8 @@ twins don't collide on the unique index. The open joining nearest the
 date names the sire and is resolved by it. When the tag is written
 later, `animal_code_parts` fills the letter and number in from it.
 `year_letter()` takes the letter the herd already uses for that year,
-falling back to the NLIS cycle (no I or O; 2005 was A, so 2026 is X).
+falling back to the NLIS cycle (no I or O; 2005 was A, so 2026 is X);
+sheep get the colour letter instead, see below.
 A row on **Due** opens the cow's card, so the calving is two taps from
 the list of who is due.
 
@@ -200,14 +201,19 @@ counting as a failure. An expectation with no joining behind it is
 refused by name, not deleted. A ewe you do know about gets her lambing
 recorded, or her joining marked empty, before the mob is closed.
 
-**A sheep's tag block is the colour in its ear.** Cattle tags in the
-app are coloured by year letter from a palette of the app's own.
-Sheep visual tags follow the NLIS eight-year colour cycle, and that is
-what the tag block shows for a sheep: black 2024, white 2025, orange
-2026, light green 2027, purple 2028, yellow 2029, red 2030, sky blue
-2031, then round again. The letter still names the year and the year
-picks the colour, so nothing is stored; a sheep's card also names the
-colour and the drop. Light tags get dark ink.
+**Sheep run a different alphabet.** Cattle stock codes carry the NLIS
+year letter — X for 2026 — and the app colours them from a palette of
+its own. Sheep tags are coloured on the NLIS eight-year cycle and the
+code starts with the colour: B black 2024, W white 2025, O orange
+2026, G light green 2027, P purple 2028, Y yellow 2029, R red 2030,
+S sky blue 2031, then round again. `year_letter(date, species)` hands
+out both. For cattle the herd is the record — the letter tagged cattle
+born that year already carry wins over the arithmetic; untagged
+placeholders don't vote, since they are this function's own output.
+For sheep the cycle is the rule as stated and nothing votes. The tag
+block for a sheep is drawn in the colour its letter names, so it is
+the colour in the ear; the card names the colour and the drop. Light
+tags get dark ink.
 
 **Reference animals.** `animal` also holds sires and dams that were
 never on the property (`origin = 'reference'`). Pedigree stays a single
@@ -354,6 +360,7 @@ rebuild, so anything depending on imported records has to be a seed.
 | 43 | A calving creates the calf: `record_calving()`, `year_letter()`, tag parts filled from `stock_code` |
 | 44 | A lamb seen in a paddock, ewe not known: `record_drop()` |
 | 45 | Lambing over for a mob: joining outcome `closed`, `close_expectations()`, closed is untested in the rate views |
+| 46 | A sheep's letter is its tag colour: `year_letter(date, species)`, the callers pass species, today's `X ?` lambs repaired to `O ?` |
 
 ### Seeds
 
