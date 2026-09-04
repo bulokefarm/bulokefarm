@@ -183,7 +183,7 @@ let HOME = { pic: "", trading_name: "Buloke Farm", address: "" };
 // couple of times a year, not a couple of times a session.
 let PADDOCKS = [];
 async function loadPaddocks(){
-  const { data } = await db.from("paddock").select("id,name")
+  const { data } = await db.from("paddock").select("id,name,area_ha")
     .eq("active", true).order("sort_order").order("name");
   PADDOCKS = data || [];
 }
@@ -347,7 +347,8 @@ function spraySection(rows, withheld, range, error){
       <td class="m"><button class="srclink" data-spray="${r.event_id}"
         title="Edit the application">${fmt(r.applied_on)}</button>${
         r.event_edits?`<span class="edits">${r.event_edits} edit${r.event_edits===1?"":"s"}</span>`:""}</td>
-      <td>${esc(r.place||"—")}</td>
+      <td>${esc(r.place||"—")}${r.location_note
+        ?`<br><span style="color:var(--ink2)">${esc(r.location_note)}</span>`:""}</td>
       <td>${esc(r.crop_treated||"—")}</td>
       <td class="num">${r.area_ha ?? '<span class="flag">missing</span>'}</td>
       <td>${r.product_name
@@ -727,9 +728,9 @@ const FIELDS = {
   spray_event: { title:"Spraying", table:"spray_event", date:"applied_on",
     blurb:"One pass over one piece of country. Products go on next.",
     next:"spray_product", fields:[
-    ["applied_on","Date","date"],
-    ["paddock_id","Paddock","ref:paddock"],
-    ["paddock_desc","Or describe where (laneway, boundary)","text"],
+    ["applied_on","Date","date","req"],
+    ["paddock_id","Paddock","ref:paddock","req"],
+    ["location_note","Where in it (fenceline, troughs)","text"],
     ["crop_treated","Crop / pasture treated","text"],
     ["area_ha","Area treated (ha)","number"],
     ["water_rate_l_ha","Spray volume (L/ha)","number"],
@@ -740,7 +741,7 @@ const FIELDS = {
     ["notes","Notes","area"]]},
   spray_product: { title:"Spray product", table:"spray_product",
     blurb:"One product in the tank. Add a row for each in a mix.", fields:[
-    ["product_name","Product","text"],
+    ["product_name","Product","text","req"],
     ["active_ingredient","Active ingredient","text"],
     ["chemical_rate","Chemical rate (as written)","text"],
     ["batch_number","Batch number (off the drum)","text"],
@@ -799,29 +800,34 @@ async function openEditor(kind, id, preset = null){
   }
 
   const inp = (f) => {
-    const [k,label,type] = f;
+    const [k,label,type,req] = f;
     const v = row[k];
+    // A record with no paddock is invisible to the grazing guard, so
+    // the form will not let one be saved. Native validation does it —
+    // the empty option has an empty value, which `required` rejects.
+    const need  = req ? " required" : "";
+    const star  = req ? ' <span style="color:var(--danger)">*</span>' : "";
     if(type==="bool")
       return `<label style="display:flex;align-items:center;gap:9px">
         <input type="checkbox" name="${k}" ${v?"checked":""} style="width:20px;height:20px">
         <span style="margin:0;text-transform:none;letter-spacing:0;font-size:14px;color:var(--ink)">${label}</span></label>`;
     if(type.startsWith("pick:"))
-      return `<label><span>${label}</span><select name="${k}">
+      return `<label><span>${label}${star}</span><select name="${k}"${need}>
         <option value="">—</option>
         ${type.slice(5).split("|").map(o =>
           `<option ${v===o?"selected":""}>${o}</option>`).join("")}</select></label>`;
     if(type==="ref:paddock")
-      return `<label><span>${label}</span><select name="${k}">
+      return `<label><span>${label}${star}</span><select name="${k}"${need}>
         <option value="">—</option>
         ${PADDOCKS.map(p =>
           `<option value="${p.id}" ${v===p.id?"selected":""}>${esc(p.name)}</option>`).join("")}</select></label>`;
     if(type==="area")
-      return `<label><span>${label}</span><textarea name="${k}" rows="2">${esc(v||"")}</textarea></label>`;
+      return `<label><span>${label}${star}</span><textarea name="${k}" rows="2"${need}>${esc(v||"")}</textarea></label>`;
     // Stored 0-1, typed 0-100. Nobody says "point six five confident".
     if(type==="pct")
       return `<label><span>${label}</span><input type="number" name="${k}" min="0" max="100"
         step="5" value="${v==null?"":Math.round(v*100)}"></label>`;
-    return `<label><span>${label}</span><input type="${type}" name="${k}" value="${esc(v??"")}"></label>`;
+    return `<label><span>${label}${star}</span><input type="${type}" name="${k}" value="${esc(v??"")}"${need}></label>`;
   };
 
   drawer.innerHTML = `<h3>${id ? cfg.title : "New " + cfg.title.toLowerCase()}</h3>
@@ -835,6 +841,16 @@ async function openEditor(kind, id, preset = null){
 
   drawer.classList.add("on"); veil.classList.add("on"); drawer.scrollTop = 0;
   $("#cancel").onclick = closeDrawer;
+
+  // Most passes cover the whole paddock, so offer its area — but only
+  // into an empty box. A part-paddock figure someone typed is a
+  // measurement and must not be overwritten by a default.
+  const pad = drawer.querySelector('select[name="paddock_id"]');
+  const ha  = drawer.querySelector('input[name="area_ha"]');
+  if(pad && ha) pad.onchange = () => {
+    const p = PADDOCKS.find(x => x.id === pad.value);
+    if(p && p.area_ha != null && ha.value === "") ha.value = p.area_ha;
+  };
 
   $("#edform").onsubmit = async ev => {
     ev.preventDefault();

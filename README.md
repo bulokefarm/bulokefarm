@@ -103,6 +103,15 @@ they are separate tables. A tank mix is one `spray_event` with a
 `spray_product` row per product, each carrying its own batch number and
 withholds, because that is how the labels read and how the mix clears.
 
+**Every spray names a paddock.** `spray_event.paddock_id` is NOT NULL,
+and the paddock cannot be deleted while it holds spray history.
+Migration 40 allowed free text instead so that a laneway or a boundary
+had somewhere to go; 41 took it back, because the free-text case was
+invisible to `paddock_graze_block()` — the records least likely to be
+remembered were the ones the guard could never catch. A laneway worth
+spraying is a laneway worth a paddock row. `location_note` says where
+inside the paddock and is never a substitute for it.
+
 **No safe-to-graze date is stored.** It is `applied_on + withhold`, and
 the binding one is the latest across the mix. `v_paddock_withhold` does
 that arithmetic and `move_animals` refuses a paddock still inside it.
