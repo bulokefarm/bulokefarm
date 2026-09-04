@@ -173,6 +173,19 @@ falling back to the NLIS cycle (no I or O; 2005 was A, so 2026 is X).
 A row on **Due** opens the cow's card, so the calving is two taps from
 the list of who is due.
 
+**A lamb is recorded against the paddock, not the ewe.** Sheep run as
+mobs: the rams go out to a paddock of ewes, and at lambing what is
+seen is a lamb in the back gully, not which ewe it came from.
+`record_drop()` takes what is actually known — paddock, day, how many,
+the ram that was out with that mob, sex if checked — and puts each
+lamb in the herd the same way as a calf: this year's letter, no
+number, classed lamb, in that paddock, dam null. The form suggests the
+ram from the natural joinings that name the paddock and are due about
+then. No calving row is written and no ewe's expectation is resolved,
+because guessing a ewe would say something the record doesn't know.
+Numbers go on at marking through **Record → Manage → Tag the drop**,
+one row per untagged animal by paddock.
+
 **Reference animals.** `animal` also holds sires and dams that were
 never on the property (`origin = 'reference'`). Pedigree stays a single
 self-join instead of nullable text columns.
@@ -316,6 +329,7 @@ rebuild, so anything depending on imported records has to be a seed.
 | 39 | Melbourne time, not UTC. `farm_today()`, and the due dates it exposed |
 | 40–42 | Spraying: LPA 3B, `record_spray()`, many paddocks per pass, grazing withholds on `move_animals` |
 | 43 | A calving creates the calf: `record_calving()`, `year_letter()`, tag parts filled from `stock_code` |
+| 44 | A lamb seen in a paddock, ewe not known: `record_drop()` |
 
 ### Seeds
 

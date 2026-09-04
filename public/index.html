@@ -1392,7 +1392,8 @@ function viewRecord(){
     ["treatment","Treatment","Vaccination, drench — full LPA detail"],
     ["spray","Spraying","Chemical onto a paddock — LPA 3B"],
     ["joining","Joining","Mating, pregnancy test, empty result"],
-    ["calving", w("birth"), `A ${wl("young")} on the ground`],
+    ["calving", w("birth"), `A ${wl("young")} on the ground${
+      hasSpecies("sheep") ? ` — by ${wl("dam")}, or by paddock` : ""}`],
     ["sell","Sell / consign","NVD, waybill, off the property"]];
   if(hasSpecies("sheep"))
     jobs.splice(jobs.findIndex(j => j[0] === "calving"), 0,
@@ -1407,7 +1408,9 @@ function viewRecord(){
                  (S.refs.embryo||[]).reduce((n,x)=>n+Number(x.units_left||0),0))} units on hand`],
     ["cryomove","Straw or embryo movement","In, out, thawed, discarded"]]);
 
+  const untagged = untaggedHere().length;
   group("Manage", [
+    ...(untagged ? [["tagdrop","Tag the drop", `${untagged} without a number yet`]] : []),
     ["store","Feed store", low ? `${low} low on stock` : `${S.feeds.length} in the shed`],
     ["bulk","Bulk update","Change a field across many animals"],
     ["settings","Which fields to show","Turn animal details on or off"]]);
@@ -2397,7 +2400,16 @@ function recCryoMove(){
 
 function recCalving(){
   const young = wl("young");
-  const inner = el(`<div>
+  // Sheep are run as mobs: what gets seen is a lamb in a paddock, not
+  // a ewe with a lamb. Offer the paddock as the thing to record
+  // against whenever there are sheep, and start there for a sheep
+  // scope. Cattle keep the cow.
+  const byPaddock = hasSpecies("sheep") && S.species !== "cattle";
+  let mode = S.species === "sheep" ? "paddock" : "dam";
+  const inner = el(`<div></div>`);
+
+  // ── the dam known ──
+  const damBox = el(`<div>
     <label><span>Date ${wl("birthed")}</span><input type="date" name="on" value="${today()}" required></label>
     <label><span>Outcome</span><select name="outcome">
       <option value="live">Live ${young}</option><option value="stillborn">Stillborn</option>
@@ -2415,8 +2427,103 @@ function recCalving(){
       it a tag and a name.</div>
     <label><span>${w("dam")}</span></label></div>`);
   const pick = animalPicker(false, S.sel?[S.sel]:[]);
-  inner.appendChild(pick);
+  damBox.appendChild(pick);
+
+  // ── seen in a paddock ──
+  const pkBox = el(`<div>
+    <label><span>Date seen</span><input type="date" name="pk_on" value="${today()}" required></label>
+    ${S.species==="all" ? `<label><span>Species</span><select name="pk_species">
+      <option value="sheep">Sheep</option><option value="cattle">Cattle</option></select></label>` : ""}
+    <label><span>Paddock</span><select name="pk_paddock" required>
+      <option value="">Choose a paddock…</option>
+      ${S.paddocks.map(p => `<option value="${p.id}"${S.selPk===p.id?" selected":""}>${
+        esc(p.name)} — ${headIn(p.id)} head</option>`).join("")}
+    </select></label>
+    <label><span>${w("sire")}</span><select name="pk_sire"><option value="">Not known</option></select></label>
+    <div class="two">
+      <label><span>How many</span><input type="number" name="pk_count" value="1" min="1" max="50" inputmode="numeric" required></label>
+      <label><span>Sex</span><select name="pk_sex"><option value="unknown">Not checked yet</option>
+        <option value="female">Female</option><option value="male">Male</option></select></label>
+    </div>
+    <label><span>Outcome</span><select name="pk_outcome"><option value="live">Alive</option>
+      <option value="died">Found dead, or died soon after</option></select></label>
+    <label><span>Notes</span><textarea name="pk_notes" placeholder="Twins at the trough"></textarea></label>
+    <div class="note">Recorded against the paddock and the ${wl("sire")}, since the ${wl("dam")}
+      isn't known. Each ${young} goes into the herd under this year's letter with no number, in
+      this paddock. The numbers go on at marking: Record → Manage → Tag the drop.</div>
+  </div>`);
+
+  // The ram that was out with this mob is the likely sire: the natural
+  // joinings name a paddock, so the ones due around this date in this
+  // paddock come first, then rams standing in it now, then the rest.
+  let joinings = [];
+  const sireSel = pkBox.querySelector("[name=pk_sire]");
+  const pkSel   = pkBox.querySelector("[name=pk_paddock]");
+  const spOf    = () => S.species === "all" ? (pkBox.querySelector("[name=pk_species]")?.value || "sheep") : S.species;
+  const fillSires = () => {
+    const sp = spOf(), pkId = pkSel.value, on = pkBox.querySelector("[name=pk_on]").value;
+    const near = d => on && d && Math.abs((new Date(d) - new Date(on))/864e5) <= 60;
+    const joined = new Set(joinings.filter(j => j.paddock_id === pkId && near(j.due_on)).map(j => j.sire_id));
+    const males = S.animals.filter(a => speciesOf(a) === sp && a.sex === "male" && (isActive(a) || joined.has(a.id)));
+    const here  = new Set(males.filter(a => a.paddock_id === pkId).map(a => a.id));
+    const A = males.filter(a => joined.has(a.id));
+    const B = males.filter(a => !joined.has(a.id) && here.has(a.id));
+    const C = males.filter(a => !joined.has(a.id) && !here.has(a.id));
+    const grp = (label, list) => list.length ? `<optgroup label="${label}">${list.map(a =>
+      `<option value="${a.id}">${esc(codeOf(a))}${a.name ? " · " + esc(a.name) : ""}</option>`).join("")}</optgroup>` : "";
+    sireSel.innerHTML = `<option value="">Not known</option>` + grp("Out with this mob", A)
+      + grp("In the paddock now", B) + grp(`Other ${wl("sire", sp)}s`, C);
+    sireSel.value = (A[0] || B[0])?.id || "";
+  };
+  pkSel.onchange = fillSires;
+  pkBox.querySelector("[name=pk_on]").onchange = fillSires;
+  const spSel = pkBox.querySelector("[name=pk_species]");
+  if(spSel) spSel.onchange = fillSires;
+  db.from("joining").select("sire_id,paddock_id,due_on").eq("method","natural")
+    .not("paddock_id","is",null).then(({data}) => { joinings = data || []; fillSires(); });
+  fillSires();
+
+  // A hidden required field still blocks the submit, so the box that
+  // isn't in use is disabled, which also keeps it out of the FormData.
+  let seg = null;
+  const setMode = m => {
+    mode = m;
+    for(const [box, on] of [[damBox, m==="dam"], [pkBox, m==="paddock"]]){
+      box.hidden = !on;
+      box.querySelectorAll("input,select,textarea,button").forEach(x => x.disabled = !on);
+    }
+    if(seg) seg.querySelectorAll("button").forEach((b,i) => b.setAttribute("aria-pressed", (i===1) === (m==="paddock")));
+  };
+  if(byPaddock){
+    seg = el(`<div class="seg">
+      <button type="button">${w("dam")} known</button>
+      <button type="button">Seen in a paddock</button></div>`);
+    seg.querySelectorAll("button").forEach((b,i) => b.onclick = () => setMode(i ? "paddock" : "dam"));
+    inner.appendChild(seg);
+  }
+  inner.appendChild(damBox);
+  inner.appendChild(pkBox);
+  setMode(byPaddock ? mode : "dam");
+
   return formShell(`Record a ${wl("birth")}`, inner, async (f) => {
+    if(mode === "paddock"){
+      const pkId = f.get("pk_paddock");
+      if(!pkId) throw new Error("Choose the paddock.");
+      const { data:ids, error } = await db.rpc("record_drop", {
+        p_paddock_id: pkId, p_on: f.get("pk_on"), p_species: spOf(),
+        p_count: Number(f.get("pk_count")||1), p_sire_id: f.get("pk_sire")||null,
+        p_sex: f.get("pk_sex")||"unknown", p_outcome: f.get("pk_outcome"),
+        p_notes: f.get("pk_notes")||null
+      });
+      if(error) throw error;
+      const pkName = S.paddocks.find(p => p.id === pkId)?.name || "the paddock";
+      if((ids||[]).length === 1){
+        S.sel = ids[0];
+        return `Saved. The ${wl("young", spOf())} is in the herd, in ${pkName}.`;
+      }
+      S.sel = null;
+      return `Saved. ${ids.length} ${wl("young", spOf())}s are in the herd under ${pkName}. Numbers go on at marking: Manage → Tag the drop.`;
+    }
     const ids = [...pick.chosen];
     if(!ids.length) throw new Error(`Choose the ${wl("dam")} that ${wl("birthed")}.`);
     // One call, one transaction: the calving, the calf, its status and
@@ -3214,6 +3321,73 @@ function editAnimal(){
   });
 }
 
+// ─── tag the drop ───────────────────────────────────────────────
+// Marking day. Every lamb recorded through the season is on the list
+// as "X ?"; this is where the numbers off the tags go on, one row per
+// animal by paddock, without opening each one in turn.
+const untaggedHere = () => S.animals.filter(a => isActive(a) && !a.stock_code && a.year_letter && inSpecies(a));
+function tagDrop(){
+  const list = untaggedHere().sort((a,b) =>
+    (a.paddock_name||"~").localeCompare(b.paddock_name||"~") || (a.dob||"").localeCompare(b.dob||""));
+  if(!list.length) return el(`<div class="empty"><b>Nothing to tag</b>Every animal on the place has a number.</div>`);
+  const inner = el(`<div><p class="hint" style="margin-top:0">Untagged stock, by paddock. Type the
+    number off the tag as it goes in, and set the sex if it's been checked. Rows left blank are
+    untouched.</p></div>`);
+  const rows = [];
+  let lastPk;
+  for(const a of list){
+    const pk = a.paddock_name || "Not in a paddock";
+    if(pk !== lastPk){
+      const n = list.filter(x => (x.paddock_name||"Not in a paddock") === pk).length;
+      inner.appendChild(el(`<h3 class="sec" style="padding-left:0">${esc(pk)} — ${n}</h3>`));
+      lastPk = pk;
+    }
+    const sexes = speciesOf(a) === "sheep" ? ["female","male","wether"] : ["female","male","steer"];
+    const row = el(`<div style="display:flex;gap:8px;align-items:center;margin:6px 0">
+      ${tagHTML(codeOf(a))}
+      <span class="sub" style="flex:1;font-size:12px;line-height:1.3">${fmt(a.dob)}${
+        a.sire_name ? "<br>by " + esc(a.sire_name) : ""}${a.dam_code ? "<br>out of " + esc(a.dam_code) : ""}</span>
+      <input type="number" min="1" max="9999" inputmode="numeric" placeholder="No."
+        aria-label="Tag number" style="width:78px;min-height:0;padding:8px">
+      <select aria-label="Sex" style="width:100px;min-height:0;padding:8px"><option value="">Sex…</option>${
+        sexes.map(x => `<option value="${x}"${a.sex===x?" selected":""}>${x}</option>`).join("")}</select>
+    </div>`);
+    rows.push({a, num: row.querySelector("input"), sex: row.querySelector("select")});
+    inner.appendChild(row);
+  }
+  const code = r => `${r.a.year_letter} ${r.num.value.trim().padStart(2,"0")}`;
+  return formShell("Tag the drop", inner, async () => {
+    const todo = rows.filter(r => r.num.value.trim() || (r.sex.value && r.sex.value !== r.a.sex));
+    if(!todo.length) throw new Error("No numbers typed in.");
+    // A number used twice on the page, or already on an animal, is
+    // cheaper to catch here than one row at a time in the database.
+    const seen = new Set();
+    for(const r of todo){
+      if(!r.num.value.trim()) continue;
+      const c = code(r);
+      if(seen.has(c) || S.animals.some(x => x.stock_code === c && speciesOf(x) === speciesOf(r.a) && x.origin !== "reference"))
+        throw new Error(`${c} is typed twice, or is already on an animal.`);
+      seen.add(c);
+    }
+    let done = 0; const failed = [];
+    for(const r of todo){
+      const patch = {};
+      if(r.num.value.trim()) patch.stock_code = code(r);
+      if(r.sex.value && r.sex.value !== r.a.sex) patch.sex = r.sex.value;
+      const { error } = await db.from("animal").update(patch).eq("id", r.a.id);
+      if(error) failed.push(`${patch.stock_code || codeOf(r.a)} — ${
+        error.code === "23505" ? "that tag is already on another animal" : error.message}`);
+      else done++;
+    }
+    S.view = "record";
+    if(failed.length){
+      await loadHerd();
+      throw new Error(`${done} tagged. Not saved: ${failed.join("; ")}`);
+    }
+    return `${done} head tagged.`;
+  });
+}
+
 // ─── bulk update ────────────────────────────────────────────────
 function bulkEdit(){
   const bulkable = AF.filter(f => f[5]);
@@ -3379,6 +3553,7 @@ async function render(){
   else if(S.view==="rec:spray")     body = recSpray();
   else if(S.view==="rec:sell")      body = recSell();
   else if(S.view==="rec:bulk")      body = bulkEdit();
+  else if(S.view==="rec:tagdrop")   body = tagDrop();
   else if(S.view==="rec:settings")  body = viewSettings();
   else if(S.view==="editAnimal")    body = editAnimal();
   else if(S.view==="rec:store")     body = recStore();
