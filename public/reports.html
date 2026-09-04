@@ -135,6 +135,7 @@ footer{margin-top:34px;padding-top:10px;border-top:1px solid var(--rule);
     </select></label>
     <button class="ghost" id="print">Print / save as PDF</button>
     <button class="ghost" id="addfeed">+ Add feed to store</button>
+    <button class="ghost" id="addspray">+ Record spraying</button>
   </div>
 
   <div id="out"></div>
@@ -177,6 +178,16 @@ const SIRE_WORD = { cattle: "bull", sheep: "ram" };
 // right answer, and the primary registration is the one this page
 // trades under.
 let HOME = { pic: "", trading_name: "Buloke Farm", address: "" };
+
+// Paddocks, for the spray editor. Loaded once — the list changes a
+// couple of times a year, not a couple of times a session.
+let PADDOCKS = [];
+async function loadPaddocks(){
+  const { data } = await db.from("paddock").select("id,name")
+    .eq("active", true).order("sort_order").order("name");
+  PADDOCKS = data || [];
+}
+
 async function loadHome(){
   const { data } = await db.from("property")
     .select("pic,trading_name,address").eq("is_primary", true).maybeSingle();
@@ -209,7 +220,8 @@ $("#preset").onchange = e => {
 };
 $("#sp").onchange = run;
 $("#print").onclick = () => window.print();
-$("#addfeed").onclick = () => openEditor("feed_source", null);
+$("#addfeed").onclick  = () => openEditor("feed_source", null);
+$("#addspray").onclick = () => openEditor("spray_event", null);
 $("#go").onclick = run;
 
 async function run(){
@@ -220,6 +232,13 @@ async function run(){
   let fq = db.from("v_feed_event").select("*").gte("fed_on",from).lte("fed_on",to).order("fed_on");
   let cq = db.from("v_consignment").select("*").gte("consigned_on",from).lte("consigned_on",to).order("consigned_on");
   let sq = db.from("v_feed_store").select("*").order("received_on",{ascending:false, nullsFirst:false});
+  // Spraying is not species-scoped — pasture is pasture — so the stock
+  // filter does not apply to it.
+  let spq = db.from("v_spray_report").select("*")
+              .gte("applied_on",from).lte("applied_on",to).order("applied_on");
+  // What is under withhold RIGHT NOW, regardless of the report period.
+  // A spray from before the "from" date can still be binding today.
+  let wq  = db.from("v_paddock_withhold").select("*").order("safe_to_graze");
   // Joinings are dated by when the bull went in, or the straw went in.
   let shq = db.from("v_shearing").select("*")
               .gte("shorn_on",from).lte("shorn_on",to).order("shorn_on");
@@ -227,7 +246,7 @@ async function run(){
              .gte("joined_on",from).lte("joined_on",to)
              .order("season",{ascending:false}).order("dam_code");
 
-  const [t,f,s,c,j,sh] = await Promise.all([tq,fq,sq,cq,jq,shq]);
+  const [t,f,s,c,j,sh,sp,w] = await Promise.all([tq,fq,sq,cq,jq,shq,spq,wq]);
   const err = t.error||f.error||s.error||c.error;
   if(err){ $("#out").innerHTML = `<p class="gap">${esc(err.message)}</p>`; return; }
 
@@ -237,6 +256,7 @@ async function run(){
 
   $("#out").innerHTML =
     treatmentSection((t.data||[]).filter(involves), range) +
+    spraySection(sp.data||[], w.data||[], range, sp.error) +
     feedingSection(f.data||[], range) +
     sourceSection(s.data||[]) +
     consignSection((c.data||[]).filter(involves), range) +
@@ -282,6 +302,94 @@ function treatmentSection(rows, range){
   const empty = rows.filter(r => r.head===0);
   if(empty.length) h += `<div class="gap">${empty.length} treatment${empty.length===1?"":"s"} have no
     animals attached — these were mobs belonging to another PIC.</div>`;
+  return h + `</section>`;
+}
+
+// ── Section 3B ──────────────────────────────────────────────────
+// One row per product, because a tank mix is several products in one
+// pass and each carries its own batch number and withholding period.
+// The date cell opens the pass; the row opens the product.
+function spraySection(rows, withheld, range, error){
+  let h = `<section><h2>Section 3B — Crop, pasture and paddock treatment</h2>
+    <p class="lede">${esc(range)} · ${new Set(rows.map(r=>r.event_id)).size} application${
+      new Set(rows.map(r=>r.event_id)).size===1?"":"s"}</p>`;
+  if(error) return h + `<p class="gap">${esc(error.message)}</p></section>`;
+
+  // Withheld paddocks first: this is the bit that changes what you do
+  // today, so it goes above the record rather than under it.
+  if(withheld.length){
+    // A mix can carry a known withhold AND one nobody wrote down. Both
+    // are true, so both get said — the known date is not a clearance
+    // while there is an unrecorded product sitting beside it.
+    h += `<div class="gap"><b>Do not graze:</b> ` + withheld.map(p => {
+      const bits = [];
+      if(p.safe_to_graze)    bits.push(`clear ${fmt(p.safe_to_graze)}`);
+      if(p.withhold_unknown) bits.push(`<span class="flag">no grazing WHP recorded</span>`);
+      return `${esc(p.paddock_name)} (sprayed ${fmt(p.last_sprayed)}) — ${bits.join(", ")}`;
+    }).join("; ") + `.</div>`;
+  }
+
+  if(!rows.length) return h + `<p class="none">No spraying recorded in this period.
+    Use <b>+ Record spraying</b> above.</p></section>`;
+
+  h += `<table><thead><tr>
+    <th class="m">Date</th><th>Where</th><th>Crop</th><th class="num">Area ha</th>
+    <th>Product</th><th class="m">Rate</th><th class="m">Batch</th>
+    <th>Method</th><th class="m">Wind</th>
+    <th class="m">Graze WHP</th><th class="m">Graze from</th>
+    <th class="m">Cut from</th><th class="m">ESI</th><th>Applied by</th>
+  </tr></thead><tbody>`;
+  for(const r of rows){
+    const wind = r.wind_direction || r.wind_speed_kmh!=null
+      ? `${esc(r.wind_direction||"?")}${r.wind_speed_kmh!=null?` ${r.wind_speed_kmh}`:""}`
+      : '<span class="flag">missing</span>';
+    h += `<tr class="ed" data-kind="spray_product" data-id="${r.product_id||""}">
+      <td class="m"><button class="srclink" data-spray="${r.event_id}"
+        title="Edit the application">${fmt(r.applied_on)}</button>${
+        r.event_edits?`<span class="edits">${r.event_edits} edit${r.event_edits===1?"":"s"}</span>`:""}</td>
+      <td>${esc(r.place||"—")}</td>
+      <td>${esc(r.crop_treated||"—")}</td>
+      <td class="num">${r.area_ha ?? '<span class="flag">missing</span>'}</td>
+      <td>${r.product_name
+        ? esc(r.product_name) + (r.product_edits
+            ? `<span class="edits">${r.product_edits} edit${r.product_edits===1?"":"s"}</span>` : "")
+        : '<span class="flag">no product recorded</span>'}</td>
+      <td class="m">${dash(r.chemical_rate)}</td>
+      <td class="m">${dash(r.batch_number)}</td>
+      <td>${esc(r.method||"—")}</td>
+      <td class="m">${wind}</td>
+      <td class="m">${r.graze_withhold_days ?? '<span class="flag">?</span>'}</td>
+      <td class="m">${r.safe_to_graze
+        ? (r.graze_withheld ? `<span class="flag">${fmt(r.safe_to_graze)}</span>` : fmt(r.safe_to_graze))
+        : "—"}</td>
+      <td class="m">${r.safe_to_harvest?fmt(r.safe_to_harvest):"—"}</td>
+      <td class="m">${r.esi_days ?? "—"}</td>
+      <td>${dash(r.applied_by_shown)}${r.contact_shown
+        ?`<br><span style="color:var(--ink2)">${esc(r.contact_shown)}</span>`:""}</td></tr>`;
+  }
+  h += `</tbody></table>`;
+
+  // One line per pass, so the button lands next to the record it adds to.
+  const events = [...new Map(rows.map(r => [r.event_id, r])).values()];
+  h += `<p class="lede noprint" style="margin-top:8px">Add another product to a pass: ` +
+    events.map(e => `<button class="srclink" data-addprod="${e.event_id}">${
+      fmt(e.applied_on)} ${esc(e.place||"")}</button>`).join(" · ") + `</p>`;
+
+  const noWind = events.filter(e => !e.wind_direction || e.wind_speed_kmh==null);
+  if(noWind.length) h += `<div class="gap"><b>${noWind.length} application${
+    noWind.length===1?" has":"s have"} no wind recorded.</b> Wind direction and speed are
+    what Section 3B exists to show — they are the evidence the chemical went where it was
+    aimed and not onto a neighbour.</div>`;
+
+  const bad = rows.filter(r => r.product_id && (!r.batch_number || r.graze_withhold_days==null));
+  if(bad.length) h += `<div class="gap"><b>${bad.length} product line${
+    bad.length===1?" is":"s are"} incomplete.</b> The batch number comes off the drum and the
+    grazing withholding period off the label. Without the WHP the paddock cannot be cleared by
+    date, and stock moving in will be queried every time.</div>`;
+
+  const bare = rows.filter(r => !r.product_id);
+  if(bare.length) h += `<div class="gap">${bare.length} application${bare.length===1?"":"s"}
+    recorded with no product. Click the date to add what went in the tank.</div>`;
   return h + `</section>`;
 }
 
@@ -616,6 +724,30 @@ const FIELDS = {
     ["gestation_days","Gestation days","number"],["due_on","Due","date"],
     ["season","Season","text"],["cycle","Cycle","pick:spring|autumn"],
     ["attempt","Attempt","number"]]},
+  spray_event: { title:"Spraying", table:"spray_event", date:"applied_on",
+    blurb:"One pass over one piece of country. Products go on next.",
+    next:"spray_product", fields:[
+    ["applied_on","Date","date"],
+    ["paddock_id","Paddock","ref:paddock"],
+    ["paddock_desc","Or describe where (laneway, boundary)","text"],
+    ["crop_treated","Crop / pasture treated","text"],
+    ["area_ha","Area treated (ha)","number"],
+    ["water_rate_l_ha","Spray volume (L/ha)","number"],
+    ["method","Method","pick:boom spray|spot spray|knapsack|weed wiper|aerial"],
+    ["wind_direction","Wind direction","pick:N|NE|E|SE|S|SW|W|NW|still"],
+    ["wind_speed_kmh","Wind speed (km/h)","number"],
+    ["applied_by","Applied by","text"],["applied_by_contact","Contact","text"],
+    ["notes","Notes","area"]]},
+  spray_product: { title:"Spray product", table:"spray_product",
+    blurb:"One product in the tank. Add a row for each in a mix.", fields:[
+    ["product_name","Product","text"],
+    ["active_ingredient","Active ingredient","text"],
+    ["chemical_rate","Chemical rate (as written)","text"],
+    ["batch_number","Batch number (off the drum)","text"],
+    ["graze_withhold_days","Grazing WHP (days)","number"],
+    ["harvest_withhold_days","Harvest / cutting WHP (days)","number"],
+    ["esi_days","ESI (days)","number"],
+    ["notes","Notes","area"]]},
   feed_source: { title:"Feed in store", table:"feed_source", date:"received_on", fields:[
     ["feedstuff","Feedstuff","text"],
     ["feed_type","Type","pick:fodder|grain|pellet|supplement|mineral|other"],
@@ -640,12 +772,24 @@ document.addEventListener("click", e => {
   // The tick column is an action in its own right, not a way into the row.
   if(e.target.closest(".nodrawer")) return;
   const src = e.target.closest(".srclink");
-  if(src){ e.stopPropagation(); return openEditor("feed_source", src.dataset.src); }
+  if(src){
+    e.stopPropagation();
+    if(src.dataset.spray)   return openEditor("spray_event", src.dataset.spray);
+    if(src.dataset.addprod) return openEditor("spray_product", null,
+                                              { spray_event_id: src.dataset.addprod });
+    return openEditor("feed_source", src.dataset.src);
+  }
   const tr = e.target.closest("tr.ed");
-  if(tr) openEditor(tr.dataset.kind, tr.dataset.id);
+  if(!tr) return;
+  // A pass with nothing in the tank has no product row to open, so the
+  // row falls through to adding one.
+  if(tr.dataset.kind === "spray_product" && !tr.dataset.id) return;
+  openEditor(tr.dataset.kind, tr.dataset.id);
 });
 
-async function openEditor(kind, id){
+// `preset` seeds a new record with values the form does not ask for —
+// currently the parent a spray product hangs off.
+async function openEditor(kind, id, preset = null){
   const cfg = FIELDS[kind]; if(!cfg) return;
   let row = {};
   if(id){
@@ -666,6 +810,11 @@ async function openEditor(kind, id){
         <option value="">—</option>
         ${type.slice(5).split("|").map(o =>
           `<option ${v===o?"selected":""}>${o}</option>`).join("")}</select></label>`;
+    if(type==="ref:paddock")
+      return `<label><span>${label}</span><select name="${k}">
+        <option value="">—</option>
+        ${PADDOCKS.map(p =>
+          `<option value="${p.id}" ${v===p.id?"selected":""}>${esc(p.name)}</option>`).join("")}</select></label>`;
     if(type==="area")
       return `<label><span>${label}</span><textarea name="${k}" rows="2">${esc(v||"")}</textarea></label>`;
     // Stored 0-1, typed 0-100. Nobody says "point six five confident".
@@ -677,9 +826,9 @@ async function openEditor(kind, id){
 
   drawer.innerHTML = `<h3>${id ? cfg.title : "New " + cfg.title.toLowerCase()}</h3>
     <p class="sub">${id ? "Corrections are kept. Every change records who made it and when."
-      : "Once saved, this appears in the app's feed list ready to feed out."}</p>
+      : (cfg.blurb || "Once saved, this appears in the app's feed list ready to feed out.")}</p>
     <form id="edform">${cfg.fields.map(inp).join("")}
-      <button type="submit">${id ? "Save changes" : "Add to store"}</button>
+      <button type="submit">${id ? "Save changes" : "Save"}</button>
       ${id && ME?.role==="owner" ? `<button type="button" class="warn" id="del">Delete this record</button>` : ""}
       <button type="button" class="ghost" id="cancel">Cancel</button>
     </form><div class="hist" id="hist"></div>`;
@@ -700,6 +849,17 @@ async function openEditor(kind, id){
     // can be set, so changing it clears the other.
     if(cfg.table === "joining" && patch.method)
       patch[patch.method === "ai" ? "paddock_id" : "ai_semen_id"] = null;
+
+    if(!id && preset) Object.assign(patch, preset);
+
+    // A new pass is worth nothing without a product, so chain straight
+    // into one rather than trusting anybody to come back for it.
+    if(!id && cfg.next){
+      const { data, error } = await db.from(cfg.table).insert(patch).select("id").single();
+      if(error) return alert(error.message);
+      run();
+      return openEditor(cfg.next, null, { spray_event_id: data.id });
+    }
 
     const { error } = id
       ? await db.from(cfg.table).update(patch).eq("id", id)
@@ -739,7 +899,7 @@ window.__signOut = () => db.auth.signOut();
   }
   const { data:{ user } } = await db.auth.getUser();
   if(user){ const { data } = await db.from("farm_user").select("role").eq("id",user.id).maybeSingle(); ME = data; }
-  await loadHome();
+  await Promise.all([loadHome(), loadPaddocks()]);
   run();
 })();
 </script>

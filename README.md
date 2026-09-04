@@ -95,6 +95,22 @@ gully got two rolls; who ate it comes from `paddock_stay`. The Irwins
 grain runs are the exception — they came from a per-animal sheet and
 name their animals directly, so both shapes have to be counted.
 
+**Spraying is a record against the ground, not the stock.** Section 2 is
+a chemical put into an animal; Section 3B is a chemical put onto a
+paddock. They share nothing useful — 3B has no animals attached at the
+time and its withholding period governs *grazing*, not slaughter — so
+they are separate tables. A tank mix is one `spray_event` with a
+`spray_product` row per product, each carrying its own batch number and
+withholds, because that is how the labels read and how the mix clears.
+
+**No safe-to-graze date is stored.** It is `applied_on + withhold`, and
+the binding one is the latest across the mix. `v_paddock_withhold` does
+that arithmetic and `move_animals` refuses a paddock still inside it.
+A withhold that is null means *unknown*, never zero: the paddock is
+held for 60 days and the report names the gap rather than clearing it
+by guesswork. Overriding the refusal is allowed and is written onto the
+`paddock_stay` reason, so a deliberate call stays visible.
+
 **A run is not a drop.** Rolling out a bale feeds them that day. A self
 feeder they stay on for weeks. Both are LPA 3C records and both count
 against the store, but only a run (`feed_event.is_run`) accrues days on
@@ -134,6 +150,8 @@ animal ──┬─ animal_status       dated life state + class transitions
 ai_semen ─┬─ cryo_txn ───────── animal         straw ledger, female as written
 embryo  ──┘                                    two tanks, six locations each
 
+spray_event ─── spray_product ── paddock         LPA 3B, tank mix = many products
+
 feed_source ─┬─ feed_event ──┬─ paddock         LPA 3C / 3D
              │               ├─ feed_event_animal
              │               └─ feed_event_ref   tags as written on paper
@@ -155,6 +173,8 @@ species** — `R 97` is a cow and also a ewe, and both are right.
 | `v_animal_current` | The herd, every column, with age, status, paddock, clearance |
 | `v_paddock_current` | Paddocks with live head count and stocking rate |
 | `v_treatment_report` | LPA section 2, with which PICs and species were on the run |
+| `v_spray_report` | LPA 3B, one row per product with derived graze and cut dates |
+| `v_paddock_withhold` | Paddocks stock should not be grazing yet. Empty is normal |
 | `v_feed_event` / `v_feed_store` | LPA 3C / 3D, with what's left in the shed |
 | `v_feed_cover` | Who a feeding event covers, by paddock or by name |
 | `v_feed_load` | Per load: head, intake rate, projected empty date |
@@ -344,6 +364,12 @@ done
   `v_cryo_location` ← `v_ai_semen`, `v_embryo`; `v_stock_year` and
   `v_stock_year_class` ← `v_stock_year_animal` ← `v_stock_entry`,
   `v_stock_exit`.
+- **Adding an argument to a function creates a second function.**
+  `create or replace` only replaces a matching argument list, so the old
+  form survives and a call with the original arity then matches both —
+  Postgres refuses it as ambiguous rather than choosing. `drop function`
+  with the full old signature first. Migration 40 does this to
+  `move_animals`.
 - **`alter type ... add value` cannot be used in the transaction that
   added it.** The migration adding an enum value and the load using it
   are two separate runs.

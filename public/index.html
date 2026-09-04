@@ -2895,10 +2895,22 @@ function recMove(){
     const ids = [...pick.chosen];
     if(!ids.length) throw new Error("Choose at least one animal.");
     if(!f.get("to"))  throw new Error("Choose a paddock to move them to.");
-    const { error } = await db.rpc("move_animals", {
+    const args = {
       p_animal_ids: ids, p_paddock_id: f.get("to"),
-      p_on: f.get("on"), p_reason: f.get("reason") || null
-    });
+      p_on: f.get("on"), p_reason: f.get("reason") || null,
+      p_ignore_withhold: false
+    };
+    let { error } = await db.rpc("move_animals", args);
+
+    // BF001 is the spray grazing withhold. It is a question, not a
+    // wall — there are good reasons to put stock on treated ground and
+    // the database should not pretend otherwise. Saying yes is recorded
+    // on the stay, so the decision stays visible afterwards.
+    if(error && error.code === "BF001"){
+      if(!confirm(`${error.message}\n\nMove them anyway? This is noted on the record.`))
+        throw new Error("Move cancelled — they stay where they are.");
+      ({ error } = await db.rpc("move_animals", { ...args, p_ignore_withhold: true }));
+    }
     if(error) throw error;
     const name = S.paddocks.find(p => p.id===f.get("to"))?.name || "the paddock";
     return `${ids.length} head moved to ${name}.`;
