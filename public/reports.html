@@ -183,8 +183,9 @@ let HOME = { pic: "", trading_name: "Buloke Farm", address: "" };
 // couple of times a year, not a couple of times a session.
 let PADDOCKS = [];
 async function loadPaddocks(){
-  const { data } = await db.from("paddock").select("id,name,area_ha")
-    .eq("active", true).order("sort_order").order("name");
+  const { data, error } = await db.from("paddock").select("id,name,area_ha")
+    .is("retired_on", null).order("sort_order").order("name");
+  if(error) console.error("paddocks:", error.message);
   PADDOCKS = data || [];
 }
 
@@ -347,8 +348,10 @@ function spraySection(rows, withheld, range, error){
       <td class="m"><button class="srclink" data-spray="${r.event_id}"
         title="Edit the application">${fmt(r.applied_on)}</button>${
         r.event_edits?`<span class="edits">${r.event_edits} edit${r.event_edits===1?"":"s"}</span>`:""}</td>
-      <td>${esc(r.place||"—")}${r.location_note
-        ?`<br><span style="color:var(--ink2)">${esc(r.location_note)}</span>`:""}</td>
+      <td>${esc(r.place||'<span class="flag">no paddock</span>')}${r.location_note
+        ?`<br><span style="color:var(--ink2)">${esc(r.location_note)}</span>`:""}${
+        r.paddocks_on_pass>1?`<br><span style="color:var(--ink2)">one of ${
+          r.paddocks_on_pass} paddocks on this pass</span>`:""}</td>
       <td>${esc(r.crop_treated||"—")}</td>
       <td class="num">${r.area_ha ?? '<span class="flag">missing</span>'}</td>
       <td>${r.product_name
@@ -726,13 +729,11 @@ const FIELDS = {
     ["season","Season","text"],["cycle","Cycle","pick:spring|autumn"],
     ["attempt","Attempt","number"]]},
   spray_event: { title:"Spraying", table:"spray_event", date:"applied_on",
-    blurb:"One pass over one piece of country. Products go on next.",
-    next:"spray_product", fields:[
+    blurb:"One pass, however many paddocks it covered. Products go on next.",
+    next:"spray_product", multi:true, fields:[
     ["applied_on","Date","date","req"],
-    ["paddock_id","Paddock","ref:paddock","req"],
-    ["location_note","Where in it (fenceline, troughs)","text"],
+    ["__paddocks","Paddocks","multi:paddock","req"],
     ["crop_treated","Crop / pasture treated","text"],
-    ["area_ha","Area treated (ha)","number"],
     ["water_rate_l_ha","Spray volume (L/ha)","number"],
     ["method","Method","pick:boom spray|spot spray|knapsack|weed wiper|aerial"],
     ["wind_direction","Wind direction","pick:N|NE|E|SE|S|SW|W|NW|still"],
@@ -798,6 +799,13 @@ async function openEditor(kind, id, preset = null){
     if(error) return alert(error.message);
     row = data;
   }
+  // The paddocks a pass covers live in their own table, so they are
+  // fetched alongside rather than coming back with the row.
+  if(cfg.multi && id){
+    const { data } = await db.from("spray_paddock")
+      .select("paddock_id,area_ha,location_note").eq("spray_event_id", id);
+    row.__paddocks = data || [];
+  }
 
   const inp = (f) => {
     const [k,label,type,req] = f;
@@ -816,11 +824,33 @@ async function openEditor(kind, id, preset = null){
         <option value="">—</option>
         ${type.slice(5).split("|").map(o =>
           `<option ${v===o?"selected":""}>${o}</option>`).join("")}</select></label>`;
-    if(type==="ref:paddock")
-      return `<label><span>${label}${star}</span><select name="${k}"${need}>
-        <option value="">—</option>
-        ${PADDOCKS.map(p =>
-          `<option value="${p.id}" ${v===p.id?"selected":""}>${esc(p.name)}</option>`).join("")}</select></label>`;
+    // One tank crosses several paddocks in an afternoon, so the
+    // picker is a list, not a choice. Each row carries the area
+    // actually covered — offered from the mapped boundary, editable
+    // because spot spraying a fenceline is not the whole paddock.
+    if(type==="multi:paddock"){
+      if(!PADDOCKS.length) return `<label><span>${label}</span>
+        <span style="color:var(--danger)">No paddocks found. Draw them on /map first.</span></label>`;
+      return `<label><span>${label}${star}</span></label>
+        <div id="pkpick" style="border:1px solid var(--rule);border-radius:9px;
+             padding:4px 10px 8px;margin-bottom:11px;max-height:290px;overflow-y:auto">
+        ${PADDOCKS.map(p => {
+          const on = (row.__paddocks||[]).find(x => x.paddock_id === p.id);
+          return `<div style="border-bottom:1px solid var(--rule);padding:6px 0">
+            <div style="display:grid;grid-template-columns:auto 1fr 86px;gap:8px;align-items:center">
+              <input type="checkbox" class="pk-on" data-id="${p.id}" ${on?"checked":""}
+                style="width:18px;height:18px;accent-color:var(--accent);cursor:pointer">
+              <span style="font-size:14px">${esc(p.name)}${
+                p.area_ha!=null?` <span style="color:var(--ink2)">${p.area_ha} ha</span>`:""}</span>
+              <input type="number" class="pk-ha" data-id="${p.id}" step="0.1" min="0"
+                placeholder="ha" value="${on?.area_ha ?? ""}"
+                style="padding:5px 7px;font-size:13px" ${on?"":"disabled"}>
+            </div>
+            <input type="text" class="pk-note" data-id="${p.id}" placeholder="Where in it — optional"
+              value="${esc(on?.location_note ?? "")}" ${on?"":"hidden"}
+              style="margin-top:5px;padding:5px 7px;font-size:13px"></div>`;
+        }).join("")}</div>`;
+    }
     if(type==="area")
       return `<label><span>${label}${star}</span><textarea name="${k}" rows="2"${need}>${esc(v||"")}</textarea></label>`;
     // Stored 0-1, typed 0-100. Nobody says "point six five confident".
@@ -845,17 +875,36 @@ async function openEditor(kind, id, preset = null){
   // Most passes cover the whole paddock, so offer its area — but only
   // into an empty box. A part-paddock figure someone typed is a
   // measurement and must not be overwritten by a default.
-  const pad = drawer.querySelector('select[name="paddock_id"]');
-  const ha  = drawer.querySelector('input[name="area_ha"]');
-  if(pad && ha) pad.onchange = () => {
-    const p = PADDOCKS.find(x => x.id === pad.value);
-    if(p && p.area_ha != null && ha.value === "") ha.value = p.area_ha;
-  };
+  // Ticking a paddock opens its area and note, and offers the mapped
+  // hectares. Unticking clears them, so an area cannot be left behind
+  // on a paddock that is no longer part of the pass.
+  drawer.querySelectorAll(".pk-on").forEach(cb => {
+    cb.onchange = () => {
+      const pid  = cb.dataset.id;
+      const hIn  = drawer.querySelector(`.pk-ha[data-id="${pid}"]`);
+      const nIn  = drawer.querySelector(`.pk-note[data-id="${pid}"]`);
+      hIn.disabled = !cb.checked;
+      nIn.hidden   = !cb.checked;
+      if(cb.checked){
+        const p = PADDOCKS.find(x => x.id === pid);
+        if(p && p.area_ha != null && hIn.value === "") hIn.value = p.area_ha;
+      } else { hIn.value = ""; nIn.value = ""; }
+    };
+  });
+
+  const chosenPaddocks = () =>
+    [...drawer.querySelectorAll(".pk-on")].filter(c => c.checked).map(c => ({
+      paddock_id:    c.dataset.id,
+      area_ha:       drawer.querySelector(`.pk-ha[data-id="${c.dataset.id}"]`).value === ""
+                       ? null : Number(drawer.querySelector(`.pk-ha[data-id="${c.dataset.id}"]`).value),
+      location_note: drawer.querySelector(`.pk-note[data-id="${c.dataset.id}"]`).value.trim() || null
+    }));
 
   $("#edform").onsubmit = async ev => {
     ev.preventDefault();
     const fd = new FormData(ev.target), patch = {};
     for(const [k,,type] of cfg.fields){
+      if(type==="multi:paddock") continue;          // its own table
       if(type==="bool")        patch[k] = fd.get(k) === "on";
       else if(type==="pct")    patch[k] = fd.get(k) === "" ? null : Number(fd.get(k))/100;
       else if(type==="number") patch[k] = fd.get(k) === "" ? null : Number(fd.get(k));
@@ -867,6 +916,47 @@ async function openEditor(kind, id, preset = null){
       patch[patch.method === "ai" ? "paddock_id" : "ai_semen_id"] = null;
 
     if(!id && preset) Object.assign(patch, preset);
+
+    if(cfg.multi){
+      const picks = chosenPaddocks();
+      if(!picks.length) return alert("Tick at least one paddock. "
+        + "A spray record with no paddock cannot keep stock off it.");
+
+      // New pass: one RPC, one transaction. The pass and its paddocks
+      // land together or not at all, so a half-written record can't be
+      // left behind for someone to enter a second time.
+      if(!id){
+        const { data, error } = await db.rpc("record_spray", {
+          p_applied_on:         patch.applied_on,
+          p_paddocks:           picks,
+          p_products:           [],
+          p_crop_treated:       patch.crop_treated,
+          p_water_rate_l_ha:    patch.water_rate_l_ha,
+          p_method:             patch.method,
+          p_wind_direction:     patch.wind_direction,
+          p_wind_speed_kmh:     patch.wind_speed_kmh,
+          p_applied_by:         patch.applied_by,
+          p_applied_by_contact: patch.applied_by_contact,
+          p_notes:              patch.notes
+        });
+        if(error) return alert(error.message);
+        run();
+        return openEditor(cfg.next, null, { spray_event_id: data });
+      }
+
+      // Editing: update the header, then reconcile the paddock list.
+      const { error:eh } = await db.from(cfg.table).update(patch).eq("id", id);
+      if(eh) return alert(eh.message);
+      const keep = picks.map(p => p.paddock_id);
+      const { error:ed } = await db.from("spray_paddock").delete()
+        .eq("spray_event_id", id).not("paddock_id","in",`(${keep.join(",")})`);
+      if(ed) return alert(ed.message);
+      const { error:eu } = await db.from("spray_paddock")
+        .upsert(picks.map(p => ({ ...p, spray_event_id: id })),
+                { onConflict: "spray_event_id,paddock_id" });
+      if(eu) return alert(eu.message);
+      closeDrawer(); return run();
+    }
 
     // A new pass is worth nothing without a product, so chain straight
     // into one rather than trusting anybody to come back for it.

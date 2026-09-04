@@ -110,14 +110,28 @@ usually thought about, so it also hatches any paddock inside a grazing
 withhold and labels it `NO GRAZE`. All three write the same
 `spray_event` plus one `spray_product` per thing in the tank.
 
-**Every spray names a paddock.** `spray_event.paddock_id` is NOT NULL,
-and the paddock cannot be deleted while it holds spray history.
-Migration 40 allowed free text instead so that a laneway or a boundary
-had somewhere to go; 41 took it back, because the free-text case was
+**Every spray names paddocks, plural.** A boom run crosses three
+paddocks on one tank, one wind reading, one batch number; recorded as
+three events that is three chances to type the batch differently.
+`spray_paddock` joins them, same shape as `treatment_animal`. Area and
+`location_note` sit on the join, because 8 ha of one paddock and 0.3 ha
+along the fence of another is still one run. A paddock cannot be
+deleted while it holds spray history.
+
+Migration 40 let free text stand in for the paddock so a laneway had
+somewhere to go; 41 took it back, because the free-text case was
 invisible to `paddock_graze_block()` — the records least likely to be
 remembered were the ones the guard could never catch. A laneway worth
-spraying is a laneway worth a paddock row. `location_note` says where
-inside the paddock and is never a substitute for it.
+spraying is a laneway worth a paddock row.
+
+**`record_spray()` writes a pass in one transaction.** A join table
+cannot enforce "at least one" the way NOT NULL could, and the browser
+sends one statement at a time — so pass, paddocks and products could
+half-save, and being told it failed after the pass was already on file
+gets the same spray entered twice. The function refuses an empty
+paddock list, and counts the rows that actually landed rather than
+trusting the length of what was sent: an id that is not a paddock joins
+to nothing and would otherwise leave a pass covering nowhere.
 
 **No safe-to-graze date is stored.** It is `applied_on + withhold`, and
 the binding one is the latest across the mix. `v_paddock_withhold` does
@@ -166,7 +180,8 @@ animal ──┬─ animal_status       dated life state + class transitions
 ai_semen ─┬─ cryo_txn ───────── animal         straw ledger, female as written
 embryo  ──┘                                    two tanks, six locations each
 
-spray_event ─── spray_product ── paddock         LPA 3B, tank mix = many products
+spray_event ─┬─ spray_product                  LPA 3B, tank mix = many products
+             └─ spray_paddock ── paddock       one pass, many paddocks
 
 feed_source ─┬─ feed_event ──┬─ paddock         LPA 3C / 3D
              │               ├─ feed_event_animal

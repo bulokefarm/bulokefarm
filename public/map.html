@@ -309,6 +309,13 @@ async function saveSpray(){
   const val  = s => (box.querySelector(s)?.value ?? "").trim();
   const num  = s => val(s) === "" ? null : Number(val(s));
 
+  const picks = [...box.querySelectorAll(".pk-on")].filter(c => c.checked).map(c => {
+    const ha = box.querySelector(`.pk-ha[data-id="${c.dataset.id}"]`).value;
+    return { paddock_id: c.dataset.id,
+             area_ha: ha === "" ? null : Number(ha),
+             location_note: box.querySelector(`.pk-note[data-id="${c.dataset.id}"]`).value.trim() || null };
+  });
+
   const prods = [...box.querySelectorAll(".prod")].map(d => ({
     product_name:          d.querySelector(".p-name").value.trim(),
     chemical_rate:         d.querySelector(".p-rate").value.trim()  || null,
@@ -319,37 +326,35 @@ async function saveSpray(){
   })).filter(r => r.product_name);
 
   if(!val("#s-on"))  return say("err","Put a date on it.");
+  if(!picks.length)  return say("err","Tick at least one paddock.");
   if(!prods.length)  return say("err","Say what went in the tank.");
 
-  const { data:ev, error } = await db.from("spray_event").insert({
-    applied_on:      val("#s-on"),
-    paddock_id:      p.id,
-    location_note:   val("#s-spot")  || null,
-    crop_treated:    val("#s-crop")  || null,
-    area_ha:         num("#s-area"),
-    water_rate_l_ha: num("#s-water"),
-    method:          val("#s-method") || null,
-    wind_direction:  val("#s-wdir")   || null,
-    wind_speed_kmh:  num("#s-wkmh"),
-    applied_by:      val("#s-by")     || null,
-    notes:           val("#s-notes")  || null
-  }).select("id").single();
+  // Pass, paddocks and products in one transaction. Three separate
+  // calls could half-save, and reporting a failure after the pass is
+  // already on file gets the same spray entered twice.
+  const { error } = await db.rpc("record_spray", {
+    p_applied_on:      val("#s-on"),
+    p_paddocks:        picks,
+    p_products:        prods,
+    p_crop_treated:    val("#s-crop") || null,
+    p_water_rate_l_ha: num("#s-water"),
+    p_method:          val("#s-method") || null,
+    p_wind_direction:  val("#s-wdir")   || null,
+    p_wind_speed_kmh:  num("#s-wkmh"),
+    p_applied_by:      val("#s-by")     || null,
+    p_notes:           val("#s-notes")  || null
+  });
   if(error) return say("err", error.message);
 
-  const { error:e2 } = await db.from("spray_product")
-    .insert(prods.map(r => ({ ...r, spray_event_id: ev.id })));
-  // The pass is on file either way. Saying "failed" here would get the
-  // same spray entered a second time.
-  if(e2) return say("err", `Application saved, product did not: ${e2.message}`);
-
   S.spraying = false;
+  const where = picks.length === 1 ? p.name : `${picks.length} paddocks`;
   const days = prods.map(r => r.graze_withhold_days).filter(d => d != null);
   if(prods.some(r => r.graze_withhold_days == null))
-    say("ok", `Recorded. No grazing WHP on file, so ${p.name} stays flagged.`);
+    say("ok", `Recorded over ${where}. No grazing WHP on file, so it stays flagged.`);
   else {
     const c = new Date(val("#s-on") + "T00:00:00");
     c.setDate(c.getDate() + Math.max(...days));
-    say("ok", `Recorded. ${p.name} clears ${c.toLocaleDateString("en-AU",
+    say("ok", `Recorded over ${where}. Clears ${c.toLocaleDateString("en-AU",
       {day:"2-digit",month:"short",year:"numeric"})}.`);
   }
   await load();
@@ -357,15 +362,46 @@ async function saveSpray(){
 
 function sprayPanel(p){
   const box = $("#panel");
-  box.appendChild(el(`<p class="hint">Spraying <b>${esc(p.name)}</b>${
-    p.area_ha?` · ${p.area_ha} ha`:""}. Section 3B record.</p>`));
+  box.appendChild(el(`<p class="hint">Spraying, starting from <b>${esc(p.name)}</b>.
+    Section 3B record.</p>`));
   box.appendChild(el(`<label><span>Date</span><input type="date" id="s-on" value="${localToday()}"></label>`));
-  box.appendChild(el(`<label><span>Where in it</span><input type="text" id="s-spot"
-    placeholder="Optional — north fenceline"></label>`));
-  box.appendChild(el(`<div class="two">
-    <label><span>Crop / pasture</span><input type="text" id="s-crop" placeholder="Pasture"></label>
-    <label><span>Area ha</span><input type="number" id="s-area" step="0.1" min="0"
-      value="${p.area_ha ?? ""}"></label></div>`));
+  // The tapped paddock is ticked; the rest of the run gets ticked
+  // here rather than by going back and doing it three more times.
+  const pks = el(`<div id="s-pks" style="border:1px solid var(--rule);border-radius:9px;
+    padding:2px 10px 6px;margin-bottom:10px;max-height:210px;overflow-y:auto"></div>`);
+  for(const q of S.paddocks){
+    const on = q.id === p.id;
+    pks.appendChild(el(`<div style="border-bottom:1px solid var(--rule);padding:6px 0">
+      <label style="display:flex;align-items:center;gap:9px;margin:0">
+        <input type="checkbox" class="pk-on" data-id="${q.id}" ${on?"checked":""}
+          style="width:17px;height:17px;flex:none;accent-color:var(--accent);cursor:pointer">
+        <span style="margin:0;text-transform:none;letter-spacing:0;font-size:14px;color:var(--ink)">${
+          esc(q.name)}${q.area_ha!=null?` · ${q.area_ha} ha`:""}</span></label>
+      <div class="pk-more" ${on?"":"hidden"} style="margin-top:5px">
+        <div class="two">
+          <input type="number" class="pk-ha" data-id="${q.id}" step="0.1" min="0" placeholder="Area ha"
+            value="${on ? (q.area_ha ?? "") : ""}" style="padding:6px 8px;font-size:13px">
+          <input type="text" class="pk-note" data-id="${q.id}" placeholder="Where in it"
+            style="padding:6px 8px;font-size:13px">
+        </div>
+      </div></div>`));
+  }
+  box.appendChild(el(`<label><span>Paddocks on this pass</span></label>`));
+  box.appendChild(pks);
+  // Offer the mapped area on tick, clear it on untick so a figure is
+  // never left behind on a paddock no longer part of the pass.
+  pks.querySelectorAll(".pk-on").forEach(cb => {
+    cb.onchange = () => {
+      const q  = S.paddocks.find(x => x.id === cb.dataset.id);
+      const ha = pks.querySelector(`.pk-ha[data-id="${cb.dataset.id}"]`);
+      const nt = pks.querySelector(`.pk-note[data-id="${cb.dataset.id}"]`);
+      cb.closest("div").querySelector(".pk-more").hidden = !cb.checked;
+      if(cb.checked){ if(q?.area_ha != null && ha.value === "") ha.value = q.area_ha; }
+      else { ha.value = ""; nt.value = ""; }
+    };
+  });
+  box.appendChild(el(`<label><span>Crop / pasture</span>
+    <input type="text" id="s-crop" placeholder="Pasture"></label>`));
   box.appendChild(el(`<div class="two">
     <label><span>Method</span><select id="s-method">
       <option>Boom spray</option><option>Spot spray</option><option>Knapsack</option>
