@@ -587,6 +587,17 @@ whether to go to the paid plan, which cannot be paused.
 If a request returns 404 shortly after creating a table, PostgREST's
 schema cache is stale: `notify pgrst, 'reload schema';`
 
+### Security advisor
+
+Supabase → Advisors → Security. Three warnings are expected and stay:
+
+- `beat()` callable by anon — the keepalive's write (migration 47).
+- `my_role()` callable by signed-in users — every policy needs it.
+- Leaked password protection disabled — a Pro-plan toggle.
+
+Anything else is new. User sign-ups are off in Authentication → Sign In /
+Providers; users are added by hand, below.
+
 ### Adding a user
 
 1. Supabase → Authentication → Users → Add user, auto-confirm
