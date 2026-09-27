@@ -1,10 +1,20 @@
-# Supabase pauses a free project after a week without database activity.
-# A farm app goes quiet between musters, so this pokes it on weekdays.
-# Delete this workflow if you move to the paid plan.
+# Supabase pauses a free project after a week of "insufficient
+# activity". A farm app goes quiet between musters, so this pokes it.
+#
+# It used to be one read on weekdays. Supabase still sent the pause
+# warning (Sept 2026): the bar is "a few user requests to the database
+# each day", weekends included. So now it runs three times a day, every
+# day, does several reads each time, and a write (migration 47).
+#
+# GitHub delays or drops scheduled runs when it is busy; three a day
+# leaves room for that. Delete this workflow if you move to the paid
+# plan.
 name: Keep database awake
 on:
   schedule:
-    - cron: "17 21 * * 1-5"   # 21:17 UTC ≈ 08:17 AEDT next day
+    - cron: "17 21 * * *"   # 21:17 UTC ≈ 07:17 / 08:17 next morning, Victoria
+    - cron: "17 3 * * *"    # early afternoon
+    - cron: "17 9 * * *"    # evening
   workflow_dispatch:
 
 jobs:
@@ -16,13 +26,28 @@ jobs:
       URL: https://hgnzignikbpdbbyubahu.supabase.co
       KEY: ${{ secrets.SUPABASE_ANON_KEY }}
     steps:
-      - name: Query the database
+      - name: Read the database a few times
         run: |
-          echo "Calling: $URL/rest/v1/heartbeat?select=ok&limit=1"
-          body=$(curl -s -w '\n%{http_code}' \
-            "$URL/rest/v1/heartbeat?select=ok&limit=1" \
-            -H "apikey: $KEY" -H "Authorization: Bearer $KEY")
+          fails=0
+          for i in 1 2 3 4 5; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' \
+              "$URL/rest/v1/heartbeat?select=ok,beat_at&limit=1" \
+              -H "apikey: $KEY" -H "Authorization: Bearer $KEY")
+            echo "read $i: HTTP $code"
+            [ "$code" = "200" ] || fails=$((fails+1))
+            sleep 3
+          done
+          [ "$fails" = "0" ] || { echo "::error::$fails of 5 reads failed"; exit 1; }
+
+      - name: Write the heartbeat
+        run: |
+          body=$(curl -s -w '\n%{http_code}' -X POST "$URL/rest/v1/rpc/beat" \
+            -H "apikey: $KEY" -H "Authorization: Bearer $KEY" \
+            -H "Content-Type: application/json" -d '{}')
           code=$(echo "$body" | tail -1)
-          echo "HTTP $code"
-          echo "Response: $(echo "$body" | head -n -1)"
-          [ "$code" = "200" ] || exit 1
+          echo "beat: HTTP $code $(echo "$body" | head -n -1)"
+          if [ "$code" = "404" ]; then
+            echo "::warning::beat() not found — migration 47 has not been run in the SQL editor yet. Reads still count."
+          elif [ "$code" != "200" ]; then
+            echo "::error::beat() failed with HTTP $code"; exit 1
+          fi

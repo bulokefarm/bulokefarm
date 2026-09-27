@@ -362,6 +362,7 @@ rebuild, so anything depending on imported records has to be a seed.
 | 44 | A lamb seen in a paddock, ewe not known: `record_drop()` |
 | 45 | Lambing over for a mob: joining outcome `closed`, `close_expectations()`, closed is untested in the rate views |
 | 46 | A sheep's letter is its tag colour (BK W O G P Y R BU): `year_letter(date, species)`, `animal_code_parts` reads one or two letters, today's `X ?` lambs repaired to `O ?` |
+| 47 | The heartbeat writes: `beat_at`, `beat()` for the keepalive |
 
 ### Seeds
 
@@ -573,8 +574,14 @@ changes turn up as a Monday-morning commit.
 
 ### Keepalive
 
-A free Supabase project pauses after a week without database activity.
-`Keep database awake` queries the `heartbeat` table on weekdays.
+A free Supabase project pauses after a week of "insufficient activity",
+which Supabase reads as a few database requests every day. One weekday
+read was not enough — the pause warning arrived in September 2026 with
+the job green. `Keep database awake` now runs three times a day, every
+day: five reads of `heartbeat` and one call to `beat()` (migration 47),
+which writes a timestamp. If the warning comes again, opening the
+project in the Supabase dashboard counts as activity while you decide
+whether to go to the paid plan, which cannot be paused.
 
 If a request returns 404 shortly after creating a table, PostgREST's
 schema cache is stale: `notify pgrst, 'reload schema';`
