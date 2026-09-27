@@ -363,6 +363,7 @@ rebuild, so anything depending on imported records has to be a seed.
 | 45 | Lambing over for a mob: joining outcome `closed`, `close_expectations()`, closed is untested in the rate views |
 | 46 | A sheep's letter is its tag colour (BK W O G P Y R BU): `year_letter(date, species)`, `animal_code_parts` reads one or two letters, today's `X ?` lambs repaired to `O ?` |
 | 47 | The heartbeat writes: `beat_at`, `beat()` for the keepalive |
+| 48 | Functions not for the API: trigger functions and `refresh_expectation` revoked from anon/authenticated, `my_role` from anon, search_path pinned on ten older functions |
 
 ### Seeds
 
