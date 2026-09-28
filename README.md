@@ -37,8 +37,8 @@ draws stored coordinates.
 **Due** — expected calvings and lambings by season, derived from
 joinings.
 
-**Record** — feed out, move mob, weights, treatments, joinings,
-calvings, shed work, sale/consignment. Plus the flasks (tank store and
+**Record** — feed out, move mob, weights, treatments, joinings, join
+planning, calvings, shed work, sale/consignment. Plus the flasks (tank store and
 straw movements) and Manage (feed store, bulk update, field visibility).
 
 **Days on feed** — every herd row and animal card shows how long stock
@@ -201,6 +201,25 @@ counting as a failure. An expectation with no joining behind it is
 refused by name, not deleted. A ewe you do know about gets her lambing
 recorded, or her joining marked empty, before the mob is closed.
 
+**A plan is not a joining.** **Record → Join planning** is the same two
+forms as a joining — a straw to one cow, a bull to a mob — writing a
+`planned_joining` row instead. Everything that reads `joining` treats
+it as evidence: the Due list, the conception-rate views, which joining
+a calving answers, and the straw count. A plan on that table would need
+every one of them to know to skip it, so it has a table of its own with
+the things only a real joining has left off — attempt, bull-out date,
+confidence, outcome. The forecast is not stored: `v_planned_joining`
+works it out as `planned_on` plus the plan's nominated gestation, else
+the dam's own, else 285 or 145, so correcting a cow's gestation moves
+every open forecast for her. A nominated figure on a plan does not
+rewrite the cow — the joining form does that because a joining is her
+being measured, and a plan is not. Recording the joining closes the
+plan: a trigger sets `joining_id` on any open plan for that dam and
+season, so the joining is recorded exactly as before and nothing is
+retyped. Dropping a plan sets `cancelled_on`; the row stays. The card
+shows her open plan, the herd list has a *Planned* filter, and the AI
+form pre-selects the planned straw when the cow has one.
+
 **Sheep run a different alphabet.** Cattle stock codes carry the NLIS
 year letter — X for 2026 — and the app colours them from a palette of
 its own. Sheep tags are coloured on the NLIS eight-year cycle and the
@@ -233,6 +252,7 @@ animal ──┬─ animal_status       dated life state + class transitions
          ├─ consignment_animal─ consignment    NVD, waybill, LPA 5A/5B
          ├─ joining ─────────── calving        outcomes incl. empty
          │      └─ ai_semen                    which straw, for an AI
+         ├─ planned_joining ─── joining        a plan, closed by the joining, by trigger
          └─ expected_calving                   derived from joining, by trigger
 
 ai_semen ─┬─ cryo_txn ───────── animal         straw ledger, female as written
@@ -274,6 +294,7 @@ species** — `R 97` is a cow and also a ewe, and both are right.
 | `v_animal_clearance` | Withholding and export interval per animal |
 | `v_joining_result` | The joining register — method, sire or straw, result |
 | `v_joining_performance` | Conception rate by bull and season |
+| `v_planned_joining` | Join plans with the forecast calving or lambing, and whether still open |
 | `v_stock_year_animal` | One row per animal per bucket per year — the account's working |
 | `v_stock_year` / `v_stock_year_class` | The trading account, counted off the above |
 | `v_stock_entry` / `v_stock_exit` | When stock came on and left, sale/death/ration inferred |
@@ -364,6 +385,7 @@ rebuild, so anything depending on imported records has to be a seed.
 | 46 | A sheep's letter is its tag colour (BK W O G P Y R BU): `year_letter(date, species)`, `animal_code_parts` reads one or two letters, today's `X ?` lambs repaired to `O ?` |
 | 47 | The heartbeat writes: `beat_at`, `beat()` for the keepalive |
 | 48 | Functions not for the API: trigger functions and `refresh_expectation` revoked from anon/authenticated, `my_role` from anon, search_path pinned on ten older functions |
+| 49 | Join planning: `planned_joining`, `v_planned_joining` with the forecast, `plan_fulfilled()` closes the plan when the joining is recorded |
 
 ### Seeds
 

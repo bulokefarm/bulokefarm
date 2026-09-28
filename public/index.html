@@ -542,7 +542,7 @@ const dofHTML = a => a.days_on_feed == null ? ""
       a.days_on_feed} d fed</span>`;
 
 // ─── state ──────────────────────────────────────────────────────
-const S = { me:null, animals:[], herdMode:"list", species:"all", treeLink:null, cryoLot:null, joinMode:"natural", pending:[], treeFam:undefined, treePend:false, paddocks:[], feeds:[], feedsDone:[], refs:{}, prefs:null, selFeed:null, closeDue:null, view:"herd", filter:"all", q:"", sel:null, selPk:null, busy:false };
+const S = { me:null, animals:[], herdMode:"list", species:"all", treeLink:null, cryoLot:null, joinMode:"natural", pending:[], plans:[], treeFam:undefined, treePend:false, paddocks:[], feeds:[], feedsDone:[], refs:{}, prefs:null, selFeed:null, closeDue:null, view:"herd", filter:"all", q:"", sel:null, selPk:null, busy:false };
 
 // ═══ data ═══════════════════════════════════════════════════════
 async function loadHerd(){
@@ -555,6 +555,14 @@ async function loadPending(){
     .select("id,dam_id,due_on,season,sire:sire_id(name)")
     .is("resolved_calving_id", null).order("due_on");
   S.pending = data || [];
+}
+// Open plans only. A plan that was joined or dropped is history, and
+// the register keeps it; the app only ever needs what is still meant
+// to happen.
+async function loadPlans(){
+  const { data } = await db.from("v_planned_joining").select("*")
+    .eq("status", "open").order("planned_on", {ascending:true, nullsFirst:false});
+  S.plans = data || [];
 }
 async function loadPaddocks(){
   const [p,f,d] = await Promise.all([
@@ -633,6 +641,8 @@ function viewHerd(){
   const cats = [["all","On hand"],
     ...classesFor(S.species).map(k => [k, classLabel(k, S.species)])]
     .filter(([k]) => k==="all" || counts[k]);
+  counts.planned = live.filter(a => planFor(a)).length;
+  if(counts.planned) cats.push(["planned","Planned"]);
   if(counts.past) cats.push(["past","Sold & died"]);
 
   // In Paddocks mode the filters are paddocks — and only the ones with
@@ -661,6 +671,7 @@ function viewHerd(){
   const inScope = a => inSpecies(a) && (
       S.herdMode==="paddock" && S.filter==="all" ? isActive(a)
     : S.filter==="past"      ? !isActive(a)
+    : S.filter==="planned"   ? isActive(a) && !!planFor(a)
     : S.filter==="pk:none"   ? isActive(a) && !a.paddock_id
     : S.filter.startsWith("pk:") ? isActive(a) && a.paddock_id===S.filter.slice(3)
     : isActive(a) && (S.filter==="all" || a.class===S.filter));
@@ -737,7 +748,10 @@ function viewHerd(){
                   a.exit_on ? " " + fmt(a.exit_on) : ""}</span> · ${esc(a.breed||"")}`
               : (a.paddock_name
                   ? `<span class="dot" style="background:${esc(a.paddock_colour||"#999")}"></span>`+esc(a.paddock_name)
-                  : "<span style='opacity:.6'>no paddock</span>") + ` · ${esc(a.breed||"")}`}</span>
+                  : "<span style='opacity:.6'>no paddock</span>") + ` · ${esc(a.breed||"")}`}${
+              planFor(a) ? ` · <span style="color:var(--accent)">planned ${
+                planFor(a).method==="ai" ? "AI" : wl("sire", speciesOf(a)) + " out"}${
+                planFor(a).planned_on ? " " + fmt(planFor(a).planned_on) : ""}</span>` : ""}</span>
           ${feedBlockHTML(a)}
         </span>
         <span class="rt">${age(a.age_years)}${a.last_weight_kg?"<br>"+Math.round(a.last_weight_kg)+" kg":""}</span>
@@ -899,6 +913,16 @@ async function viewDetail(){
     F("Came off feed", `${a.days_fed_last} days`
       + `<span style="font-weight:400;color:var(--ink2)"> · ${esc(a.last_feedstuff||"ration not named")}`
       + `<br>finished ${fmt(a.off_feed_on)}</span>`, true);
+  // What is meant to happen to her, if anything is. A plan is not a
+  // joining, so it sits with the facts rather than in the joinings list.
+  const pl = a.sex==="female" ? planFor(a) : null;
+  if(pl)
+    F("Planned joining", `${esc(planText(pl))}<span style="font-weight:400;color:var(--ink2)">`
+      + (pl.paddock_name ? ` · ${esc(pl.paddock_name)}` : "")
+      + `<br>${pl.planned_on ? "planned " + fmt(pl.planned_on) : "date not set"}`
+      + (pl.forecast_on ? ` · forecast ${wl("birth", speciesOf(a))} ${fmt(pl.forecast_on)}` : "")
+      + ` · ${pl.gestation_used} days${pl.nominated_days ? " (nominated)" : ""}`
+      + `</span>`, true);
   if(shown("dam_id"))  F("Dam", esc(a.dam_code||a.dam_name||"—"));
   if(shown("sire_id")) F("Sire", esc(a.sire_name||"—"));
   if(shown("last_weight_kg")) F("Last weight",
@@ -1464,6 +1488,7 @@ function viewRecord(){
     ["treatment","Treatment","Vaccination, drench — full LPA detail"],
     ["spray","Spraying","Chemical onto a paddock — LPA 3B"],
     ["joining","Joining","Mating, pregnancy test, empty result"],
+    ["plan","Join planning",`Who goes to which ${wl("sire")} or straw, and when`],
     ["calving", w("birth"), `A ${wl("young")} on the ground${
       hasSpecies("sheep") ? ` — by ${wl("dam")}, or by paddock` : ""}`],
     ["sell","Sell / consign","NVD, waybill, off the property"]];
@@ -1557,7 +1582,7 @@ function formShell(title, inner, onSave){
       const n = await onSave(new FormData(form));
       say(wrap,"ok", n);
       form.reset();
-      await Promise.all([loadHerd(), loadPaddocks()]);
+      await Promise.all([loadHerd(), loadPaddocks(), loadPlans()]);
       setTimeout(() => {
         if(!["detail","record","rec:store"].includes(S.view))
           S.view = S.view.startsWith("rec:stock") || S.view==="rec:newfeed"
@@ -1700,25 +1725,35 @@ const addDays = (iso, n) => {
   return d.toISOString().slice(0,10);
 };
 const seasonNow = () => { const y = new Date().getFullYear(); return `${y}-${y+1}`; };
+// An open plan for this animal, if there is one. Plans are loaded
+// open-only, so the first match is the one that matters.
+const planFor  = a => S.plans.find(p => p.dam_id === (a?.id ?? a));
+const planText = p => `${p.method === "ai" ? "AI" : w("sire", p.species || "cattle") + " out"}${
+  p.sire_name ? " — " + p.sire_name : ""}`;
 
 // Shared tail: season, cycle, attempt. Nothing about the result —
 // at the moment of joining there isn't one, and pretending otherwise
 // puts a default on file that reads like a finding.
-const joinCommon = () => `
+const joinCommon = (plan) => `
   <div class="two">
     <label><span>Season</span><input type="text" name="season" value="${seasonNow()}" required></label>
     <label><span>Cycle</span><select name="cycle">
       <option value="spring">Spring</option><option value="autumn">Autumn</option></select></label>
   </div>
-  <label><span>Attempt</span><select name="attempt">
+  ${plan ? "" : `<label><span>Attempt</span><select name="attempt">
     <option value="1">First join</option><option value="2">Second join</option>
-    <option value="3">Third join</option></select></label>`;
+    <option value="3">Third join</option></select></label>`}`;
 
-function recJoining(){
+// With plan set this is Join planning: the same two forms, writing a
+// plan instead of a joining. Nothing is joined, no straw leaves the
+// tank, nothing lands on Due. The open plans sit above the form so
+// the screen is also where a plan is dropped.
+function recJoining(plan = false){
   const wrap  = el(`<div></div>`);
+  if(plan) wrap.appendChild(planList());
   const chips = el(`<div class="chips" style="padding:12px 0 2px"></div>`);
   const slot  = el(`<div></div>`);
-  const build = { natural: joinNatural, ai: joinAI };
+  const build = { natural: () => joinNatural(plan), ai: () => joinAI(plan) };
   // Which kind of joining lives in S, not here. Anything that calls
   // render — the species bar, the straw filters — rebuilds this whole
   // function, and a local variable would drop you back on Bull out
@@ -1738,8 +1773,74 @@ function recJoining(){
   return wrap;
 }
 
+// The open plans in scope, newest season first, each with a Drop.
+// Dropping sets cancelled_on and leaves the row: a plan that was
+// made and unmade is still a thing that happened.
+function planList(){
+  const wrap  = el(`<div></div>`);
+  const plans = S.plans.filter(p => S.species === "all" || (p.species || "cattle") === S.species);
+  wrap.appendChild(el(`<h3 class="sec">Planned — ${plans.length} ${wl("dam")}${plans.length===1?"":"s"}</h3>`));
+  if(!plans.length){
+    wrap.appendChild(el(`<p class="hint" style="padding:0 14px 6px">Nothing planned yet. Choose
+      a ${wl("sire")} or a straw below, the same as recording a joining, and it goes on file as a plan.</p>`));
+    return wrap;
+  }
+  const ul = el(`<ul class="rows"></ul>`);
+  for(const p of plans){
+    const sp = p.species || "cattle";
+    const li = el(`<li><button class="row">
+      ${tagHTML(p.dam_code, "sm", sp)}
+      <span class="meta">
+        <span class="nm">${esc(planText(p))}</span>
+        <span class="sub">${esc(p.season)}${p.cycle ? " " + esc(p.cycle) : ""}${
+          p.paddock_name ? " · " + esc(p.paddock_name) : ""}${
+          p.forecast_on ? ` · ${wl("birth", sp)} ${fmt(p.forecast_on)}` : ""}</span>
+      </span>
+      <span class="rt">${p.planned_on ? fmt(p.planned_on) : "no date"}</span>
+    </button></li>`);
+    li.querySelector("button").onclick = () => { S.sel = p.dam_id; S.view = "detail"; render(); };
+    if(canWrite()){
+      const drop = el(`<button type="button" class="chip" style="margin:0 10px 0 0;flex:none">Drop</button>`);
+      drop.onclick = async (e) => {
+        e.stopPropagation();
+        if(!confirm(`Drop the plan for ${p.dam_code || p.dam_name}? It stays on the register as dropped.`)) return;
+        const { error } = await db.from("planned_joining")
+          .update({cancelled_on: today()}).eq("id", p.id);
+        if(error){ alert(error.message); return; }
+        await loadPlans(); render();
+      };
+      li.style.display = "flex"; li.style.alignItems = "center";
+      li.appendChild(drop);
+    }
+    ul.appendChild(li);
+  }
+  wrap.appendChild(ul);
+  return wrap;
+}
+
+// Write one plan per dam. A dam already planned for that season is
+// updated rather than doubled: one plan per dam per season is what
+// the card shows, so it is what the form keeps.
+async function savePlans(rows){
+  const upd = [], ins = [];
+  for(const r of rows){
+    const have = S.plans.find(p => p.dam_id === r.dam_id && p.season === r.season);
+    if(have) upd.push({id: have.id, ...r}); else ins.push(r);
+  }
+  for(const r of upd){
+    const { id, ...patch } = r;
+    const { error } = await db.from("planned_joining").update(patch).eq("id", id);
+    if(error) throw error;
+  }
+  if(ins.length){
+    const { error } = await db.from("planned_joining").insert(ins);
+    if(error) throw error;
+  }
+  return { updated: upd.length, added: ins.length };
+}
+
 // ─── AI: one cow, one straw ─────────────────────────────────────
-function joinAI(){
+function joinAI(plan = false){
   const cows = S.animals.filter(a => a.sex==="female" && isActive(a) && inSpecies(a));
   if(!cows.length) return el(`<div class="empty"><b>No ${wl("dam")}s on record</b></div>`);
   // An AI is a straw out of a tank. If it is not in the register it
@@ -1765,7 +1866,7 @@ function joinAI(){
       ${straws.map(s=>`<option value="${s.id}">${esc(s.sire_label||s.sire_name)}${
         s.tank?` — tank ${esc(s.tank)} loc ${esc(s.location||"?")}`:""} · ${
         s.straws_left} left${s.shelf_label?` · ${esc(s.shelf_label)}`:""}</option>`).join("")}
-      <option value="__new">＋ Register a new straw…</option>
+      ${plan ? "" : `<option value="__new">＋ Register a new straw…</option>`}
     </select></label>
     <div class="newstraw" hidden>
       <div class="note">This adds it to the register, so it will be in the tank list next time.</div>
@@ -1786,23 +1887,30 @@ function joinAI(){
         <label><span>Straws in</span><input type="number" name="nstraws" min="0" inputmode="numeric"></label>
       </div>
     </div>
+    ${plan ? `
+    <label><span>Planned for</span><input type="date" name="on"></label>
+    <p class="hint">Leave it blank if the when isn't decided; the forecast needs it, the plan doesn't.</p>`
+    : `
     <div class="two">
       <label><span>Inseminated on</span><input type="date" name="on" value="${today()}" required></label>
       <label><span>Confidence %</span><input type="number" name="conf" min="0" max="100"
         step="5" inputmode="numeric" placeholder="—"></label>
     </div>
     <p class="hint">How well the job went — heat signs, timing, how the straw handled.
-      Leave it blank if you'd rather not guess; blank and zero aren't the same thing.</p>
+      Leave it blank if you'd rather not guess; blank and zero aren't the same thing.</p>`}
     <div class="two">
       <label><span>Gestation days</span><input type="number" name="gest" value="${GEST_BY_SPECIES[S.species] || GEST_DEFAULT}"
-        min="250" max="310" inputmode="numeric"></label>
-      <label><span>Due</span><input type="date" name="due"></label>
+        min="130" max="310" inputmode="numeric"></label>
+      <label><span>${plan ? "Forecast " + wl("birth") : "Due"}</span><input type="date" name="due"${plan ? " readonly" : ""}></label>
     </div>
     <p class="hint" id="gesthint"></p>
-    ${joinCommon()}
+    ${joinCommon(plan)}
     <label><span>Notes</span><input type="text" name="notes" placeholder="Optional"></label>
-    <div class="note">The result goes on later, in the joining register — a joining recorded
-      today has no outcome yet, and a default one would read like a finding.</div>
+    ${plan
+      ? `<div class="note">A plan, not a joining. Nothing goes on Due and no straw leaves the tank.
+          When it happens, record the AI as usual and the plan is marked done by itself.</div>`
+      : `<div class="note">The result goes on later, in the joining register — a joining recorded
+          today has no outcome yet, and a default one would read like a finding.</div>`}
   </div>`);
 
   const q = s => inner.querySelector(s);
@@ -1818,22 +1926,53 @@ function joinAI(){
     const a = cows.find(c => c.id===dam.value);
     gest.value = gestFor(a);
     hint.textContent = !a ? ""
-      : a.gestation_days ? `${codeOf(a)} runs ${a.gestation_days} days.`
-      : `No gestation on file for ${codeOf(a)} — using ${gestFor(a)} for ${speciesOf(a)}. Change it and it's remembered.`;
+      : a.gestation_days ? `${codeOf(a)} runs ${a.gestation_days} days.${plan ? " Change it here and it's this plan's only." : ""}`
+      : `No gestation on file for ${codeOf(a)} — using ${gestFor(a)} for ${speciesOf(a)}. ${
+          plan ? "Change it here and it's this plan's only." : "Change it and it's remembered."}`;
+    // Recording the AI a plan asked for: the straw and season come
+    // from the plan, so what was decided is what gets recorded.
+    const pl = !plan && a ? planFor(a) : null;
+    if(pl && pl.method === "ai" && !sem.dataset.touched){
+      if(straws.some(s => s.id === pl.ai_semen_id)) sem.value = pl.ai_semen_id;
+      const se = inner.querySelector('[name=season]'), cy = inner.querySelector('[name=cycle]');
+      if(pl.season) se.value = pl.season;
+      if(pl.cycle)  cy.value = pl.cycle;
+    }
     calc();
   };
   const calc = () => {
-    if(!on.value || due.dataset.touched) return;
+    if(due.dataset.touched) return;
+    if(!on.value){ if(plan) due.value = ""; return; }
     due.value = addDays(on.value, Number(gest.value)||gestFor(cows.find(c=>c.id===dam.value)));
   };
   dam.onchange = loadGest; on.onchange = calc; gest.onchange = calc;
-  due.oninput = () => due.dataset.touched = "1";
+  if(!plan) due.oninput = () => due.dataset.touched = "1";
+  sem.addEventListener("change", () => sem.dataset.touched = "1");
   loadGest();
 
-  const shell = formShell(`AI — one ${wl("dam")}`, inner, async (f) => {
+  const shell = formShell(plan ? `Plan an AI — one ${wl("dam")}` : `AI — one ${wl("dam")}`, inner, async (f) => {
     if(!f.get("dam")) throw new Error(`Choose the ${wl("dam")}.`);
     let semenId = f.get("semen") || null, sireId = null;
     if(!semenId) throw new Error("Choose the straw from the register.");
+
+    if(plan && semenId !== "__new"){
+      // The plan carries the nominated gestation only when it differs
+      // from what the dam would give anyway, so a later correction to
+      // her record moves the forecast rather than being overridden.
+      const cow = cows.find(c => c.id===f.get("dam"));
+      const g = Number(f.get("gest")) || null;
+      const r = await savePlans([{
+        dam_id: cow.id, method: "ai", ai_semen_id: semenId,
+        sire_id: inStock.find(s => s.id===semenId)?.sire_id || null,
+        season: (f.get("season")||"").trim(), cycle: f.get("cycle"),
+        planned_on: f.get("on") || null,
+        gestation_days: g && g !== gestFor(cow) ? g : null,
+        notes: (f.get("notes")||"").trim() || null
+      }]);
+      const fc = f.get("on") ? ` — forecast ${wl("birth", speciesOf(cow))} ${fmt(f.get("due"))}` : "";
+      return `AI planned for ${codeOf(cow)}${r.updated ? " (plan updated)" : ""}${fc}.`;
+    }
+    if(plan) throw new Error("Register the straw first, then plan against it.");
 
     if(semenId === "__new"){
       const name = (f.get("nname")||"").trim();
@@ -1899,7 +2038,7 @@ function joinAI(){
 }
 
 // ─── bull out: one bull, one mob ────────────────────────────────
-function joinNatural(){
+function joinNatural(plan = false){
   const sires = workingSires();
   if(!sires.length) return el(`<div class="empty"><b>No ${wl("sire")}s on the place</b>
     A ${wl("sire")} has to be alive here and classed as a ${wl("sire")} before he can go out
@@ -1920,11 +2059,16 @@ function joinNatural(){
         esc(p.name)} — ${headIn(p.id)} head</option>`).join("")}
     </select></label>
     <div class="two">
-      <label><span>${w("sire")} in</span><input type="date" name="on" value="${today()}" required></label>
-      <label><span>${w("sire")} out</span><input type="date" name="out"></label>
+      ${plan
+        ? `<label><span>Planned for</span><input type="date" name="on"></label>
+           <label><span>Forecast ${wl("birth")}</span><input type="text" name="fc" readonly placeholder="—"></label>`
+        : `<label><span>${w("sire")} in</span><input type="date" name="on" value="${today()}" required></label>
+           <label><span>${w("sire")} out</span><input type="date" name="out"></label>`}
     </div>
-    ${joinCommon()}
+    ${joinCommon(plan)}
     <label><span>Notes</span><input type="text" name="notes" placeholder="Applies to the whole mob"></label>
+    ${plan ? `<div class="note">A plan, not a joining. Nothing goes on Due. When he goes out,
+      record the joining as usual and every plan it answers is marked done by itself.</div>` : ""}
   </div>`);
 
   // The confirm list goes above the season block, right under the paddock.
@@ -1985,20 +2129,57 @@ function joinNatural(){
       listWrap.appendChild(el(`<div class="note">Also in ${esc(p.name)}:
         ${others.map(a => `${esc(codeOf(a))} (${esc(a.class||a.sex||"?")})`).join(", ")}.
         Not joined — check they're meant to be there.</div>`));
-    listWrap.appendChild(el(`<p class="hint">Due dates are the earliest possible: ${wl("sire")} in
-      plus each ${wl("dam")}'s own gestation. Change a number and it's remembered against her.
-      Test results go on one at a time later, in the joining register.</p>`));
+    listWrap.appendChild(el(plan
+      ? `<p class="hint">The forecast is the planned date plus each ${wl("dam")}'s own gestation.
+          A number changed here is this plan's only; her record isn't touched until she is joined.</p>`
+      : `<p class="hint">Due dates are the earliest possible: ${wl("sire")} in
+          plus each ${wl("dam")}'s own gestation. Change a number and it's remembered against her.
+          Test results go on one at a time later, in the joining register.</p>`));
   };
   pk.onchange = fill; fill();
 
-  return formShell(`${w("sire")} out to a mob`, inner, async (f) => {
+  // The mob forecast: a span of dates when the gestations differ, one
+  // date when they don't. Recomputed as the date or any gestation moves.
+  if(plan){
+    const fc = q('[name=fc]');
+    const forecast = () => {
+      const on = q('[name=on]').value;
+      if(!on){ fc.value = ""; return; }
+      const ds = [...listWrap.querySelectorAll(".mob label")]
+        .filter(l => l.querySelector("input[type=checkbox]").checked)
+        .map(l => addDays(on, Number(l.querySelector(".gd").value) || GEST_DEFAULT)).sort();
+      fc.value = !ds.length ? "" : ds[0] === ds[ds.length-1] ? fmt(ds[0]) : `${fmt(ds[0])} – ${fmt(ds[ds.length-1])}`;
+    };
+    inner.addEventListener("input", forecast);
+    inner.addEventListener("change", forecast);
+  }
+
+  return formShell(plan ? `Plan: ${wl("sire")} out to a mob` : `${w("sire")} out to a mob`, inner, async (f) => {
     if(!f.get("sire"))    throw new Error(`Choose the ${wl("sire")}.`);
-    if(!f.get("paddock")) throw new Error("Choose the paddock he went out to.");
+    if(!f.get("paddock")) throw new Error(plan ? "Choose the paddock he's to go out to." : "Choose the paddock he went out to.");
     const picked = [...listWrap.querySelectorAll(".mob label")]
       .filter(l => l.querySelector("input[type=checkbox]").checked);
-    if(!picked.length) throw new Error("Confirm which females he was joined to.");
+    if(!picked.length) throw new Error(plan ? "Tick which females he's to be joined to." : "Confirm which females he was joined to.");
 
     const season = (f.get("season")||"").trim(), onD = f.get("on")||null;
+    if(plan){
+      const rows = picked.map(l => {
+        const g = Number(l.querySelector(".gd").value) || null;
+        return {
+          dam_id:l.dataset.id, sire_id:f.get("sire"), method:"natural",
+          paddock_id:f.get("paddock"), season, cycle:f.get("cycle"),
+          planned_on:onD,
+          gestation_days: g && g !== Number(l.dataset.g) ? g : null,
+          notes:(f.get("notes")||"").trim()||null
+        };
+      });
+      const r = await savePlans(rows);
+      const name = S.paddocks.find(p => p.id===f.get("paddock"))?.name || "the paddock";
+      const bull = sires.find(s => s.id===f.get("sire"));
+      return `${rows.length} planned for ${bull ? codeOf(bull) : wl("sire")} in ${name}${
+        r.updated ? ` (${r.updated} plan${r.updated>1?"s":""} updated)` : ""}${
+        onD ? ` — forecast ${wl("birth")} ${q('[name=fc]').value || ""}` : ""}.`;
+    }
     const rows = picked.map(l => {
       const g = Number(l.querySelector(".gd").value) || GEST_DEFAULT;
       return {
@@ -3618,6 +3799,7 @@ async function render(){
   else if(S.view==="rec:treatment") body = recTreatment();
   else if(S.view==="rec:calving")   body = recCalving();
   else if(S.view==="rec:joining")   body = recJoining();
+  else if(S.view==="rec:plan")      body = recJoining(true);
   else if(S.view==="rec:shearing")  body = recShearing();
   else if(S.view==="rec:cryo")      body = viewCryo();
   else if(S.view==="rec:cryolot")   body = await viewCryoLot();
@@ -3670,7 +3852,7 @@ async function boot(loginErr){
       return;
     }
     await loadPrefs();
-    await Promise.all([loadHerd(), loadPaddocks(), loadRefs(), loadPending()]);
+    await Promise.all([loadHerd(), loadPaddocks(), loadRefs(), loadPending(), loadPlans()]);
     render();
   }catch(e){
     // Every path above touches the network, and a cold launch on a weak
