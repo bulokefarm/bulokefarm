@@ -386,6 +386,7 @@ rebuild, so anything depending on imported records has to be a seed.
 | 47 | The heartbeat writes: `beat_at`, `beat()` for the keepalive |
 | 48 | Functions not for the API: trigger functions and `refresh_expectation` revoked from anon/authenticated, `my_role` from anon, search_path pinned on ten older functions |
 | 49 | Join planning: `planned_joining`, `v_planned_joining` with the forecast, `plan_fulfilled()` closes the plan when the joining is recorded |
+| 50 | The ten AI joinings recorded ahead of their date become plans; the joinings go, kept in the change log |
 
 ### Seeds
 
