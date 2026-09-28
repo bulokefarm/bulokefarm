@@ -217,8 +217,11 @@ being measured, and a plan is not. Recording the joining closes the
 plan: a trigger sets `joining_id` on any open plan for that dam and
 season, so the joining is recorded exactly as before and nothing is
 retyped. Dropping a plan sets `cancelled_on`; the row stays. The card
-shows her open plan, the herd list has a *Planned* filter, and the AI
-form pre-selects the planned straw when the cow has one.
+shows her open plan, the herd list has a *Planned* filter, the joining
+register on `/reports` lists open plans under their own filter whatever
+the report period, and the AI form pre-selects the planned straw when
+the cow has one. The straw select on that form has a search box above
+it, since the tank list is long and a phone select is a wheel.
 
 **Sheep run a different alphabet.** Cattle stock codes carry the NLIS
 year letter — X for 2026 — and the app colours them from a palette of
@@ -387,6 +390,7 @@ rebuild, so anything depending on imported records has to be a seed.
 | 48 | Functions not for the API: trigger functions and `refresh_expectation` revoked from anon/authenticated, `my_role` from anon, search_path pinned on ten older functions |
 | 49 | Join planning: `planned_joining`, `v_planned_joining` with the forecast, `plan_fulfilled()` closes the plan when the joining is recorded |
 | 50 | The ten AI joinings recorded ahead of their date become plans; the joinings go, kept in the change log |
+| 51 | The ten undated attempt-2 bull joinings for 2027-2028 removed — a fallback column, not a decision |
 
 ### Seeds
 

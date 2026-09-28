@@ -1854,19 +1854,29 @@ function joinAI(plan = false){
   // down at the flask carries straight into recording the job.
   const straws  = cryoFilter(inStock);
 
+  // The straw list is long and a phone select is a wheel: typing
+  // part of the bull's name, the straw code or the tank narrows it
+  // before the wheel is opened.
+  const strawOpts = list => list.map(s=>`<option value="${s.id}">${esc(s.sire_label||s.sire_name)}${
+        s.tank?` — tank ${esc(s.tank)} loc ${esc(s.location||"?")}`:""} · ${
+        s.straws_left} left${s.shelf_label?` · ${esc(s.shelf_label)}`:""}</option>`).join("");
+  const newOpt = plan ? "" : `<option value="__new">＋ Register a new straw…</option>`;
+  const strawHead = n => `<option value="">${n < straws.length
+        ? `${n} of ${straws.length} straws` : `Which straw…${straws.length < inStock.length
+        ? ` (${straws.length} of ${inStock.length})` : ""}`}</option>`;
+
   const inner = el(`<div>
     <label><span>${w("dam")}</span><select name="dam" required>
       <option value="">Which ${wl("dam")}…</option>
       ${cows.map(a=>`<option value="${a.id}"${S.sel===a.id?" selected":""}>${
         esc(codeOf(a))}${a.name?" · "+esc(a.name):""}</option>`).join("")}
     </select></label>
+    <label><span>Find a straw</span><input type="search" name="strawq" autocomplete="off"
+      placeholder="${w("sire")} name, straw code, tank…"></label>
     <label><span>Straw</span><select name="semen" required>
-      <option value="">Which straw…${straws.length < inStock.length
-        ? ` (${straws.length} of ${inStock.length})` : ""}</option>
-      ${straws.map(s=>`<option value="${s.id}">${esc(s.sire_label||s.sire_name)}${
-        s.tank?` — tank ${esc(s.tank)} loc ${esc(s.location||"?")}`:""} · ${
-        s.straws_left} left${s.shelf_label?` · ${esc(s.shelf_label)}`:""}</option>`).join("")}
-      ${plan ? "" : `<option value="__new">＋ Register a new straw…</option>`}
+      ${strawHead(straws.length)}
+      ${strawOpts(straws)}
+      ${newOpt}
     </select></label>
     <div class="newstraw" hidden>
       <div class="note">This adds it to the register, so it will be in the tank list next time.</div>
@@ -1919,6 +1929,21 @@ function joinAI(plan = false){
         hint = q('#gesthint');
 
   sem.onchange = () => nb.hidden = sem.value !== "__new";
+
+  // Narrow the select as you type. The chosen straw survives the
+  // narrowing if it still matches; otherwise the field goes back to
+  // unchosen rather than silently landing on something else.
+  const sq = q('[name=strawq]');
+  sq.oninput = () => {
+    const t = sq.value.trim().toLowerCase();
+    const hit = !t ? straws : straws.filter(s =>
+      [s.sire_label, s.sire_name, s.straw_code, s.batch_code, s.breed, s.supplier,
+       s.shelf_label, s.tank && "tank " + s.tank].some(v => String(v||"").toLowerCase().includes(t)));
+    const keep = sem.value;
+    sem.innerHTML = strawHead(hit.length) + strawOpts(hit) + newOpt;
+    if(keep === "__new" || hit.some(s => s.id === keep)) sem.value = keep;
+    nb.hidden = sem.value !== "__new";
+  };
 
   // Gestation is the cow's, not the joining's. Hers is the starting
   // point; changing it here is her being corrected, not an exception.

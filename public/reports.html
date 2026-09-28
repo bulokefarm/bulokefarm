@@ -246,8 +246,12 @@ async function run(){
   let jq = db.from("v_joining_result").select("*")
              .gte("joined_on",from).lte("joined_on",to)
              .order("season",{ascending:false}).order("dam_code");
+  // Plans are forward-looking, so the report period does not apply:
+  // what is still meant to happen is shown whatever dates are chosen.
+  let pq = db.from("v_planned_joining").select("*").eq("status","open")
+             .order("planned_on",{ascending:true, nullsFirst:false}).order("dam_code");
 
-  const [t,f,s,c,j,sh,sp,w] = await Promise.all([tq,fq,sq,cq,jq,shq,spq,wq]);
+  const [t,f,s,c,j,sh,sp,w,pl] = await Promise.all([tq,fq,sq,cq,jq,shq,spq,wq,pq]);
   const err = t.error||f.error||s.error||c.error;
   if(err){ $("#out").innerHTML = `<p class="gap">${esc(err.message)}</p>`; return; }
 
@@ -262,7 +266,7 @@ async function run(){
     sourceSection(s.data||[]) +
     consignSection((c.data||[]).filter(involves), range) +
     shedSection(sh.data||[], range, sh.error) +
-    joiningSection(j.data||[], range, j.error) +
+    joiningSection(j.data||[], range, j.error, pl.data||[]) +
     `<div class="sig"><div>Producer signature</div><div>Date</div></div>
      <footer><span>${esc(HOME.trading_name||"Buloke Farm")} · PIC ${esc(HOME.pic)}</span>
      <span>Produced ${new Date().toLocaleString("en-AU")}</span></footer>`;
@@ -533,25 +537,31 @@ function shedSection(rows, range, error){
 //
 // noprint: it carries checkboxes and an action bar, which would print
 // as clutter in a document meant to be handed to a processor.
-let JOININGS = [];
+let JOININGS = [], PLANS = [];
 const OUTCOMES = {unknown:"Not tested", in_calf:"In calf", empty:"Empty",
                   aborted:"Aborted", lost:"Lost the calf", calved:"Calved",
                   closed:"Closed — not recorded per dam"};
 
-function joiningSection(rows, range, error){
-  JOININGS = rows;
+// Open plans sit in the same table, flagged as planned, with their
+// own filter. A plan is not a joining: it cannot be ticked for a
+// result and has no drawer, because there is nothing to test yet.
+function joiningSection(rows, range, error, plans = []){
+  JOININGS = rows; PLANS = plans;
   let h = `<section class="noprint" id="joinsec"><h2>Joining register</h2>
-    <p class="lede">${esc(range)} · ${rows.length} joining${rows.length===1?"":"s"}
+    <p class="lede">${esc(range)} · ${rows.length} joining${rows.length===1?"":"s"}${
+      plans.length ? ` · ${plans.length} planned` : ""}
       · a breeding record, not part of the LPA declaration</p>`;
   if(error) return h + `<p class="gap"><b>The joining register isn't available yet.</b>
     ${esc(error.message)} — this usually means the joining-method migration hasn't been run.</p></section>`;
-  if(!rows.length) return h + `<p class="none">No joinings recorded in this period.</p></section>`;
+  if(!rows.length && !plans.length) return h + `<p class="none">No joinings recorded in this period.</p></section>`;
 
   const waiting = rows.filter(r => !r.outcome || r.outcome==="unknown").length;
+  const start = waiting ? "await" : plans.length && !rows.length ? "planned" : "all";
   h += `<div class="jbar">
     <label>Show<select id="jfilter">
-      <option value="await"${waiting?" selected":""}>Awaiting result (${waiting})</option>
-      <option value="all"${waiting?"":" selected"}>All</option>
+      <option value="await"${start==="await"?" selected":""}>Awaiting result (${waiting})</option>
+      <option value="all"${start==="all"?" selected":""}>All</option>
+      <option value="planned"${start==="planned"?" selected":""}>Planned (${plans.length})</option>
       <option value="in_calf">In calf</option>
       <option value="empty">Empty</option>
       <option value="natural">Recorded as bull out</option>
@@ -583,9 +593,15 @@ function joinRows(){
     f==="ai"      ? r.method==="ai" : r.outcome===f);
 }
 
+function planRows(){
+  const f = $("#jfilter")?.value || "await";
+  return (f==="planned" || f==="all") ? PLANS.filter(isSp) : [];
+}
+
 function renderJoinings(){
-  const rows = joinRows();
-  if(!rows.length){
+  const f = $("#jfilter")?.value || "await";
+  const rows = f==="planned" ? [] : joinRows(), plans = planRows();
+  if(!rows.length && !plans.length){
     $("#joinout").innerHTML = `<p class="none">Nothing matches that filter.</p>`;
     return updateCount();
   }
@@ -612,6 +628,22 @@ function renderJoinings(){
         :`<span class="${r.outcome==="in_calf"?"ok":""}">${esc(OUTCOMES[r.outcome]||r.outcome)}</span>`}</td>
       <td class="m">${r.tested_on?fmt(r.tested_on):"—"}</td>
       <td>${esc(r.notes||"—")}</td></tr>`;
+  }
+  for(const p of plans){
+    h += `<tr class="plan">
+      <td class="tick nodrawer"></td>
+      <td>${esc(p.dam_code||"—")}${p.dam_name?`<br><span style="color:var(--ink2)">${esc(p.dam_name)}</span>`:""}</td>
+      <td class="m">${p.method==="ai" ? "AI" : (SIRE_WORD[p.species] || "bull")}</td>
+      <td>${esc(p.sire_name||"—")}${p.straw_code?`<br><span style="color:var(--ink2)">${esc(p.straw_code)}</span>`:""}</td>
+      <td>${esc(p.paddock_name||(p.method==="ai"?"—":"not recorded"))}</td>
+      <td class="m">${esc(p.season||"—")}${p.cycle?`<br><span style="color:var(--ink2)">${esc(p.cycle)}</span>`:""}</td>
+      <td class="m">${p.planned_on ? `planned<br>${fmt(p.planned_on)}` : "date not set"}</td>
+      <td class="m">${p.forecast_on ? `forecast<br>${fmt(p.forecast_on)}` : "—"}${p.nominated_days
+        ?`<br><span style="color:var(--ink2)">${p.nominated_days} d</span>`:""}</td>
+      <td class="num">—</td>
+      <td class="m"><span class="flag">planned</span></td>
+      <td class="m">—</td>
+      <td>${esc(p.notes||"—")}</td></tr>`;
   }
   $("#joinout").innerHTML = h + `</tbody></table>`;
   updateCount();
