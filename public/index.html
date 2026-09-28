@@ -160,6 +160,7 @@ ul.rows li{border-bottom:1px solid var(--rule)}
 .row .feed b{color:var(--accent);font-weight:700}
 .row .feed.low b{color:var(--warn)}
 .row .feed.off b{color:var(--ink2)}
+.row .feed.plan b{color:var(--ink)}
 .row .feed .ttl{text-transform:uppercase;letter-spacing:.06em;font-size:10.5px;
   color:var(--ink2);opacity:.8;display:block}
 .row .rt{font-family:var(--mono);font-size:13px;color:var(--ink2);text-align:right;flex:none}
@@ -536,13 +537,29 @@ function feedBlockHTML(a){
       + `<br>finished ${fmt(a.off_feed_on)}</span>`;
   return "";
 }
+// The plan on the herd row: method, who to, and when it should land.
+// Same furniture as the feed block, because it answers the same kind
+// of question while walking the mob — what is this one doing next.
+function planBlockHTML(a){
+  const p = planFor(a);
+  if(!p) return "";
+  const sp = speciesOf(a);
+  const l2 = [p.planned_on ? `planned ${fmt(p.planned_on)}` : "date not set",
+    p.forecast_on ? `forecast ${wl("birth", sp)} ${fmt(p.forecast_on)}` : null,
+    p.method === "natural" && p.paddock_name ? esc(p.paddock_name) : null].filter(Boolean).join(" · ");
+  return `<span class="feed plan"><span class="ttl">Planned joining</span>`
+    + `<b>${p.method === "ai" ? "AI" : esc(w("sire", sp)) + " out"}</b> · ${
+        esc(p.sire_name || (p.method === "ai" ? "straw not named" : wl("sire", sp) + " not named"))}${
+        p.straw_code ? ` <span style="opacity:.8">${esc(p.straw_code)}</span>` : ""}`
+    + `<br>${l2}</span>`;
+}
 const dofHTML = a => a.days_on_feed == null ? ""
   : `<span class="dof${feedLow(a)?" low":""}" title="On ${esc(a.on_feed_feedstuff||"feed")} since ${
       fmt(a.on_feed_since)}${a.est_empty_on?" — est. empty "+fmt(a.est_empty_on):""}">${
       a.days_on_feed} d fed</span>`;
 
 // ─── state ──────────────────────────────────────────────────────
-const S = { me:null, animals:[], herdMode:"list", species:"all", treeLink:null, cryoLot:null, joinMode:"natural", pending:[], plans:[], treeFam:undefined, treePend:false, paddocks:[], feeds:[], feedsDone:[], refs:{}, prefs:null, selFeed:null, closeDue:null, view:"herd", filter:"all", q:"", sel:null, selPk:null, busy:false };
+const S = { me:null, animals:[], herdMode:"list", species:"all", treeLink:null, cryoLot:null, joinMode:"natural", pending:[], plans:[], editPlan:null, treeFam:undefined, treePend:false, paddocks:[], feeds:[], feedsDone:[], refs:{}, prefs:null, selFeed:null, closeDue:null, view:"herd", filter:"all", q:"", sel:null, selPk:null, busy:false };
 
 // ═══ data ═══════════════════════════════════════════════════════
 async function loadHerd(){
@@ -703,7 +720,7 @@ function viewHerd(){
           <span class="meta"><span class="nm">${esc(a.name||"Unnamed")}</span>
           <span class="sub">${esc(a.class||"")}${
             a.in_paddock_since?" · in since "+fmt(a.in_paddock_since):""}</span>
-          ${feedBlockHTML(a)}</span>
+          ${planBlockHTML(a)}${feedBlockHTML(a)}</span>
           <span class="rt">${age(a.age_years)}${
             a.last_weight_kg?"<br>"+Math.round(a.last_weight_kg)+" kg":""}</span></button></li>`);
         li.querySelector("button").onclick = () => { S.sel=a.id; S.view="detail"; render(); };
@@ -748,11 +765,8 @@ function viewHerd(){
                   a.exit_on ? " " + fmt(a.exit_on) : ""}</span> · ${esc(a.breed||"")}`
               : (a.paddock_name
                   ? `<span class="dot" style="background:${esc(a.paddock_colour||"#999")}"></span>`+esc(a.paddock_name)
-                  : "<span style='opacity:.6'>no paddock</span>") + ` · ${esc(a.breed||"")}`}${
-              planFor(a) ? ` · <span style="color:var(--accent)">planned ${
-                planFor(a).method==="ai" ? "AI" : wl("sire", speciesOf(a)) + " out"}${
-                planFor(a).planned_on ? " " + fmt(planFor(a).planned_on) : ""}</span>` : ""}</span>
-          ${feedBlockHTML(a)}
+                  : "<span style='opacity:.6'>no paddock</span>") + ` · ${esc(a.breed||"")}`}</span>
+          ${planBlockHTML(a)}${feedBlockHTML(a)}
         </span>
         <span class="rt">${age(a.age_years)}${a.last_weight_kg?"<br>"+Math.round(a.last_weight_kg)+" kg":""}</span>
       </button></li>`);
@@ -1800,6 +1814,16 @@ function planList(){
     </button></li>`);
     li.querySelector("button").onclick = () => { S.sel = p.dam_id; S.view = "detail"; render(); };
     if(canWrite()){
+      // Change opens the form below filled from this plan, and saving
+      // writes back to this row. The plan keeps its id and its history.
+      const chg = el(`<button type="button" class="chip" style="margin:0 6px 0 0;flex:none"${
+        S.editPlan?.id === p.id ? ' aria-pressed="true"' : ""}>Change</button>`);
+      chg.onclick = (e) => {
+        e.stopPropagation();
+        S.editPlan = p; S.joinMode = p.method; render();
+        document.querySelector("form")?.scrollIntoView({behavior:"smooth", block:"start"});
+      };
+      li.appendChild(chg);
       const drop = el(`<button type="button" class="chip" style="margin:0 10px 0 0;flex:none">Drop</button>`);
       drop.onclick = async (e) => {
         e.stopPropagation();
@@ -1821,12 +1845,17 @@ function planList(){
 // Write one plan per dam. A dam already planned for that season is
 // updated rather than doubled: one plan per dam per season is what
 // the card shows, so it is what the form keeps.
-async function savePlans(rows){
+async function savePlans(rows, edit = null){
   const upd = [], ins = [];
   for(const r of rows){
-    const have = S.plans.find(p => p.dam_id === r.dam_id && p.season === r.season);
+    // The plan being changed takes the edit whatever the form now says
+    // about dam or season; a one-cow form moved to another cow moves
+    // the plan. Anyone else on the form goes by dam and season as usual.
+    const have = edit && (r.dam_id === edit.dam_id || rows.length === 1) ? edit
+      : S.plans.find(p => p.dam_id === r.dam_id && p.season === r.season);
     if(have) upd.push({id: have.id, ...r}); else ins.push(r);
   }
+  S.editPlan = null;
   for(const r of upd){
     const { id, ...patch } = r;
     const { error } = await db.from("planned_joining").update(patch).eq("id", id);
@@ -1975,7 +2004,23 @@ function joinAI(plan = false){
   sem.addEventListener("change", () => sem.dataset.touched = "1");
   loadGest();
 
-  const shell = formShell(plan ? `Plan an AI — one ${wl("dam")}` : `AI — one ${wl("dam")}`, inner, async (f) => {
+  const ed = plan && S.editPlan?.method === "ai" ? S.editPlan : null;
+  if(ed){
+    if(cows.some(c => c.id === ed.dam_id)) dam.value = ed.dam_id;
+    if(straws.some(x => x.id === ed.ai_semen_id)) sem.value = ed.ai_semen_id;
+    q('[name=season]').value = ed.season || seasonNow();
+    if(ed.cycle) q('[name=cycle]').value = ed.cycle;
+    q('[name=notes]').value = ed.notes || "";
+    loadGest();
+    if(ed.nominated_days) gest.value = ed.nominated_days;
+    if(ed.planned_on) on.value = ed.planned_on;
+    calc();
+    if(ed.ai_semen_id && sem.value !== ed.ai_semen_id)
+      hint.textContent += ` The straw this plan named is no longer in stock — choose another.`;
+  }
+
+  const shell = formShell(ed ? `Change the plan for ${esc(ed.dam_code || wl("dam"))}`
+      : plan ? `Plan an AI — one ${wl("dam")}` : `AI — one ${wl("dam")}`, inner, async (f) => {
     if(!f.get("dam")) throw new Error(`Choose the ${wl("dam")}.`);
     let semenId = f.get("semen") || null, sireId = null;
     if(!semenId) throw new Error("Choose the straw from the register.");
@@ -1993,9 +2038,10 @@ function joinAI(plan = false){
         planned_on: f.get("on") || null,
         gestation_days: g && g !== gestFor(cow) ? g : null,
         notes: (f.get("notes")||"").trim() || null
-      }]);
+      }], ed);
       const fc = f.get("on") ? ` — forecast ${wl("birth", speciesOf(cow))} ${fmt(f.get("due"))}` : "";
-      return `AI planned for ${codeOf(cow)}${r.updated ? " (plan updated)" : ""}${fc}.`;
+      return `${ed ? "Plan changed" : "AI planned"} for ${codeOf(cow)}${
+        r.updated && !ed ? " (plan updated)" : ""}${fc}.`;
     }
     if(plan) throw new Error("Register the straw first, then plan against it.");
 
@@ -2179,7 +2225,41 @@ function joinNatural(plan = false){
     inner.addEventListener("change", forecast);
   }
 
-  return formShell(plan ? `Plan: ${wl("sire")} out to a mob` : `${w("sire")} out to a mob`, inner, async (f) => {
+  const ed = plan && S.editPlan?.method === "natural" ? S.editPlan : null;
+  if(ed){
+    q('[name=sire]').value = ed.sire_id || "";
+    if(ed.paddock_id && S.paddocks.some(x => x.id === ed.paddock_id)) pk.value = ed.paddock_id;
+    q('[name=season]').value = ed.season || seasonNow();
+    if(ed.cycle) q('[name=cycle]').value = ed.cycle;
+    q('[name=notes]').value = ed.notes || "";
+    if(ed.planned_on) q('[name=on]').value = ed.planned_on;
+    fill();
+    // Only she is ticked: this is her plan being changed, not the
+    // mob's. If she has moved out of that paddock since, her row is
+    // added so the plan can still be reached.
+    let mine = listWrap.querySelector(`.mob label[data-id="${ed.dam_id}"]`);
+    if(!mine){
+      const a = S.animals.find(x => x.id === ed.dam_id);
+      const list = listWrap.querySelector(".mob") || listWrap.appendChild(el(`<div class="mob"></div>`));
+      if(a){
+        mine = el(`<label data-id="${a.id}" data-g="${gestFor(a)}"><input type="checkbox">
+          ${tagHTML(codeOf(a), "sm", speciesOf(a))}
+          <span class="sub">${esc(a.class||"unclassed")} · ${a.paddock_name ? "now in " + esc(a.paddock_name) : "no paddock"}</span>
+          <input type="number" class="gd" value="${gestFor(a)}" min="130" max="310"
+            inputmode="numeric" aria-label="Gestation days"></label>`);
+        list.appendChild(mine);
+      }
+    }
+    listWrap.querySelectorAll(".mob label").forEach(l => {
+      const me = l === mine;
+      l.querySelector("input[type=checkbox]").checked = me;
+      if(me && ed.nominated_days) l.querySelector(".gd").value = ed.nominated_days;
+    });
+    inner.dispatchEvent(new Event("change"));
+  }
+
+  return formShell(ed ? `Change the plan for ${esc(ed.dam_code || wl("dam"))}`
+      : plan ? `Plan: ${wl("sire")} out to a mob` : `${w("sire")} out to a mob`, inner, async (f) => {
     if(!f.get("sire"))    throw new Error(`Choose the ${wl("sire")}.`);
     if(!f.get("paddock")) throw new Error(plan ? "Choose the paddock he's to go out to." : "Choose the paddock he went out to.");
     const picked = [...listWrap.querySelectorAll(".mob label")]
@@ -2198,9 +2278,12 @@ function joinNatural(plan = false){
           notes:(f.get("notes")||"").trim()||null
         };
       });
-      const r = await savePlans(rows);
+      const r = await savePlans(rows, ed);
       const name = S.paddocks.find(p => p.id===f.get("paddock"))?.name || "the paddock";
       const bull = sires.find(s => s.id===f.get("sire"));
+      if(ed && rows.length === 1)
+        return `Plan changed for ${ed.dam_code || wl("dam")}: ${bull ? codeOf(bull) : wl("sire")} in ${name}${
+          onD ? ` — forecast ${wl("birth")} ${q('[name=fc]').value || ""}` : ""}.`;
       return `${rows.length} planned for ${bull ? codeOf(bull) : wl("sire")} in ${name}${
         r.updated ? ` (${r.updated} plan${r.updated>1?"s":""} updated)` : ""}${
         onD ? ` — forecast ${wl("birth")} ${q('[name=fc]').value || ""}` : ""}.`;
@@ -3811,6 +3894,7 @@ function viewLogin(msg){
 // ═══ shell ══════════════════════════════════════════════════════
 async function render(){
   S.busy = false;
+  if(S.view !== "rec:plan") S.editPlan = null;
   const app = document.getElementById("app");
   const main = el(`<main></main>`);
 
