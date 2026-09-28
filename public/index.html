@@ -161,6 +161,14 @@ ul.rows li{border-bottom:1px solid var(--rule)}
 .row .feed.low b{color:var(--warn)}
 .row .feed.off b{color:var(--ink2)}
 .row .feed.plan b{color:var(--ink)}
+/* On anything wider than a phone the plan sits beside the name rather
+   than under it: the row has the room, and the age stays hard right.
+   Below that it stacks, as the feed block always has. */
+@media (min-width:640px){
+  .row .meta.hasplan{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.4fr);
+    column-gap:20px;align-items:start}
+  .row .meta.hasplan .plan{grid-column:2;grid-row:1/span 3;margin-top:0}
+}
 .row .feed .ttl{text-transform:uppercase;letter-spacing:.06em;font-size:10.5px;
   color:var(--ink2);opacity:.8;display:block}
 .row .rt{font-family:var(--mono);font-size:13px;color:var(--ink2);text-align:right;flex:none}
@@ -717,7 +725,7 @@ function viewHerd(){
       const ul = el(`<ul class="rows"></ul>`);
       for(const a of list){
         const li = el(`<li><button class="row">${tagHTML(codeOf(a), "sm", speciesOf(a))}
-          <span class="meta"><span class="nm">${esc(a.name||"Unnamed")}</span>
+          <span class="meta${planFor(a)?" hasplan":""}"><span class="nm">${esc(a.name||"Unnamed")}</span>
           <span class="sub">${esc(a.class||"")}${
             a.in_paddock_since?" · in since "+fmt(a.in_paddock_since):""}</span>
           ${planBlockHTML(a)}${feedBlockHTML(a)}</span>
@@ -758,7 +766,7 @@ function viewHerd(){
     for(const a of list){
       const li = el(`<li><button class="row"${isActive(a)?"":' style="opacity:.62"'}>
         ${tagHTML(codeOf(a), "sm", speciesOf(a))}
-        <span class="meta">
+        <span class="meta${planFor(a)?" hasplan":""}">
           <span class="nm">${esc(a.name||"Unnamed")}</span>
           <span class="sub">${!isActive(a)
               ? `<span style="opacity:.75">${esc(a.life_state)}${
