@@ -6,7 +6,17 @@ are farm-aware, the seeds are under `seed/buloke/`. On a local copy of
 yesterday's production dump, 53–55 applied three times over, every
 view returned the same rows for Richard before and after, and a second
 farm (Toland, test login) saw nothing of Buloke and could not link to
-it. What remains is on production and is Richard's to do: §12.
+it. The four pages were then run against the local API with a
+throwaway owner login: sign-in, herd, the new people screen with
+add-by-email, reports, stock account, map. One catch found that way
+and fixed: a local CLI stack grants the API nothing by default where
+the cloud project grants everything, so 53 now grants its new
+objects explicitly. All of it is commit cbdf263 on branch
+`farm-scope`. What remains is on production and is Richard's to do:
+§12. Two things seen in passing and not fixed: seeds 10 and 20 stop
+part-way on a fresh database (a joining check constraint from 27 and
+`feeding_period`, dropped by 05), so a rebuild from seeds has been
+incomplete for some time and should be repaired in its own change.
 
 A plan, not a migration. Nothing here has been applied. Written
 2026-09-28 against migrations 01–49, revised the same day against
