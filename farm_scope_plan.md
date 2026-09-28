@@ -1,9 +1,12 @@
 # Farm scope — migration plan
 
 A plan, not a migration. Nothing here has been applied. Written
-2026-09-28 against migrations 01–49 (49 uncommitted, in progress in
-another session). Do not start this until 49 is committed and that
-session is done, because this touches every table 49 touches.
+2026-09-28 against migrations 01–49, revised the same day against
+01–51 after the join-planning work landed (commits a96377b through
+f1da793: migration 49 `planned_joining`, 50 and 51 data-only). The
+next free migration number is **52**, so the three migrations here
+are 52, 53 and 54. Check `git status` is clean and no other session
+is mid-migration before starting, because this touches every table.
 
 ## 0. What we are building
 
@@ -59,7 +62,7 @@ refactor is cheapest now while there is one farm's data to backfill.
    Trigger functions that run as owner copy `farm_id` from the row
    that fired them. `current_farm()` is for the signed-in path only.
 5. **Groundwork first, cutover last, each re-runnable.** Three
-   migrations. After 50 and 51 the app behaves exactly as today. 52 is
+   migrations. After 52 and 53 the app behaves exactly as today. 54 is
    the switch. Same shape as 18 → the eventual PIC split.
 
 ## 2. Prerequisites — do these first
@@ -67,18 +70,21 @@ refactor is cheapest now while there is one farm's data to backfill.
 - **Capture `rls_auto_enable()`.** Migration 48 revokes execute on it,
   but no migration creates it. It is an event trigger someone made in
   the SQL editor, and a rebuild will not have it. Either write it into
-  a migration or drop it, before 50. Find it with
+  a migration or drop it, before 52. Find it with
   `select * from pg_event_trigger; \df rls_auto_enable`.
 - **Get a baseline `supabase/schema.sql`.** The backup workflow writes
   it, but it has not run yet (the file does not exist in the repo). Run
-  `Weekly backup` by hand once so the diff after 52 means something.
-- **A full `pg_dump` immediately before 52.** The backup job's dump is
+  `Weekly backup` by hand once so the diff after 54 means something.
+- **A full `pg_dump` immediately before 54.** The backup job's dump is
   up to a week old.
-- **Commit 49.** Then branch (`supabase branch` or a scratch project)
-  and run 01–52 three times on a copy of production data before
-  touching the real one.
+- **49, 50 and 51 are committed** (done; 50 and 51 are data
+  migrations and add no tables, policies or functions). Branch
+  (`supabase branch` or a scratch project) and run 01–54 three times
+  on a copy of production data before touching the real one. The
+  seeds' `90_joining_backfill.sql` predates 50 and 51; a rebuild must
+  run it before them, as the filename order already does.
 
-## 3. Migration 50 — the farm, and who belongs to it
+## 3. Migration 52 — the farm, and who belongs to it
 
 Additive. Nothing reads any of this yet.
 
@@ -156,7 +162,7 @@ $$;
 creating the profile row but no longer sets a role or active flag
 there; a new sign-up belongs to no farm until an owner adds a
 `farm_member` row. The `role` and `active` columns on `farm_user` stay
-until 52, then are dropped.
+until 54, then are dropped.
 
 Policies on the new tables:
 
@@ -182,7 +188,7 @@ grant select on v_farm_public to anon, authenticated;
 That exposes farm names and logos to anyone with the anon key. They
 are on the letterhead of every report already; acceptable.
 
-## 4. Migration 51 — `farm_id` on every table
+## 4. Migration 53 — `farm_id` on every table
 
 Additive. Column added nullable, backfilled to the Buloke farm, then
 set `not null`. Policies still do not look at it, so behaviour is
@@ -264,7 +270,9 @@ The security definer triggers (`sync_expected_calving`,
 run as owner, so the guard trigger's RLS lookup would see everything.
 They do not use it: each copies `farm_id` from the row that fired it
 (`new.farm_id` on the joining, or the logged row's `farm_id` for the
-change log). Add that to each insert they make.
+change log). Add that to each insert they make. `plan_fulfilled()`
+only updates `planned_joining.joining_id` on an existing row, so it
+needs nothing.
 
 ### 4.3 Uniqueness that has to become per farm
 
@@ -283,7 +291,7 @@ and `joining` uniques, all keyed on animal ids.
 
 `animal.property_id` gains a check that the PIC belongs to the same
 farm, enforced the cheap way: the `with check` on `animal` insert and
-update in 52 includes `exists (select 1 from property p where p.id =
+update in 54 includes `exists (select 1 from property p where p.id =
 property_id)`, which under RLS only finds this farm's PICs.
 
 ### 4.4 Functions that pick a property
@@ -316,7 +324,7 @@ Then the defaults on root tables and the triggers on child tables.
 `record_change_log` is `bigserial`-keyed and append-only; its backfill
 is the same `update`.
 
-## 5. Migration 52 — the cutover
+## 5. Migration 54 — the cutover
 
 Every policy from `auth_roles` 02, `paddocks` 03, `paddock_history`
 04, `feeding` 05, `audit` 06, `feed_adjust` 08, `consignment` 09,
@@ -339,10 +347,10 @@ create policy %I_delete on %I for delete to authenticated
 
 `(select current_farm())` rather than `current_farm()` so the planner
 evaluates it once as an init-plan instead of per row. With the
-`(farm_id)` index from 51, `v_animal_current` and
+`(farm_id)` index from 53, `v_animal_current` and
 `v_stock_year_animal` should plan the same as today plus one index
-condition. Measure it: `explain analyze` on both views before 51 and
-after 52, keep the two plans in the migration's notes.
+condition. Measure it: `explain analyze` on both views before 53 and
+after 54, keep the two plans in the migration's notes.
 
 Exceptions to the shape:
 
@@ -355,10 +363,10 @@ Exceptions to the shape:
   test from §4.3.
 
 Then, in the same file: drop `farm_user.role` and `farm_user.active`
-(52 is the first point at which nothing reads them), and `notify
+(54 is the first point at which nothing reads them), and `notify
 pgrst, 'reload schema'`.
 
-52 is the only migration with a visible effect, and the effect for the
+54 is the only migration with a visible effect, and the effect for the
 Buloke farm should be **none**. §8 says how to prove that.
 
 ## 6. The pages
@@ -373,7 +381,7 @@ change, all currently hardcoded to "Buloke Farm":
 
 | File | Lines (as of 2026-09-28) | What |
 |---|---|---|
-| `index.html` | 12–13, 293, 3792, 3847, 3873 | title, boot mark, login mark, header, login prompt |
+| `index.html` | 12–13, 302, 3883, 3939, 3965 | title, boot mark, login mark, header, login prompt |
 | `nav.js` | 59, 68 | drawer heading and footer hostname |
 | `map.html` | 8, 74 | title, the address under "Paddocks" |
 | `reports.html` | 8, 115, 180, 196, 271 | title, masthead, `HOME` fallback |
@@ -405,11 +413,11 @@ login screen pick the right name and logo. If a hostname is not in
 farm is still resolved correctly after sign-in from membership.
 
 **Users.** Supabase Auth is shared: one email, one login, across all
-farms. The sign-in flow at `index.html` 3804 does not change. The
+farms. The sign-in flow at `index.html` 3895 does not change. The
 "awaiting activation" state now means "no active `farm_member` row".
 A Manage → Users screen listing `farm_member` for the farm, with
 role and active toggles for owners, replaces the SQL bootstrap in 02.
-That screen is worth building with 52, not after, because it is how
+That screen is worth building with 54, not after, because it is how
 you will onboard Dad's login on the new farm.
 
 ## 7. Seeds and imports
@@ -430,12 +438,12 @@ parent regardless), so only root inserts need it.
 
 ## 8. Testing — what "proved" means
 
-On a branch with a copy of production, three full runs of 01–52 (the
+On a branch with a copy of production, three full runs of 01–54 (the
 README's rule, and 34–38 are the reason). Then:
 
-**Nothing changed for Buloke.** Before 51, as Richard's login, select
+**Nothing changed for Buloke.** Before 53, as Richard's login, select
 `count(*)` and `md5(string_agg(t::text, '' order by 1))` from every
-one of the 33 views and dump to a file. After 52, same login, same
+one of the 34 views and dump to a file. After 54, same login, same
 script. The two files must be identical. That is the regression test
 for the whole change.
 
@@ -462,7 +470,7 @@ And as Richard's login, the same list in reverse.
 `v_stock_year_animal`, `v_animal_feed`, before and after. Any plan
 that gained a sequential scan is a missing index.
 
-**Advisors.** `get_advisors` security and performance after 52. Expect
+**Advisors.** `get_advisors` security and performance after 54. Expect
 `current_farm()` to be flagged like `my_role()` is; document that it
 is intentional in the migration header.
 
@@ -500,7 +508,7 @@ twenty is the same list.
   owner, as now. No invite links.
 - **Two Supabase projects.** Rejected; see the conversation. If it is
   ever wanted for a client who needs their data physically separate,
-  the schema after 52 runs unchanged on a second project with one
+  the schema after 54 runs unchanged on a second project with one
   `farm` row, so the door is not closed.
 
 ## 11. Effort and order
@@ -508,12 +516,15 @@ twenty is the same list.
 | Step | Rough size |
 |---|---|
 | Prerequisites (§2) | half a day, mostly the event trigger |
-| 50 farm + membership + helpers | half a day |
-| 51 columns, triggers, uniques, backfill | one to two days |
-| 52 policies, cutover | one day |
+| 52 farm + membership + helpers | half a day |
+| 53 columns, triggers, uniques, backfill | one to two days |
+| 54 policies, cutover | one day |
 | Pages: branding, logo, users screen | one day |
 | Seeds under `buloke/`, `--farm` on the converters | half a day |
 | Testing per §8, three runs, both logins | two days |
 
-About a week of careful work, done after 49 lands, on a branch, with a
-fresh dump in hand before 52 runs on production.
+About a week of careful work, on a branch, with a fresh dump in hand
+before 54 runs on production. Migrations 49–51 have landed, so nothing
+is waiting on another thread. When 52–54 go in, add their rows to the
+migrations table in the README after 51, and move the four seeds and
+their notes under `seed/buloke/` in the same commit as 54.

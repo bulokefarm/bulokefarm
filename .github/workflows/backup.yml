@@ -57,15 +57,18 @@ jobs:
             -f supabase/schema.sql
           wc -l supabase/schema.sql
 
+      # Stage first, then compare: `git diff --quiet` ignores an untracked
+      # file, so the very first snapshot was reported "unchanged" every
+      # week from August to September 2026 and never committed.
       - name: Commit it if it moved
         run: |
-          if git diff --quiet -- supabase/schema.sql; then
+          git add supabase/schema.sql
+          if git diff --cached --quiet; then
             echo "Schema unchanged since last week."
             exit 0
           fi
           echo "::warning::Live schema differs from the last snapshot — read the commit diff."
           git config user.name  "buloke-backup"
           git config user.email "backup@bulokefarm.com.au"
-          git add supabase/schema.sql
           git commit -m "Schema snapshot $(date +%F)"
           git push
