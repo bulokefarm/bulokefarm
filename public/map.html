@@ -71,7 +71,7 @@ button.act:disabled{opacity:.45;cursor:default}
   <aside>
     <header>
       <div class="top"><img src="/mark.png" alt="" width="26" height="26" style="flex:none"><h1 style="flex:1">Paddocks</h1><button id="navbtn" aria-label="Menu">&#8801;</button></div>
-      <p>267 North Canal Rd, Trafalgar</p>
+      <p id="farmaddr">267 North Canal Rd, Trafalgar</p>
     </header>
     <div class="scroll" id="list"></div>
     <div class="panel" id="panel"></div>
@@ -534,6 +534,12 @@ window.__signOut = () => db.auth.signOut();
     const { error } = await db.auth.signInWithPassword({email, password:pw});
     if(error){ alert(error.message); location.reload(); return; }
   }
+  // The farm's address under the heading, its name on the tab, its mark in the menu (v_me, migration 53).
+  { const { data:me } = await db.from("v_me").select("farm_name,farm_address,logo_url").maybeSingle();
+    if(me){ document.title = document.title.replace("Buloke Farm", me.farm_name);
+            if(me.farm_address) document.getElementById("farmaddr").textContent = me.farm_address;
+            const im = document.querySelector("aside header img"); if(im && me.logo_url) im.src = me.logo_url;
+            window.__setFarm?.({ name: me.farm_name, logo_url: me.logo_url }); } }
   renderPanel();
   await load();
 })();

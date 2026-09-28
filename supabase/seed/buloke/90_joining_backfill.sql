@@ -5,6 +5,12 @@
 -- Idempotent: only touches joinings still marked 'unknown'.
 -- ============================================================
 
+-- Every row below belongs to Buloke. The seeds run as postgres, where
+-- current_farm() has no membership to consult, so the farm is named
+-- here and every insert takes it by default (migration 54).
+select set_config('app.farm', (select id::text from farm where slug = 'buloke'), false);
+
+
 begin;
 
 -- ------------------------------------------------------------

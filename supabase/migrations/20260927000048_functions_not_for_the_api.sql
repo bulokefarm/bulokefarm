@@ -34,7 +34,15 @@ revoke execute on function log_record_change()         from public, anon, authen
 revoke execute on function resolve_expected_calving()  from public, anon, authenticated;
 revoke execute on function sync_expected_calving()     from public, anon, authenticated;
 revoke execute on function sync_expected_calving_del() from public, anon, authenticated;
-revoke execute on function rls_auto_enable()           from public, anon, authenticated;
+-- rls_auto_enable() is an event-trigger function that exists on the
+-- live database but was created by no migration (52 writes it down).
+-- A rebuild reaches this line before 52 has run, so only revoke it if
+-- it is there.
+do $$ begin
+  if to_regprocedure('public.rls_auto_enable()') is not null then
+    revoke execute on function rls_auto_enable() from public, anon, authenticated;
+  end if;
+end $$;
 
 -- Called only from the two triggers above, as their owner.
 revoke execute on function refresh_expectation(uuid, text) from public, anon, authenticated;

@@ -193,7 +193,7 @@ async function loadHome(){
   const { data } = await db.from("property")
     .select("pic,trading_name,address").eq("is_primary", true).maybeSingle();
   if(data) HOME = { ...HOME, ...data };
-  document.getElementById("tradingname").textContent = HOME.trading_name || "Buloke Farm";
+  document.getElementById("tradingname").textContent = HOME.trading_name || ME?.farm_name || "Buloke Farm";
   document.getElementById("letterhead").innerHTML =
     `${esc(HOME.address||"")}<br>PIC <b>${esc(HOME.pic||"—")}</b>`;
 }
@@ -1037,7 +1037,13 @@ window.__signOut = () => db.auth.signOut();
     if(error){ alert(error.message); location.reload(); return; }
   }
   const { data:{ user } } = await db.auth.getUser();
-  if(user){ const { data } = await db.from("farm_user").select("role").eq("id",user.id).maybeSingle(); ME = data; }
+  if(user){
+    // Role from farm_member, and the farm's name and mark with it (v_me, migration 53).
+    const { data } = await db.from("v_me").select("role,active,farm_name,logo_url").maybeSingle(); ME = data;
+    if(ME){ document.title = document.title.replace("Buloke Farm", ME.farm_name);
+            if(ME.logo_url) document.querySelector(".masthead img").src = ME.logo_url;
+            window.__setFarm?.({ name: ME.farm_name, logo_url: ME.logo_url }); }
+  }
   await Promise.all([loadHome(), loadPaddocks()]);
   run();
 })();
