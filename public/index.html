@@ -1544,6 +1544,7 @@ function viewRecord(){
     ["plan","Join planning",`Who goes to which ${wl("sire")} or straw, and when`],
     ["calving", w("birth"), `A ${wl("young")} on the ground${
       hasSpecies("sheep") ? ` — by ${wl("dam")}, or by paddock` : ""}`],
+    ["buy","Bring stock on","Bought in, or bred here and not yet on file"],
     ["sell","Sell / consign","NVD, waybill, off the property"]];
   if(hasSpecies("sheep"))
     jobs.splice(jobs.findIndex(j => j[0] === "calving"), 0,
@@ -2947,6 +2948,147 @@ function recCalving(){
   });
 }
 
+// ─── bring stock on ─────────────────────────────────────────────
+// The opposite of Sell / consign. One call to receive_stock()
+// (migration 59) writes the inward consignment, the animals, their
+// status and their paddock together, or none of it. By tag, or by
+// head count for a mob that has no tags worth typing: those go in
+// the way lambs do and are numbered later through Tag the drop.
+function recBuy(){
+  const startSp = S.species !== "all" ? S.species
+    : (hasSpecies("sheep") && !hasSpecies("cattle") ? "sheep" : "cattle");
+  let how = "purchased", by = "tags";
+  const inner = el(`<div>
+    <div class="seg" data-seg="how">
+      <button type="button" aria-pressed="true">Bought in</button>
+      <button type="button" aria-pressed="false">Bred here</button></div>
+    <label><span data-l="on">Date they arrived</span>
+      <input type="date" name="on" value="${today()}" max="${today()}" required></label>
+    ${S.species === "all" ? `<label><span>Stock</span><select name="species">
+      <option value="cattle"${startSp==="cattle"?" selected":""}>Cattle</option>
+      <option value="sheep"${startSp==="sheep"?" selected":""}>Sheep</option></select></label>` : ""}
+    <div class="two">
+      <label><span>Class</span><select name="class" required></select></label>
+      <label><span>Sex</span><select name="sex"></select></label>
+    </div>
+    <div class="two">
+      <label><span>Breed</span><input type="text" name="breed" placeholder="Optional"></label>
+      <label><span>Born, if known</span><input type="date" name="born" max="${today()}"></label>
+    </div>
+
+    <div data-box="bought">
+      <h3 class="sec" style="padding-left:0">Who from</h3>
+      <label><span>Bought from</span><input type="text" name="vendor" placeholder="Name and district"></label>
+      <label><span>Their PIC</span><input type="text" name="vpic" placeholder="Eight characters, off the NVD"
+        autocapitalize="characters" maxlength="9"></label>
+      <div class="two">
+        <label><span>NVD from</span><select name="nvdkind">
+          <option value="book">Manual book</option><option value="envd">eNVD — online</option></select></label>
+        <label><span>NVD serial</span><input type="text" name="nvd" placeholder="Serial or eNVD number"
+          autocapitalize="characters"></label>
+      </div>
+    </div>
+
+    <h3 class="sec" style="padding-left:0">Where they go</h3>
+    <div data-box="own" hidden><label><span>Whose they are</span><select name="own"></select></label></div>
+    <label><span>Paddock</span><select name="paddock"><option value="">Not in a paddock yet</option>
+      ${S.paddocks.map(p => `<option value="${p.id}">${esc(p.name)} — ${headIn(p.id)} head</option>`).join("")}
+    </select></label>
+    <div data-box="withhold" hidden><label style="display:flex;gap:10px;align-items:center">
+      <input type="checkbox" name="anyway" style="width:22px;height:22px;min-height:0;flex:none">
+      <span style="text-transform:none;letter-spacing:0;font-size:14px">Put them there anyway, inside the
+        spray withholding period</span></label></div>
+
+    <h3 class="sec" style="padding-left:0">Which animals</h3>
+    <div class="seg" data-seg="by">
+      <button type="button" aria-pressed="true">By tag</button>
+      <button type="button" aria-pressed="false">Head count</button></div>
+    <div data-box="tags"><label><span>Tags</span>
+      <textarea name="tags" placeholder="X 12, X 13, X 14 — or one to a line"></textarea></label></div>
+    <div data-box="count" hidden><label><span>How many</span>
+      <input type="number" name="count" min="1" max="500" inputmode="numeric" placeholder="Head"></label></div>
+    <label><span>Notes</span><textarea name="notes" placeholder="Optional"></textarea></label>
+    <div class="note" data-l="note"></div>
+  </div>`);
+
+  const q  = s => inner.querySelector(s);
+  const sp = () => S.species === "all" ? q("[name=species]").value : S.species;
+  const fill = () => {
+    const s = sp();
+    q("[name=class]").innerHTML = classesFor(s).map(c =>
+      `<option value="${c}">${esc(classLabel(c, s))}</option>`).join("");
+    q("[name=sex]").innerHTML = [["female","Female"], ["male","Male"],
+      s === "sheep" ? ["wether","Wether"] : ["steer","Steer"],
+      ["unknown","Mixed, or not checked"]].map(([v,t]) => `<option value="${v}">${t}</option>`).join("");
+  };
+  const paint = () => {
+    q("[data-seg=how]").querySelectorAll("button").forEach((b,i) =>
+      b.setAttribute("aria-pressed", (i===0) === (how==="purchased")));
+    q("[data-seg=by]").querySelectorAll("button").forEach((b,i) =>
+      b.setAttribute("aria-pressed", (i===0) === (by==="tags")));
+    q("[data-box=bought]").hidden = how !== "purchased";
+    q("[data-box=tags]").hidden   = by !== "tags";
+    q("[data-box=count]").hidden  = by !== "count";
+    q("[data-l=on]").textContent  = how === "purchased" ? "Date they arrived" : "On the place since";
+    q("[data-l=note]").textContent = (how === "purchased"
+      ? "Goes on the movements record as stock in, and counts as a purchase on the stock account in the year of that date. "
+      : "Counts as natural increase in the year they were born, or the year of the date above if that isn't known. ")
+      + (by === "count"
+      ? "A head count goes in without numbers, the way lambs do. Number them later: Record → Manage → Tag the drop."
+      : "");
+  };
+  q("[data-seg=how]").querySelectorAll("button").forEach((b,i) =>
+    b.onclick = () => { how = i ? "bred" : "purchased"; paint(); });
+  q("[data-seg=by]").querySelectorAll("button").forEach((b,i) =>
+    b.onclick = () => { by = i ? "count" : "tags"; paint(); });
+  q("[name=species]")?.addEventListener("change", fill);
+  fill(); paint();
+
+  // With two PICs on one farm, whose they are is a decision made at
+  // the rails. With one, there is nothing to ask.
+  db.from("property").select("id,pic,trading_name,is_primary").eq("is_own", true).order("pic")
+    .then(({data}) => {
+      const own = data || [];
+      q("[name=own]").innerHTML = own.map(p => `<option value="${p.id}"${p.is_primary?" selected":""}>${
+        esc(p.pic)}${p.trading_name ? " · " + esc(p.trading_name) : ""}</option>`).join("");
+      q("[data-box=own]").hidden = own.length < 2;
+    });
+
+  return formShell("Bring stock on", inner, async (f) => {
+    const tags  = by === "tags"
+      ? (f.get("tags")||"").split(/[\n,;]+/).map(t => t.trim()).filter(Boolean) : null;
+    const count = by === "count" ? Number(f.get("count")||0) : null;
+    if(by === "tags" && !tags.length) throw new Error("List their tags, or switch to a head count.");
+    if(by === "count" && !(count >= 1 && count <= 500)) throw new Error("How many head? Between 1 and 500.");
+    const bought = how === "purchased";
+    const { data:ids, error } = await db.rpc("receive_stock", {
+      p_on: f.get("on"), p_species: sp(), p_how: how,
+      p_class: f.get("class") || null, p_sex: f.get("sex") || "unknown",
+      p_tags: tags, p_count: count,
+      p_paddock_id: f.get("paddock") || null, p_property_id: f.get("own") || null,
+      p_vendor_name: bought ? (f.get("vendor")||"").trim() || null : null,
+      p_vendor_pic:  bought ? (f.get("vpic")||"").trim() || null : null,
+      p_nvd_kind:    bought && (f.get("nvd")||"").trim() ? f.get("nvdkind") : null,
+      p_nvd_serial:  bought ? (f.get("nvd")||"").trim() || null : null,
+      p_breed: (f.get("breed")||"").trim() || null, p_born: f.get("born") || null,
+      p_notes: (f.get("notes")||"").trim() || null,
+      p_ignore_withhold: f.get("anyway") === "on"
+    });
+    if(error){
+      if(error.code === "BF001"){
+        q("[data-box=withhold]").hidden = false;
+        throw new Error(error.message + " Tick the box under the paddock to put them there anyway.");
+      }
+      throw new Error(error.message);
+    }
+    await loadRefs();                      // the vendor may be new to the address book
+    const n = (ids||[]).length, pkName = S.paddocks.find(p => p.id === f.get("paddock"))?.name;
+    S.sel = n === 1 ? ids[0] : null;
+    return `${n} head ${bought ? "bought in" : "on file"}${pkName ? ", in " + pkName : ""}.${
+      by === "count" ? " Numbers go on through Manage → Tag the drop." : ""}`;
+  });
+}
+
 function recSell(){
   const alive = S.animals.filter(isActive);
   const inner = el(`<div>
@@ -4033,6 +4175,7 @@ async function render(){
   else if(S.view==="rec:move")      body = recMove();
   else if(S.view==="rec:feed")      body = recFeed();
   else if(S.view==="rec:spray")     body = recSpray();
+  else if(S.view==="rec:buy")       body = recBuy();
   else if(S.view==="rec:sell")      body = recSell();
   else if(S.view==="rec:bulk")      body = bulkEdit();
   else if(S.view==="rec:tagdrop")   body = tagDrop();

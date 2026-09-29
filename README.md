@@ -43,7 +43,7 @@ draws stored coordinates.
 joinings.
 
 **Record** — feed out, move mob, weights, treatments, joinings, join
-planning, calvings, shed work, sale/consignment. Plus the flasks (tank store and
+planning, calvings, shed work, stock brought on, sale/consignment. Plus the flasks (tank store and
 straw movements) and Manage (feed store, bulk update, field visibility).
 
 **Days on feed** — every herd row and animal card shows how long stock
@@ -431,6 +431,7 @@ rebuild, so anything depending on imported records has to be a seed.
 | 56 | Where each farm is: `farm.lat`/`lng`, carried by `v_me`, so the paddock editor opens on the signed-in farm |
 | 57 | A login on several farms can see them (`v_my_farms`) and switch: the menu lists them, and on the phone the mark at top left opens it |
 | 58 | `animal.gestation_days` allows 130 to 310, not the cattle-only 250 to 310 that refused every ewe |
+| 59 | Bringing stock on: `receive_stock()`, bought in or bred here, by tag or head count, with the inward consignment for LPA 5A |
 
 ### Seeds
 
