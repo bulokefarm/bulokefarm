@@ -12,6 +12,11 @@ import re, sys
 
 SRC = sys.argv[1] if len(sys.argv) > 1 else "/mnt/project/Cattle_Data.xlsx"
 OUT = sys.argv[2] if len(sys.argv) > 2 else "/mnt/user-data/outputs/02_seed.sql"
+FARM = sys.argv[3] if len(sys.argv) > 3 else "buloke"   # farm slug; every row lands on it (migration 54)
+FARM_LINE = (
+    "-- The seeds run as postgres, where current_farm() has no membership to consult,\n"
+    "-- so the farm is named here and every insert takes it by default.\n"
+    "select set_config('app.farm', (select id::text from farm where slug = '" + FARM + "'), false);\n")
 
 DATA_START, DATA_END = 3, 54          # rows 3..33 animals, 34..54 projected drops
 COL = {                                # 1-indexed
@@ -109,7 +114,7 @@ def main():
     drop_rows = [r for r in rows if not g(r, 'stock') and g(r, 'dam')]
 
     resident = {norm_stock(g(r, 'stock')): r for r in live_rows}
-    out, warn = [], []
+    out, warn = [FARM_LINE], []
 
     out.append("-- Generated from Cattle Data.xlsx — do not hand-edit.\nbegin;\n")
 
@@ -123,13 +128,13 @@ def main():
     for p in sorted(pics):
         own = 'true' if p == '3BWWY089' else 'false'
         out.append(f"insert into property (pic, is_own) values ({q(p)}, {own}) "
-                   f"on conflict (pic) do nothing;")
+                   f"on conflict (farm_id, pic) do nothing;")
 
     # --- heritage ---------------------------------------------------
     her = sorted({str(g(r, 'heritage')).strip() for r in live_rows if g(r, 'heritage')})
     out.append("\n-- Heritage lines")
     for h in her:
-        out.append(f"insert into heritage (name) values ({q(h)}) on conflict (name) do nothing;")
+        out.append(f"insert into heritage (name) values ({q(h)}) on conflict (farm_id, name) do nothing;")
 
     # --- reference animals (external sires & dams) ------------------
     ext = set()

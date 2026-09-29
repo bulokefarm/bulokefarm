@@ -1,6 +1,7 @@
 from openpyxl import load_workbook
 from datetime import datetime, date
 import re
+import sys
 
 ws = load_workbook('/mnt/user-data/uploads/Historical_Upload.xlsx', data_only=True)['R&L Cattle Data']
 C = {ws.cell(2,c).value: c for c in range(1,56) if ws.cell(2,c).value}
@@ -77,7 +78,7 @@ begin;
 # ── heritage + PICs ────────────────────────────────────────────
 o.append("-- Heritage lines and PICs")
 for h in sorted({str(g(r,'Location')).strip() for r,_,_ in animals if g(r,'Location')}):
-    o.append(f"insert into heritage (name) values ({q(h)}) on conflict (name) do nothing;")
+    o.append(f"insert into heritage (name) values ({q(h)}) on conflict (farm_id, name) do nothing;")
 pics = set()
 for r,_,_ in animals:
     for k in ('PIC','Original PIC'):
@@ -85,7 +86,7 @@ for r,_,_ in animals:
         if v and re.match(r'^[0-9A-Z]{8}$', str(v).strip()): pics.add(str(v).strip())
 for p in sorted(pics):
     o.append(f"insert into property (pic, is_own) values ({q(p)}, {'true' if p=='3BWWY089' else 'false'}) "
-             "on conflict (pic) do nothing;")
+             "on conflict (farm_id, pic) do nothing;")
 
 # ── external sires and dams ────────────────────────────────────
 ext = set()
@@ -254,6 +255,11 @@ for r, kind in losses:
              f"where {res(dam)} is not null;")
 
 o.append("\ncommit;")
+FARM = sys.argv[2] if len(sys.argv) > 2 else "buloke"   # farm slug; every row lands on it (migration 54)
+o.insert(1,
+    "-- The seeds run as postgres, where current_farm() has no membership to consult,\n"
+    "-- so the farm is named here and every insert takes it by default.\n"
+    "select set_config('app.farm', (select id::text from farm where slug = '" + FARM + "'), false);\n")
 open('14_historical.sql','w').write("\n".join(o)+"\n")
 
 with open('15_historical_notes.md','w') as f:

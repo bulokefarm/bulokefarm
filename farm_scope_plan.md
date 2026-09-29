@@ -1,11 +1,29 @@
 # Farm scope — migration plan
 
+**Status, 2026-09-28 late:** written and tested locally, not applied to
+production. Migrations 52–55 exist in `supabase/migrations/`, the pages
+are farm-aware, the seeds are under `seed/buloke/`. On a local copy of
+yesterday's production dump, 53–55 applied three times over, every
+view returned the same rows for Richard before and after, and a second
+farm (Toland, test login) saw nothing of Buloke and could not link to
+it. The four pages were then run against the local API with a
+throwaway owner login: sign-in, herd, the new people screen with
+add-by-email, reports, stock account, map. One catch found that way
+and fixed: a local CLI stack grants the API nothing by default where
+the cloud project grants everything, so 53 now grants its new
+objects explicitly. All of it is commit cbdf263 on branch
+`farm-scope`. What remains is on production and is Richard's to do:
+§12. Two things seen in passing and not fixed: seeds 10 and 20 stop
+part-way on a fresh database (a joining check constraint from 27 and
+`feeding_period`, dropped by 05), so a rebuild from seeds has been
+incomplete for some time and should be repaired in its own change.
+
 A plan, not a migration. Nothing here has been applied. Written
 2026-09-28 against migrations 01–49, revised the same day against
 01–51 after the join-planning work landed (commits a96377b through
 f1da793: migration 49 `planned_joining`, 50 and 51 data-only). The
-next free migration number is **52**, so the three migrations here
-are 52, 53 and 54. Check `git status` is clean and no other session
+next free migration number after 52 (the `ensure_rls` capture, below)
+is **53**, so the three migrations here are 53, 54 and 55. Check `git status` is clean and no other session
 is mid-migration before starting, because this touches every table.
 
 ## 0. What we are building
@@ -62,29 +80,35 @@ refactor is cheapest now while there is one farm's data to backfill.
    Trigger functions that run as owner copy `farm_id` from the row
    that fired them. `current_farm()` is for the signed-in path only.
 5. **Groundwork first, cutover last, each re-runnable.** Three
-   migrations. After 52 and 53 the app behaves exactly as today. 54 is
+   migrations. After 53 and 54 the app behaves exactly as today. 55 is
    the switch. Same shape as 18 → the eventual PIC split.
 
 ## 2. Prerequisites — do these first
 
-- **Capture `rls_auto_enable()`.** Migration 48 revokes execute on it,
-  but no migration creates it. It is an event trigger someone made in
-  the SQL editor, and a rebuild will not have it. Either write it into
-  a migration or drop it, before 52. Find it with
-  `select * from pg_event_trigger; \df rls_auto_enable`.
-- **Get a baseline `supabase/schema.sql`.** The backup workflow writes
-  it, but it has not run yet (the file does not exist in the repo). Run
-  `Weekly backup` by hand once so the diff after 54 means something.
-- **A full `pg_dump` immediately before 54.** The backup job's dump is
+- **Capture `rls_auto_enable()`.** Done: migration 52 creates the
+  function and the `ensure_rls` event trigger if they are missing,
+  and leaves them alone if present. Both are owned by `postgres` on
+  the live database. The trigger has never had anything to do here,
+  because every migration enables RLS by hand.
+- **Get a baseline `supabase/schema.sql`.** The backup workflow had
+  run every Sunday since August and succeeded, yet the file never
+  appeared: its "did it move" test was `git diff --quiet`, which is
+  silent about an untracked file. Fixed in commit 70f2a5d (stage,
+  then compare the index). The fixed workflow still needs one run
+  before 55: a repository admin presses *Run workflow* on
+  `Weekly backup`, or it runs itself on Sunday 2026-10-04. The
+  `roberts-r` GitHub login used from this machine is not an admin of
+  `bulokefarm/bulokefarm`, so it cannot dispatch it.
+- **A full `pg_dump` immediately before 55.** The backup job's dump is
   up to a week old.
 - **49, 50 and 51 are committed** (done; 50 and 51 are data
   migrations and add no tables, policies or functions). Branch
-  (`supabase branch` or a scratch project) and run 01–54 three times
+  (`supabase branch` or a scratch project) and run 01–55 three times
   on a copy of production data before touching the real one. The
   seeds' `90_joining_backfill.sql` predates 50 and 51; a rebuild must
   run it before them, as the filename order already does.
 
-## 3. Migration 52 — the farm, and who belongs to it
+## 3. Migration 53 — the farm, and who belongs to it
 
 Additive. Nothing reads any of this yet.
 
@@ -162,7 +186,7 @@ $$;
 creating the profile row but no longer sets a role or active flag
 there; a new sign-up belongs to no farm until an owner adds a
 `farm_member` row. The `role` and `active` columns on `farm_user` stay
-until 54, then are dropped.
+until 55, then are dropped.
 
 Policies on the new tables:
 
@@ -188,7 +212,7 @@ grant select on v_farm_public to anon, authenticated;
 That exposes farm names and logos to anyone with the anon key. They
 are on the letterhead of every report already; acceptable.
 
-## 4. Migration 53 — `farm_id` on every table
+## 4. Migration 54 — `farm_id` on every table
 
 Additive. Column added nullable, backfilled to the Buloke farm, then
 set `not null`. Policies still do not look at it, so behaviour is
@@ -291,7 +315,7 @@ and `joining` uniques, all keyed on animal ids.
 
 `animal.property_id` gains a check that the PIC belongs to the same
 farm, enforced the cheap way: the `with check` on `animal` insert and
-update in 54 includes `exists (select 1 from property p where p.id =
+update in 55 includes `exists (select 1 from property p where p.id =
 property_id)`, which under RLS only finds this farm's PICs.
 
 ### 4.4 Functions that pick a property
@@ -324,7 +348,7 @@ Then the defaults on root tables and the triggers on child tables.
 `record_change_log` is `bigserial`-keyed and append-only; its backfill
 is the same `update`.
 
-## 5. Migration 54 — the cutover
+## 5. Migration 55 — the cutover
 
 Every policy from `auth_roles` 02, `paddocks` 03, `paddock_history`
 04, `feeding` 05, `audit` 06, `feed_adjust` 08, `consignment` 09,
@@ -347,10 +371,10 @@ create policy %I_delete on %I for delete to authenticated
 
 `(select current_farm())` rather than `current_farm()` so the planner
 evaluates it once as an init-plan instead of per row. With the
-`(farm_id)` index from 53, `v_animal_current` and
+`(farm_id)` index from 54, `v_animal_current` and
 `v_stock_year_animal` should plan the same as today plus one index
-condition. Measure it: `explain analyze` on both views before 53 and
-after 54, keep the two plans in the migration's notes.
+condition. Measure it: `explain analyze` on both views before 54 and
+after 55, keep the two plans in the migration's notes.
 
 Exceptions to the shape:
 
@@ -363,10 +387,10 @@ Exceptions to the shape:
   test from §4.3.
 
 Then, in the same file: drop `farm_user.role` and `farm_user.active`
-(54 is the first point at which nothing reads them), and `notify
+(55 is the first point at which nothing reads them), and `notify
 pgrst, 'reload schema'`.
 
-54 is the only migration with a visible effect, and the effect for the
+55 is the only migration with a visible effect, and the effect for the
 Buloke farm should be **none**. §8 says how to prove that.
 
 ## 6. The pages
@@ -394,15 +418,18 @@ carry the PIC's name. Farm name is for the app chrome; property
 trading name is for the paper. `map.html` line 228 already looks up
 the primary property for new paddocks and is scoped by RLS.
 
-**Logo.** `farm.logo_url` points at a public Supabase Storage bucket
-`farm-logos` (one PNG per farm, uploaded by you). Every `<img
-src="/mark.png">` becomes `src="${farm.logo_url || '/mark.png'}"`.
-The home-screen icons in `manifest.webmanifest` and
-`apple-touch-icon.png` are static per site and cannot vary by farm
-without a Pages Function serving a manifest per hostname. Accept a
-neutral app icon on the phone's home screen, with the farm's own mark
-inside the app. If a farm insists on their logo on the home screen,
-that is a small Pages Function later, not a database change.
+**Logo.** The Buloke mark is the app's own mark: Richard drew it and
+the app is his. It stays on the loading screen (`index.html` 302),
+the login screen, the home-screen icons in `manifest.webmanifest` and
+`apple-touch-icon.png`, and the favicon, for every farm. Those are
+static per site anyway and could not vary by farm without a Pages
+Function serving a manifest per hostname. The farm's own logo
+appears once signed in: the header on the phone, the nav drawer
+heading, and the masthead on `/reports` and `/stock`. `farm.logo_url`
+points at a public Supabase Storage bucket `farm-logos` (one PNG per
+farm, uploaded by you); those four `<img>` tags become
+`src="${farm.logo_url || '/mark.png'}"`, so a farm with no logo
+uploaded shows the app mark.
 
 **Hostname.** All farms are served by the one Pages project. Buloke
 keeps `admin.bulokefarm.com.au`. A new farm gets either a CNAME on
@@ -417,7 +444,7 @@ farms. The sign-in flow at `index.html` 3895 does not change. The
 "awaiting activation" state now means "no active `farm_member` row".
 A Manage → Users screen listing `farm_member` for the farm, with
 role and active toggles for owners, replaces the SQL bootstrap in 02.
-That screen is worth building with 54, not after, because it is how
+That screen is worth building with 55, not after, because it is how
 you will onboard Dad's login on the new farm.
 
 ## 7. Seeds and imports
@@ -438,12 +465,15 @@ parent regardless), so only root inserts need it.
 
 ## 8. Testing — what "proved" means
 
-On a branch with a copy of production, three full runs of 01–54 (the
+On a local Supabase stack (`supabase start` with only the database
+enabled; `supabase/config.toml` moves it to ports 544xx so the
+reveal-dm project on this machine keeps 543xx), restored from the
+backup workflow's dump of production, three full runs of 01–55 (the
 README's rule, and 34–38 are the reason). Then:
 
-**Nothing changed for Buloke.** Before 53, as Richard's login, select
+**Nothing changed for Buloke.** Before 54, as Richard's login, select
 `count(*)` and `md5(string_agg(t::text, '' order by 1))` from every
-one of the 34 views and dump to a file. After 54, same login, same
+one of the 34 views and dump to a file. After 55, same login, same
 script. The two files must be identical. That is the regression test
 for the whole change.
 
@@ -470,11 +500,17 @@ And as Richard's login, the same list in reverse.
 `v_stock_year_animal`, `v_animal_feed`, before and after. Any plan
 that gained a sequential scan is a missing index.
 
-**Advisors.** `get_advisors` security and performance after 54. Expect
+**Advisors.** `get_advisors` security and performance after 55. Expect
 `current_farm()` to be flagged like `my_role()` is; document that it
 is intentional in the migration header.
 
 ## 9. Onboarding the second farm — the checklist this enables
+
+The second farm is Toland Merino (tolandmerino.com.au), a Merino
+stud. That is a good first tenant for a reason beyond being first: a
+sheep-only farm exercises the species scope, the colour-letter tags,
+`record_drop()` and the shearing register with none of the cattle
+paths, so anything that quietly assumed a cow will show up.
 
 1. `insert into farm (slug, name, address, hostname, logo_url)`
 2. `insert into property (farm_id, pic, is_own, is_primary, trading_name, address)`
@@ -508,23 +544,52 @@ twenty is the same list.
   owner, as now. No invite links.
 - **Two Supabase projects.** Rejected; see the conversation. If it is
   ever wanted for a client who needs their data physically separate,
-  the schema after 54 runs unchanged on a second project with one
+  the schema after 55 runs unchanged on a second project with one
   `farm` row, so the door is not closed.
+
+## 12. Applying to production — Richard's checklist
+
+Everything below is on the live project and is deliberately not done
+from here. In this order, on a quiet evening:
+
+1. **Run the backup workflow** (*Actions → Weekly backup → Run
+   workflow*, needs a repo admin) or wait for Sunday. It now commits
+   `supabase/schema.sql` for the first time and leaves a fresh dump
+   artifact. Download that dump; it is the way back.
+2. **Merge the `farm-scope` branch.** Pages deploys it. Until step 3
+   the live pages will fail to load the herd — `v_me` does not exist
+   yet — so do 2 and 3 together, within minutes.
+3. **Paste 52, 53, 54, 55 into the SQL editor, in order.** Each is
+   safe to run again if it stops part-way. 52 does nothing on
+   production (both halves already exist). 53 and 54 have no visible
+   effect. 55 is the switch.
+4. **Open the phone app.** It should look exactly as it did: same
+   herd, same name in the header, Dad's login the same. Under
+   Record → Manage there is a new *Who can see this farm*.
+5. **Advisors.** *Database → Advisors* will flag `current_farm()` and
+   `add_member()` the way it flags `my_role()`; intentional.
+6. **Toland, when they are ready** — §9, plus the SQL comment at the
+   foot of migration 53. They sign up at the site first; you add them
+   by email from *Who can see this farm*, or by the insert in 53.
+
+If anything in step 4 is wrong, the dump from step 1 restores the
+whole database from before step 3; the pages from before step 2 are
+one revert away.
 
 ## 11. Effort and order
 
 | Step | Rough size |
 |---|---|
 | Prerequisites (§2) | half a day, mostly the event trigger |
-| 52 farm + membership + helpers | half a day |
-| 53 columns, triggers, uniques, backfill | one to two days |
-| 54 policies, cutover | one day |
+| 53 farm + membership + helpers | half a day |
+| 54 columns, triggers, uniques, backfill | one to two days |
+| 55 policies, cutover | one day |
 | Pages: branding, logo, users screen | one day |
 | Seeds under `buloke/`, `--farm` on the converters | half a day |
 | Testing per §8, three runs, both logins | two days |
 
 About a week of careful work, on a branch, with a fresh dump in hand
-before 54 runs on production. Migrations 49–51 have landed, so nothing
-is waiting on another thread. When 52–54 go in, add their rows to the
+before 55 runs on production. Migrations 49–51 have landed, so nothing
+is waiting on another thread. When 53–55 go in, add their rows to the
 migrations table in the README after 51, and move the four seeds and
-their notes under `seed/buloke/` in the same commit as 54.
+their notes under `seed/buloke/` in the same commit as 55.

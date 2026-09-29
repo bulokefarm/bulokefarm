@@ -567,7 +567,7 @@ const dofHTML = a => a.days_on_feed == null ? ""
       a.days_on_feed} d fed</span>`;
 
 // ─── state ──────────────────────────────────────────────────────
-const S = { me:null, animals:[], herdMode:"list", species:"all", treeLink:null, cryoLot:null, joinMode:"natural", pending:[], plans:[], editPlan:null, treeFam:undefined, treePend:false, paddocks:[], feeds:[], feedsDone:[], refs:{}, prefs:null, selFeed:null, closeDue:null, view:"herd", filter:"all", q:"", sel:null, selPk:null, busy:false };
+const S = { me:null, farm:null, farmPublic:undefined, members:[], animals:[], herdMode:"list", species:"all", treeLink:null, cryoLot:null, joinMode:"natural", pending:[], plans:[], editPlan:null, treeFam:undefined, treePend:false, paddocks:[], feeds:[], feedsDone:[], refs:{}, prefs:null, selFeed:null, closeDue:null, view:"herd", filter:"all", q:"", sel:null, selPk:null, busy:false };
 
 // ═══ data ═══════════════════════════════════════════════════════
 async function loadHerd(){
@@ -632,11 +632,28 @@ async function savePrefs(){
 async function loadMe(){
   const { data:{ user } } = await db.auth.getUser();
   if(!user) return null;
-  const { data } = await db.from("farm_user").select("*").eq("id", user.id).maybeSingle();
+  // Me on this farm: role and active come from farm_member now, and the
+  // farm's own name and mark ride along (v_me, migration 53). No row
+  // means no membership anywhere, which the boot screen explains.
+  const { data } = await db.from("v_me").select("*").maybeSingle();
   S.me = data ? {...data, email:user.email} : {id:user.id, email:user.email, role:null, active:false};
+  S.farm = data ? { id:data.farm_id, slug:data.slug, name:data.farm_name,
+                    address:data.farm_address, logo_url:data.logo_url } : null;
+  if(S.farm){ document.title = S.farm.name; window.__setFarm?.(S.farm); }
   return S.me;
 }
 const canWrite = () => S.me && S.me.active && (S.me.role==="owner" || S.me.role==="manager");
+const isOwner  = () => S.me && S.me.active && S.me.role==="owner";
+// The farm's name and mark once signed in; before that, whatever the
+// site name says (v_farm_public); failing both, the app's own.
+const farmName = () => S.farm?.name || S.farmPublic?.name || "Buloke Farm";
+const farmLogo = () => S.farm?.logo_url || "/mark.png";
+async function loadFarmPublic(){
+  if(S.farmPublic !== undefined) return;
+  const { data } = await db.from("v_farm_public").select("name,logo_url")
+    .eq("hostname", location.hostname).maybeSingle();
+  S.farmPublic = data || null;
+}
 
 // ═══ views ══════════════════════════════════════════════════════
 function viewHerd(){
@@ -1532,7 +1549,8 @@ function viewRecord(){
     ...(untagged ? [["tagdrop","Tag the drop", `${untagged} without a number yet`]] : []),
     ["store","Feed store", low ? `${low} low on stock` : `${S.feeds.length} in the shed`],
     ["bulk","Bulk update","Change a field across many animals"],
-    ["settings","Which fields to show","Turn animal details on or off"]]);
+    ["settings","Which fields to show","Turn animal details on or off"],
+    ...(isOwner() ? [["users","Who can see this farm","Add people, set what they can do"]] : [])]);
 
   wrap.appendChild(el(`<h3 class="sec">On a laptop</h3>`));
   const ul2 = el(`<ul class="rows menu"></ul>`);
@@ -3838,6 +3856,83 @@ function bulkEdit(){
 }
 
 // ─── settings ───────────────────────────────────────────────────
+// ─── who can see this farm ──────────────────────────────────────
+// One row per membership. Role and active are the two things an owner
+// decides; adding someone is by the email they signed up with, through
+// add_member() (migration 53), because a profile that is not yet on
+// any farm is invisible to everyone.
+async function loadMembers(){
+  const { data, error } = await db.from("farm_member")
+    .select("user_id,role,active,created_at,farm_user(display_name,phone)")
+    .order("created_at");
+  if(error) console.error("members:", error.message);
+  S.members = data || [];
+}
+function viewUsers(){
+  const wrap = el(`<div></div>`);
+  wrap.appendChild(el(`<p class="hint" style="padding:14px 14px 0">Viewers see everything and change
+    nothing. Managers record. Owners can also delete records and manage people. Switching
+    someone off keeps their record of who did what, but they can no longer sign in to this farm.</p>`));
+  wrap.appendChild(el(`<h3 class="sec">People on ${esc(farmName())}</h3>`));
+  const ul = el(`<ul class="rows"></ul>`);
+  if(!S.members.length) loadMembers().then(render);
+  for(const m of S.members){
+    const me = m.user_id === S.me.id;
+    const li = el(`<li><div class="row" style="cursor:default">
+      <span class="meta"><span class="nm">${esc(m.farm_user?.display_name || "—")}${me ? " (you)" : ""}</span>
+        <span class="sub">${esc(m.farm_user?.phone || "")}</span></span>
+      <span class="rt" style="display:flex;gap:6px;align-items:center">
+        <select name="role" style="min-height:36px">${["viewer","manager","owner"].map(r =>
+          `<option${m.role===r?" selected":""}>${r}</option>`).join("")}</select>
+        <button class="chip" aria-pressed="${m.active}" title="${m.active?"Switched on":"Switched off"}"
+          style="font-size:20px">${m.active?"●":"○"}</button>
+      </span></div></li>`);
+    const sel = li.querySelector("select"), tog = li.querySelector("button");
+    if(me){ sel.disabled = true; tog.disabled = true; }   // you cannot lock yourself out
+    sel.onchange = async () => {
+      const { error } = await db.from("farm_member").update({ role: sel.value })
+        .eq("user_id", m.user_id).eq("farm_id", S.farm.id);
+      if(error){ alert(error.message); sel.value = m.role; return; }
+      m.role = sel.value;
+    };
+    tog.onclick = async () => {
+      const { error } = await db.from("farm_member").update({ active: !m.active })
+        .eq("user_id", m.user_id).eq("farm_id", S.farm.id);
+      if(error){ alert(error.message); return; }
+      m.active = !m.active; render();
+    };
+    ul.appendChild(li);
+  }
+  wrap.appendChild(ul);
+
+  wrap.appendChild(el(`<h3 class="sec">Add someone</h3>`));
+  const form = el(`<form class="pad" style="display:grid;gap:10px">
+    <p class="hint" style="margin:0">They sign up at ${esc(location.hostname)} first, with their own email
+      and password. Then their email goes here.</p>
+    <label><span>Email they signed up with</span><input type="email" name="email" required autocomplete="off"></label>
+    <label><span>What they can do</span><select name="role">
+      <option value="viewer">Viewer — look, not touch</option>
+      <option value="manager">Manager — record and edit</option>
+      <option value="owner">Owner — everything, including people</option></select></label>
+    <button type="submit" class="btn">Add to ${esc(farmName())}</button>
+    <div class="msg" hidden></div></form>`);
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const fd = new FormData(form), msg = form.querySelector(".msg");
+    const { data, error } = await db.rpc("add_member", { p_email: fd.get("email"), p_role: fd.get("role") });
+    msg.hidden = false;
+    if(error){ msg.className = "msg err"; msg.textContent = error.message; return; }
+    msg.className = "msg ok"; msg.textContent = `${data} is on the farm.`;
+    form.reset(); await loadMembers(); render();
+  };
+  wrap.appendChild(form);
+
+  const back = el(`<div class="pad" style="padding-top:0"><button class="btn ghost">Back</button></div>`);
+  back.querySelector("button").onclick = () => { S.view="record"; render(); };
+  wrap.appendChild(back);
+  return wrap;
+}
+
 function viewSettings(){
   const wrap = el(`<div></div>`);
   wrap.appendChild(el(`<p class="hint" style="padding:14px 14px 0">Switch fields on to see them on an
@@ -3880,8 +3975,8 @@ function viewLogin(msg){
   const wrap = el(`<div class="login">
     <img src="/icon-192.png" alt="" width="76" height="76"
       style="display:block;margin:0 auto 16px;border-radius:17px">
-    <div class="mark">Buloke Farm</div>
-    <p class="tagline">Cattle records</p>
+    <div class="mark">${esc(farmName())}</div>
+    <p class="tagline">Livestock records</p>
     <form>
       <label><span>Email</span><input type="email" name="email" autocomplete="username" required></label>
       <label><span>Password</span><input type="password" name="pw" autocomplete="current-password" required></label>
@@ -3929,6 +4024,7 @@ async function render(){
   else if(S.view==="rec:tagdrop")   body = tagDrop();
   else if(S.view==="rec:closedue")  body = closeDue();
   else if(S.view==="rec:settings")  body = viewSettings();
+  else if(S.view==="rec:users")     body = viewUsers();
   else if(S.view==="editAnimal")    body = editAnimal();
   else if(S.view==="rec:store")     body = recStore();
   else if(S.view==="rec:newfeed")   body = recNewFeed();
@@ -3936,7 +4032,7 @@ async function render(){
   main.appendChild(body);
 
   const onHand = S.animals.filter(isActive).length;
-  const header = el(`<header><img class="mark" src="/mark.png" alt=""><h1>Buloke Farm</h1>
+  const header = el(`<header><img class="mark" src="${esc(farmLogo())}" alt=""><h1>${esc(farmName())}</h1>
     <span class="who">${onHand} head${
       S.me?.display_name ? " · "+esc(S.me.display_name.split(" ")[0]) : ""}</span>
     <button id="navbtn" aria-label="Menu">&#8801;</button></header>`);
@@ -3959,13 +4055,15 @@ async function boot(loginErr){
   const app = document.getElementById("app");
   try{
     const { data:{ session } } = await db.auth.getSession();
-    if(!session){ app.replaceChildren(viewLogin(loginErr)); return; }
+    if(!session){ await loadFarmPublic(); app.replaceChildren(viewLogin(loginErr)); return; }
     await loadMe();
     if(!S.me?.active){
-      app.replaceChildren(el(`<div class="login"><div class="mark">Buloke Farm</div>
-        <div class="msg err" style="margin:20px 0">Your account isn't switched on yet.
-        An owner needs to activate it before you can see the herd.</div>
-        <button class="btn ghost" onclick="location.reload()">Try again</button></div>`));
+      app.replaceChildren(el(`<div class="login"><div class="mark">${esc(farmName())}</div>
+        <div class="msg err" style="margin:20px 0">${S.farm
+          ? "Your account is switched off on this farm. An owner needs to switch it on before you can see the herd."
+          : "Your account isn't on a farm yet. Tell the owner the email you signed up with, and they add you under Record → Manage → Who can see this farm."}</div>
+        <button class="btn ghost" onclick="location.reload()">Try again</button>
+        <button class="btn ghost" onclick="window.__signOut().then(()=>location.reload())">Sign out</button></div>`));
       return;
     }
     await loadPrefs();

@@ -65,7 +65,16 @@
              '<span class="d">' + l[2] + "</span></a>";
     }).join("") +
     '<div class="nfoot"><button id="navout">Sign out</button>' +
-    '<p>admin.bulokefarm.com.au</p></div>';
+    '<p>' + location.hostname + '</p></div>';
+
+  // The farm's own name and mark, once a page knows them (v_me). Until
+  // then the drawer shows the app's. Pages call this after sign-in.
+  window.__setFarm = function (f) {
+    if (!f) return;
+    var b = d.querySelector(".nhead b"), img = d.querySelector(".nhead img");
+    if (f.name) b.textContent = f.name;
+    if (f.logo_url) img.src = f.logo_url;
+  };
 
   document.addEventListener("DOMContentLoaded", function () {
     document.body.appendChild(veil);

@@ -8,6 +8,11 @@ Cattle and sheep on one property, with a second PIC to come. Replaces a
 talking to a Supabase Postgres database. No build step, no server, no
 framework — the phone app is about 41 KB over the wire.
 
+Since migration 55 the one database holds more than one farm. Each
+farm's people see only that farm's records; the pages, the migrations
+and the deployment are shared. See *A farm is the layer above the PIC*
+below, and `farm_scope_plan.md` for how it was done and proved.
+
 Live at **https://admin.bulokefarm.com.au**
 
 ---
@@ -158,6 +163,27 @@ animal is — for NVD, NLIS and tax. `paddock.property_id` is which land.
 With two PICs on one property those are different things, and the
 paddock's PIC must never be used to filter a herd.
 
+**A farm is the layer above the PIC.** `farm` is who runs the app on
+this land; `property` is which registration each animal and paddock
+sits under. Richard and Dad are two own-PICs under the one farm and
+stock together; Toland Merino is another farm with PICs of its own.
+Every table carries `farm_id`, and every policy asks "is this row on
+the session's farm" before it asks about role. The pages never send
+`farm_id`: a root table defaults it from `current_farm()`, and a table
+that links to others takes it from what it links to, by a trigger that
+also refuses a link to anything the session cannot see — foreign keys
+are checked as the table owner and would not. Uniqueness that used to
+mean "one in the database" now means one per farm: stock codes, NLIS
+tags, NVD serials, lineage names, PICs in the address book, and the
+primary PIC. Nothing is stored twice and no view had to change,
+because every view runs as the caller. A login belongs to a farm
+through `farm_member`, which is where role and active live;
+`farm_user` is a profile. Owners add people by the email they signed
+up with, under **Record → Manage → Who can see this farm**. The
+Buloke mark is the app's own mark, on the loading screen and the
+home-screen icon for every farm; a farm's own logo, if it has one,
+appears once signed in.
+
 **A calving puts the calf on the ground.** Recording a calving used to
 write one row against the cow, and the calf was a line in her history
 with nothing in the herd to tag, sex or drench. `record_calving()`
@@ -269,14 +295,18 @@ feed_source ─┬─ feed_event ──┬─ paddock         LPA 3C / 3D
              │               └─ feed_event_ref   tags as written on paper
              └─ feed_adjustment                  recounts, spoilage
 
-property            PIC. is_primary drives the page letterheads
-farm_user           roles: viewer / manager / owner
+farm                who runs the app on this land: name, address, mark, hostname
+ └─ farm_member     who belongs to it, and as what: viewer / manager / owner
+property            PIC, under a farm. is_primary (one per farm) drives the page letterheads
+farm_user           profile: display name, phone. Role and active live on farm_member
 user_pref           per-user field visibility
 record_change_log   append-only audit trail
 ```
 
 `animal.species` is `cattle` or `sheep`. Stock codes are unique **per
-species** — `R 97` is a cow and also a ewe, and both are right.
+farm and species** — `R 97` is a cow and also a ewe, and both are right.
+Every table but `heartbeat`, `user_pref` and `farm_user` carries
+`farm_id`.
 
 ### Key views
 
@@ -305,6 +335,8 @@ species** — `R 97` is a cow and also a ewe, and both are right.
 | `v_cryo_location` | What is in each tank and canister |
 | `v_cryo_unmapped` | Females named on the register but not on file, and why |
 | `v_record_history` | Change log in plain language |
+| `v_me` | The signed-in login on its farm: role, active, and the farm's name and mark |
+| `v_farm_public` | Farm names and marks by hostname, for the login screen. Readable by anon, by design |
 
 ### Deliberately not used
 
@@ -344,9 +376,10 @@ public/                 served as-is by Cloudflare Pages
   _headers              cache and security headers, per clean URL
 supabase/
   migrations/           schema, applied in filename order
-  seed/                 data loads, run once, in numeric order
+  seed/buloke/          Buloke's data loads, run once, in numeric order
     notes/              flagged rows from each import
-    tools/              the xlsx -> SQL converters
+  seed/tools/           the xlsx -> SQL converters; last argument is the farm slug
+  config.toml           the Supabase CLI, for a local stack (ports 544xx)
   schema.sql            snapshot, written back by the backup workflow
 .github/workflows/      keepalive and backup
 ```
@@ -391,8 +424,18 @@ rebuild, so anything depending on imported records has to be a seed.
 | 49 | Join planning: `planned_joining`, `v_planned_joining` with the forecast, `plan_fulfilled()` closes the plan when the joining is recorded |
 | 50 | The ten AI joinings recorded ahead of their date become plans; the joinings go, kept in the change log |
 | 51 | The ten undated attempt-2 bull joinings for 2027-2028 removed — a fallback column, not a decision |
+| 52 | The `ensure_rls` event trigger written down; it existed only on the live database |
+| 53 | The farm: `farm`, `farm_member`, `current_farm()`, `my_role()` re-sourced, `v_me`, `v_farm_public`, `add_member()`, the `farm-logos` bucket |
+| 54 | `farm_id` on every table, backfilled to Buloke with the audit triggers off; links checked and farm derived by trigger; uniqueness per farm |
+| 55 | Every policy scoped to the session's farm; `farm_user.role` and `active` dropped; the unwritten `ai_semen_write` policy dropped |
 
 ### Seeds
+
+Under `seed/buloke/`. Each starts by naming its farm —
+`select set_config('app.farm', …)` — because a script run as
+`postgres` has no membership for `current_farm()` to find; without it
+every root insert fails with *No farm*. The same line goes at the top
+of anything you run by hand in the SQL editor that inserts records.
 
 | # | What |
 |---|---|
@@ -413,7 +456,15 @@ rebuild, so anything depending on imported records has to be a seed.
 
 The file is the record; running it is execution. If you paste SQL that
 isn't in a file, the repo quietly stops being true and a rebuild won't
-reproduce the database. `supabase/schema.sql` is the check — the backup
+reproduce the database. Migration 52 is what that looks like: an event
+trigger that lived only on the live database, and a rebuild that died
+at 48 because of it.
+
+A rebuild can be run locally: `supabase start` (Docker; only the
+database is enabled in `config.toml`) applies every migration to an
+empty database, and yesterday's backup artifact restores into a second
+database beside it for testing against real data. The farm-scope
+migrations were proved that way — see `farm_scope_plan.md` §8. `supabase/schema.sql` is the check — the backup
 job rewrites it weekly, so drift surfaces as a commit.
 
 Every migration is written to be **safely re-runnable** — `if not

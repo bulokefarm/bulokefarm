@@ -10,17 +10,23 @@
 -- the reference stub 'J 64 (SD)'; it is merged, not duplicated.
 -- ============================================================
 
+-- Every row below belongs to Buloke. The seeds run as postgres, where
+-- current_farm() has no membership to consult, so the farm is named
+-- here and every insert takes it by default (migration 54).
+select set_config('app.farm', (select id::text from farm where slug = 'buloke'), false);
+
+
 begin;
 
 -- Heritage lines and PICs
-insert into heritage (name) values ('Buloke') on conflict (name) do nothing;
-insert into heritage (name) values ('Garratt') on conflict (name) do nothing;
-insert into heritage (name) values ('Rupari') on conflict (name) do nothing;
-insert into property (pic, is_own) values ('3BWWR044', false) on conflict (pic) do nothing;
-insert into property (pic, is_own) values ('3BWWY089', true) on conflict (pic) do nothing;
-insert into property (pic, is_own) values ('3MISK126', false) on conflict (pic) do nothing;
-insert into property (pic, is_own) values ('3MISL022', false) on conflict (pic) do nothing;
-insert into property (pic, is_own) values ('3SGLE223', false) on conflict (pic) do nothing;
+insert into heritage (name) values ('Buloke') on conflict (farm_id, name) do nothing;
+insert into heritage (name) values ('Garratt') on conflict (farm_id, name) do nothing;
+insert into heritage (name) values ('Rupari') on conflict (farm_id, name) do nothing;
+insert into property (pic, is_own) values ('3BWWR044', false) on conflict (farm_id, pic) do nothing;
+insert into property (pic, is_own) values ('3BWWY089', true) on conflict (farm_id, pic) do nothing;
+insert into property (pic, is_own) values ('3MISK126', false) on conflict (farm_id, pic) do nothing;
+insert into property (pic, is_own) values ('3MISL022', false) on conflict (farm_id, pic) do nothing;
+insert into property (pic, is_own) values ('3SGLE223', false) on conflict (farm_id, pic) do nothing;
 
 -- External sires and dams not already on file
 insert into animal (name, origin, sex) select '6MGdSlam', 'reference', 'unknown' where not exists (select 1 from animal where name = '6MGdSlam');

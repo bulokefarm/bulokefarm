@@ -143,11 +143,19 @@ const $ = s => document.querySelector(s);
 // right answer, and the primary registration is the one this page
 // trades under.
 let HOME = { pic: "", trading_name: "Buloke Farm", address: "" };
+let ME = null;
+// The farm's name and mark, for the tab, the masthead and the menu (v_me, migration 53).
+async function loadFarm(){
+  const { data } = await db.from("v_me").select("role,active,farm_name,logo_url").maybeSingle(); ME = data;
+  if(ME){ document.title = document.title.replace("Buloke Farm", ME.farm_name);
+          if(ME.logo_url) document.querySelector(".masthead img").src = ME.logo_url;
+          window.__setFarm?.({ name: ME.farm_name, logo_url: ME.logo_url }); }
+}
 async function loadHome(){
   const { data } = await db.from("property")
     .select("pic,trading_name,address").eq("is_primary", true).maybeSingle();
   if(data) HOME = { ...HOME, ...data };
-  document.getElementById("tradingname").textContent = HOME.trading_name || "Buloke Farm";
+  document.getElementById("tradingname").textContent = HOME.trading_name || ME?.farm_name || "Buloke Farm";
   document.getElementById("letterhead").innerHTML =
     `${esc(HOME.address||"")}<br>PIC <b>${esc(HOME.pic||"—")}</b>`;
 }
@@ -380,6 +388,7 @@ window.__signOut = () => db.auth.signOut();
     const { error } = await db.auth.signInWithPassword({email, password:pw});
     if(error){ alert(error.message); location.reload(); return; }
   }
+  await loadFarm();
   await loadHome();
   const [y, c] = await Promise.all([
     db.from("v_stock_year").select("*").order("species").order("fy", {ascending:false}),
