@@ -4063,8 +4063,8 @@ function viewUsers(){
 
   wrap.appendChild(el(`<h3 class="sec">Add someone</h3>`));
   const form = el(`<form class="pad" style="display:grid;gap:10px">
-    <p class="hint" style="margin:0">They sign up at ${esc(location.hostname)} first, with their own email
-      and password. Then their email goes here.</p>
+    <p class="hint" style="margin:0">They need a login first, and there is no sign-up screen: whoever
+      looks after the app creates it, with their email and a password. Then their email goes here.</p>
     <label><span>Email they signed up with</span><input type="email" name="email" required autocomplete="off"></label>
     <label><span>What they can do</span><select name="role">
       <option value="viewer">Viewer — look, not touch</option>
