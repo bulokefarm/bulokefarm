@@ -430,6 +430,7 @@ rebuild, so anything depending on imported records has to be a seed.
 | 55 | Every policy scoped to the session's farm; `farm_user.role` and `active` dropped; the unwritten `ai_semen_write` policy dropped |
 | 56 | Where each farm is: `farm.lat`/`lng`, carried by `v_me`, so the paddock editor opens on the signed-in farm |
 | 57 | A login on several farms can see them (`v_my_farms`) and switch: the menu lists them, and on the phone the mark at top left opens it |
+| 58 | `animal.gestation_days` allows 130 to 310, not the cattle-only 250 to 310 that refused every ewe |
 
 ### Seeds
 
