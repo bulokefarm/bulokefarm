@@ -1026,6 +1026,19 @@ async function openEditor(kind, id, preset = null){
     : `<h4>Change history</h4><ul style="margin:0;padding:0"><li>Never edited.</li></ul>`;
 }
 
+// Farms this login is on, for the switch in the menu (v_my_farms, migration 57).
+// Switching is a change to my own profile's current farm, then a fresh page.
+async function loadFarms(){
+  const { data } = await db.from("v_my_farms").select("*");
+  const farms = data || [];
+  window.__setFarms?.(farms, async id => {
+    const { data:{ user } } = await db.auth.getUser();
+    const { error } = await db.from("farm_user").update({ current_farm_id: id }).eq("id", user.id);
+    if(error){ alert(error.message); return; }
+    location.reload();
+  });
+  return farms;
+}
 window.__signOut = () => db.auth.signOut();
 
 (async () => {
@@ -1042,7 +1055,7 @@ window.__signOut = () => db.auth.signOut();
     const { data } = await db.from("v_me").select("role,active,farm_name,logo_url").maybeSingle(); ME = data;
     if(ME){ document.title = document.title.replace("Buloke Farm", ME.farm_name);
             if(ME.logo_url) document.querySelector(".masthead img").src = ME.logo_url;
-            window.__setFarm?.({ name: ME.farm_name, logo_url: ME.logo_url }); }
+            window.__setFarm?.({ name: ME.farm_name, logo_url: ME.logo_url }); loadFarms(); }
   }
   await Promise.all([loadHome(), loadPaddocks()]);
   run();

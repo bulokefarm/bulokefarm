@@ -567,7 +567,7 @@ const dofHTML = a => a.days_on_feed == null ? ""
       a.days_on_feed} d fed</span>`;
 
 // ─── state ──────────────────────────────────────────────────────
-const S = { me:null, farm:null, farmPublic:undefined, members:[], animals:[], herdMode:"list", species:"all", treeLink:null, cryoLot:null, joinMode:"natural", pending:[], plans:[], editPlan:null, treeFam:undefined, treePend:false, paddocks:[], feeds:[], feedsDone:[], refs:{}, prefs:null, selFeed:null, closeDue:null, view:"herd", filter:"all", q:"", sel:null, selPk:null, busy:false };
+const S = { me:null, farm:null, farms:[], farmPublic:undefined, members:[], animals:[], herdMode:"list", species:"all", treeLink:null, cryoLot:null, joinMode:"natural", pending:[], plans:[], editPlan:null, treeFam:undefined, treePend:false, paddocks:[], feeds:[], feedsDone:[], refs:{}, prefs:null, selFeed:null, closeDue:null, view:"herd", filter:"all", q:"", sel:null, selPk:null, busy:false };
 
 // ═══ data ═══════════════════════════════════════════════════════
 async function loadHerd(){
@@ -639,9 +639,23 @@ async function loadMe(){
   S.me = data ? {...data, email:user.email} : {id:user.id, email:user.email, role:null, active:false};
   S.farm = data ? { id:data.farm_id, slug:data.slug, name:data.farm_name,
                     address:data.farm_address, logo_url:data.logo_url } : null;
-  if(S.farm){ document.title = S.farm.name; window.__setFarm?.(S.farm); }
+  if(S.farm){ document.title = S.farm.name; window.__setFarm?.(S.farm); S.farms = await loadFarms(); }
   return S.me;
 }
+// Farms this login is on, for the switch in the menu (v_my_farms, migration 57).
+// Switching is a change to my own profile's current farm, then a fresh page.
+async function loadFarms(){
+  const { data } = await db.from("v_my_farms").select("*");
+  const farms = data || [];
+  window.__setFarms?.(farms, async id => {
+    const { data:{ user } } = await db.auth.getUser();
+    const { error } = await db.from("farm_user").update({ current_farm_id: id }).eq("id", user.id);
+    if(error){ alert(error.message); return; }
+    location.reload();
+  });
+  return farms;
+}
+
 const canWrite = () => S.me && S.me.active && (S.me.role==="owner" || S.me.role==="manager");
 const isOwner  = () => S.me && S.me.active && S.me.role==="owner";
 // The farm's name and mark once signed in; before that, whatever the
@@ -4032,10 +4046,17 @@ async function render(){
   main.appendChild(body);
 
   const onHand = S.animals.filter(isActive).length;
-  const header = el(`<header><img class="mark" src="${esc(farmLogo())}" alt=""><h1>${esc(farmName())}</h1>
+  const header = el(`<header><img class="mark" src="${esc(farmLogo())}" alt=""><h1>${esc(farmName())}${
+      S.farms.length > 1 ? ` <small style="font-weight:400;color:var(--ink2)">▾</small>` : ""}</h1>
     <span class="who">${onHand} head${
       S.me?.display_name ? " · "+esc(S.me.display_name.split(" ")[0]) : ""}</span>
     <button id="navbtn" aria-label="Menu">&#8801;</button></header>`);
+  // On more than one farm, the mark and name at top left open the menu,
+  // where the switch is.
+  if(S.farms.length > 1) for(const t of header.querySelectorAll("img.mark, h1")){
+    t.style.cursor = "pointer"; t.title = "Switch farm";
+    t.onclick = () => header.querySelector("#navbtn").click();
+  }
 
   const nav = el(`<nav>
     <button aria-current="${S.view==="herd"||S.view==="detail"}"><b>◉</b>Herd</button>

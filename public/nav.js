@@ -46,6 +46,12 @@
   #navdrawer .nfoot button{width:100%;min-height:44px;border:1px solid #D9D6CC;border-radius:9px;
     background:#FFF;font:inherit;font-size:14px;font-weight:600;cursor:pointer;color:#8C2F2A}
   #navdrawer .nfoot p{margin:10px 0 0;font-size:11.5px;color:#5A574E;text-align:center}
+  #navdrawer .nfarms{border-bottom:1px solid #D9D6CC;padding:10px 16px 8px}
+  #navdrawer .nfarms p{margin:0 0 4px;font-size:11.5px;letter-spacing:.12em;text-transform:uppercase;color:#5A574E}
+  #navdrawer .nfarms button{display:flex;align-items:center;gap:10px;width:100%;min-height:42px;border:0;
+    background:none;font:inherit;font-size:15px;text-align:left;cursor:pointer;padding:6px 0;color:inherit}
+  #navdrawer .nfarms button[aria-current]{font-weight:600;cursor:default}
+  #navdrawer .nfarms img{width:24px;height:24px;border-radius:6px}
   @media print{#navbtn,#navveil,#navdrawer{display:none !important}}`;
   document.head.appendChild(css);
 
@@ -74,6 +80,26 @@
     var b = d.querySelector(".nhead b"), img = d.querySelector(".nhead img");
     if (f.name) b.textContent = f.name;
     if (f.logo_url) img.src = f.logo_url;
+  };
+
+  // The farms this login is on, and what to do when one is picked
+  // (v_my_farms, migration 57). One farm: nothing is shown.
+  var escq = function (s) { return String(s).replace(/[&<>"]/g, function (c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); };
+  window.__setFarms = function (farms, onPick) {
+    var old = d.querySelector(".nfarms"); if (old) old.remove();
+    if (!farms || farms.length < 2) return;
+    var box = document.createElement("div"); box.className = "nfarms";
+    box.innerHTML = "<p>Switch farm</p>" + farms.map(function (f) {
+      return '<button type="button" data-id="' + escq(f.farm_id) + '"' +
+        (f.is_current ? ' aria-current="true"' : "") + '><img src="' + escq(f.logo_url || "/mark.png") +
+        '" alt="">' + escq(f.name) + (f.is_current ? " ·" : "") + "</button>";
+    }).join("");
+    box.addEventListener("click", function (e) {
+      var b = e.target.closest("button[data-id]");
+      if (b && !b.hasAttribute("aria-current")) onPick(b.getAttribute("data-id"));
+    });
+    d.querySelector(".nhead").after(box);
   };
 
   document.addEventListener("DOMContentLoaded", function () {

@@ -526,6 +526,19 @@ function renderPanel(){
 }
 
 // ── boot ────────────────────────────────────────────────────────
+// Farms this login is on, for the switch in the menu (v_my_farms, migration 57).
+// Switching is a change to my own profile's current farm, then a fresh page.
+async function loadFarms(){
+  const { data } = await db.from("v_my_farms").select("*");
+  const farms = data || [];
+  window.__setFarms?.(farms, async id => {
+    const { data:{ user } } = await db.auth.getUser();
+    const { error } = await db.from("farm_user").update({ current_farm_id: id }).eq("id", user.id);
+    if(error){ alert(error.message); return; }
+    location.reload();
+  });
+  return farms;
+}
 window.__signOut = () => db.auth.signOut();
 
 (async () => {
@@ -547,7 +560,7 @@ window.__signOut = () => db.auth.signOut();
                      .bindTooltip((me.farm_address || me.farm_name).split(",")[0]);
             }
             const im = document.querySelector("aside header img"); if(im && me.logo_url) im.src = me.logo_url;
-            window.__setFarm?.({ name: me.farm_name, logo_url: me.logo_url }); } }
+            window.__setFarm?.({ name: me.farm_name, logo_url: me.logo_url }); loadFarms(); } }
   renderPanel();
   await load();
 })();
