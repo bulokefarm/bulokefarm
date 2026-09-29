@@ -107,7 +107,9 @@ const esc = s => String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">
 const map = L.map("map",{zoomControl:true}).setView(HOME, 16);
 L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
   {maxZoom:20, attribution:"Imagery &copy; Esri"}).addTo(map);
-L.marker(HOME).addTo(map).bindTooltip("267 North Canal Rd");
+// HOME is only where the map opens before the farm is known; the farm's
+// own point replaces it once v_me has answered (migration 56).
+const homePin = L.marker(HOME).addTo(map).bindTooltip("267 North Canal Rd");
 
 // ── local-plane area, hectares ──────────────────────────────────
 // Projecting to a tangent plane is accurate to well under 1% at
@@ -535,9 +537,15 @@ window.__signOut = () => db.auth.signOut();
     if(error){ alert(error.message); location.reload(); return; }
   }
   // The farm's address under the heading, its name on the tab, its mark in the menu (v_me, migration 53).
-  { const { data:me } = await db.from("v_me").select("farm_name,farm_address,logo_url").maybeSingle();
+  { const { data:me } = await db.from("v_me").select("farm_name,farm_address,logo_url,lat,lng").maybeSingle();
     if(me){ document.title = document.title.replace("Buloke Farm", me.farm_name);
             if(me.farm_address) document.getElementById("farmaddr").textContent = me.farm_address;
+            // Open on this farm. Paddocks, once traced, take over the view in load().
+            if(me.lat != null && me.lng != null){
+              map.setView([Number(me.lat), Number(me.lng)], 15);
+              homePin.setLatLng([Number(me.lat), Number(me.lng)])
+                     .bindTooltip((me.farm_address || me.farm_name).split(",")[0]);
+            }
             const im = document.querySelector("aside header img"); if(im && me.logo_url) im.src = me.logo_url;
             window.__setFarm?.({ name: me.farm_name, logo_url: me.logo_url }); } }
   renderPanel();

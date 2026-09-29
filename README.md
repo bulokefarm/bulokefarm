@@ -428,6 +428,7 @@ rebuild, so anything depending on imported records has to be a seed.
 | 53 | The farm: `farm`, `farm_member`, `current_farm()`, `my_role()` re-sourced, `v_me`, `v_farm_public`, `add_member()`, the `farm-logos` bucket |
 | 54 | `farm_id` on every table, backfilled to Buloke with the audit triggers off; links checked and farm derived by trigger; uniqueness per farm |
 | 55 | Every policy scoped to the session's farm; `farm_user.role` and `active` dropped; the unwritten `ai_semen_write` policy dropped |
+| 56 | Where each farm is: `farm.lat`/`lng`, carried by `v_me`, so the paddock editor opens on the signed-in farm |
 
 ### Seeds
 
