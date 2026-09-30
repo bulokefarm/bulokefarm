@@ -438,6 +438,7 @@ rebuild, so anything depending on imported records has to be a seed.
 | 58 | `animal.gestation_days` allows 130 to 310, not the cattle-only 250 to 310 that refused every ewe |
 | 59 | Bringing stock on: `receive_stock()`, bought in or bred here, by tag or head count, with the inward consignment for LPA 5A |
 | 60 | `add_member()` no longer tells an owner to have someone sign up; logins are created, there is no sign-up screen |
+| 61 | `animal.polled` becomes `animal.horn`: P or H as seen, PP, PH or HH as tested. `animal.born_as`: single, twin, triplet, as a stud records it |
 
 ### Seeds
 

@@ -172,19 +172,20 @@ def main():
     for r in live_rows:
         code = norm_stock(g(r, 'stock'))
         sex = str(g(r, 'sex') or 'unknown').lower()
+        # P or H as the sheet saw it; the genotype (PP/PH/HH) was never tested here.
         ph = str(g(r, 'ph') or '').strip().upper()
-        polled = 'true' if ph == 'P' else ('false' if ph == 'H' else 'null')
+        horn = q(ph) if ph in ('P', 'H') else 'null'
         purch = g(r, 'purch')
         origin = 'purchased' if purch else 'bred'
         cols = f"""insert into animal (
   stock_code, year_letter, herd_number, name, nlis_tag, origin, sex, dob,
-  breed, grade, coat_colour, polled, marking_code,
+  breed, grade, coat_colour, horn, marking_code,
   heritage_id, property_id, origin_property_id, purchased_on, purchase_note,
   birth_weight_kg, weaned_on, notes
 ) values (
   {q(code)}, {q(str(g(r,'letter')).strip() if g(r,'letter') else None)}, {q(g(r,'num'))},
   {q(g(r,'name'))}, {q(g(r,'nlis'))}, '{origin}', {q(sex)}, {q(g(r,'dob'))},
-  {q(g(r,'breed'))}, {q(g(r,'grade'))}, {q(g(r,'colour'))}, {polled}, {q(g(r,'mark'))},
+  {q(g(r,'breed'))}, {q(g(r,'grade'))}, {q(g(r,'colour'))}, {horn}, {q(g(r,'mark'))},
   (select id from heritage where name = {q(g(r,'heritage'))}),
   (select id from property where pic = {q(g(r,'pic'))}),
   (select id from property where pic = {q(g(r,'orig_pic'))}),

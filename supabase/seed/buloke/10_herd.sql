@@ -45,13 +45,13 @@ insert into animal (name, origin, sex) values ('Yulong Trifecta T30', 'reference
 -- Resident animals
 insert into animal (
   stock_code, year_letter, herd_number, name, nlis_tag, origin, sex, dob,
-  breed, grade, coat_colour, polled, marking_code,
+  breed, grade, coat_colour, horn, marking_code,
   heritage_id, property_id, origin_property_id, purchased_on, purchase_note,
   birth_weight_kg, weaned_on, notes
 ) values (
   'N 84', 'N', 84,
   'Nina', '3BWWY089XBH0035', 'bred', 'female', '2017-09-21',
-  'Red Angus X Sth Devon', '1/2', 'brown/red', true, 'R',
+  'Red Angus X Sth Devon', '1/2', 'brown/red', 'P', 'R',
   (select id from heritage where name = 'Buloke'),
   (select id from property where pic = '3BWWY089'),
   (select id from property where pic = '3MISK126'),
@@ -60,13 +60,13 @@ insert into animal (
 );
 insert into animal (
   stock_code, year_letter, herd_number, name, nlis_tag, origin, sex, dob,
-  breed, grade, coat_colour, polled, marking_code,
+  breed, grade, coat_colour, horn, marking_code,
   heritage_id, property_id, origin_property_id, purchased_on, purchase_note,
   birth_weight_kg, weaned_on, notes
 ) values (
   'N 82', 'N', 82,
   'Nessa', null, 'bred', 'female', '2017-02-16',
-  'Red Angus', 'P', 'brown/red', true, 'R',
+  'Red Angus', 'P', 'brown/red', 'P', 'R',
   (select id from heritage where name = 'Buloke'),
   (select id from property where pic = '3BWWY089'),
   (select id from property where pic = '3MISK126'),
@@ -75,13 +75,13 @@ insert into animal (
 );
 insert into animal (
   stock_code, year_letter, herd_number, name, nlis_tag, origin, sex, dob,
-  breed, grade, coat_colour, polled, marking_code,
+  breed, grade, coat_colour, horn, marking_code,
   heritage_id, property_id, origin_property_id, purchased_on, purchase_note,
   birth_weight_kg, weaned_on, notes
 ) values (
   'L 74', 'L', 74,
   'Lou Lou', '3MISL022XBK00461', 'bred', 'female', '2015-09-19',
-  'Red Angus X Sth Devon', '1/2', 'brown/red', true, 'R',
+  'Red Angus X Sth Devon', '1/2', 'brown/red', 'P', 'R',
   (select id from heritage where name = 'Buloke'),
   (select id from property where pic = '3BWWY089'),
   (select id from property where pic = '3BWTW595'),
@@ -90,13 +90,13 @@ insert into animal (
 );
 insert into animal (
   stock_code, year_letter, herd_number, name, nlis_tag, origin, sex, dob,
-  breed, grade, coat_colour, polled, marking_code,
+  breed, grade, coat_colour, horn, marking_code,
   heritage_id, property_id, origin_property_id, purchased_on, purchase_note,
   birth_weight_kg, weaned_on, notes
 ) values (
   'R 08', 'R', 8,
   'Raven', '3BWWY089XBL0059', 'bred', 'female', '2020-04-10',
-  'Angus Blonde X', '1/2', 'black', true, null,
+  'Angus Blonde X', '1/2', 'black', 'P', null,
   (select id from heritage where name = 'Buloke'),
   (select id from property where pic = '3BWWY089'),
   (select id from property where pic = '3BWWY089'),
@@ -105,13 +105,13 @@ insert into animal (
 );
 insert into animal (
   stock_code, year_letter, herd_number, name, nlis_tag, origin, sex, dob,
-  breed, grade, coat_colour, polled, marking_code,
+  breed, grade, coat_colour, horn, marking_code,
   heritage_id, property_id, origin_property_id, purchased_on, purchase_note,
   birth_weight_kg, weaned_on, notes
 ) values (
   'S 05', 'S', 5,
   'Bre. Saintly S5', '3BWWR044LBR00549', 'purchased', 'female', '2021-04-15',
-  'South Devon', 'P', null, true, 'R',
+  'South Devon', 'P', null, 'P', 'R',
   (select id from heritage where name = 'Garratt'),
   (select id from property where pic = '3BWWY089'),
   (select id from property where pic = '3BWWR044'),
@@ -120,13 +120,13 @@ insert into animal (
 );
 insert into animal (
   stock_code, year_letter, herd_number, name, nlis_tag, origin, sex, dob,
-  breed, grade, coat_colour, polled, marking_code,
+  breed, grade, coat_colour, horn, marking_code,
   heritage_id, property_id, origin_property_id, purchased_on, purchase_note,
   birth_weight_kg, weaned_on, notes
 ) values (
   'S 15', 'S', 15,
   'Bre. Senorita S15', '3BWWR044LBR00559', 'purchased', 'female', '2021-11-15',
-  'South Devon', 'P', null, true, 'R',
+  'South Devon', 'P', null, 'P', 'R',
   (select id from heritage where name = 'Garratt'),
   (select id from property where pic = '3BWWY089'),
   (select id from property where pic = '3BWWR044'),
@@ -135,13 +135,13 @@ insert into animal (
 );
 insert into animal (
   stock_code, year_letter, herd_number, name, nlis_tag, origin, sex, dob,
-  breed, grade, coat_colour, polled, marking_code,
+  breed, grade, coat_colour, horn, marking_code,
   heritage_id, property_id, origin_property_id, purchased_on, purchase_note,
   birth_weight_kg, weaned_on, notes
 ) values (
   'S 16', 'S', 16,
   'Bre. Sandy S16', '3BWWR044LBR00558', 'purchased', 'female', '2021-11-15',
-  'South Devon', 'P', null, true, 'R',
+  'South Devon', 'P', null, 'P', 'R',
   (select id from heritage where name = 'Garratt'),
   (select id from property where pic = '3BWWY089'),
   (select id from property where pic = '3BWWR044'),
@@ -150,13 +150,13 @@ insert into animal (
 );
 insert into animal (
   stock_code, year_letter, herd_number, name, nlis_tag, origin, sex, dob,
-  breed, grade, coat_colour, polled, marking_code,
+  breed, grade, coat_colour, horn, marking_code,
   heritage_id, property_id, origin_property_id, purchased_on, purchase_note,
   birth_weight_kg, weaned_on, notes
 ) values (
   'Q 32', 'S', 32,
   'Bre. Quirky Q32', '3BWWR044LBQ00495', 'purchased', 'female', '2021-08-31',
-  'South Devon', 'P', null, true, 'R',
+  'South Devon', 'P', null, 'P', 'R',
   (select id from heritage where name = 'Garratt'),
   (select id from property where pic = '3BWWY089'),
   (select id from property where pic = '3BWWR044'),
@@ -165,13 +165,13 @@ insert into animal (
 );
 insert into animal (
   stock_code, year_letter, herd_number, name, nlis_tag, origin, sex, dob,
-  breed, grade, coat_colour, polled, marking_code,
+  breed, grade, coat_colour, horn, marking_code,
   heritage_id, property_id, origin_property_id, purchased_on, purchase_note,
   birth_weight_kg, weaned_on, notes
 ) values (
   'T 02', 'T', 2,
   'Bre. Tulip T2', '3BWWR044LBS00571', 'purchased', 'female', '2022-01-04',
-  'South Devon', 'P', null, true, 'Br',
+  'South Devon', 'P', null, 'P', 'Br',
   (select id from heritage where name = 'Garratt'),
   (select id from property where pic = '3BWWY089'),
   (select id from property where pic = '3BWWR044'),
@@ -180,13 +180,13 @@ insert into animal (
 );
 insert into animal (
   stock_code, year_letter, herd_number, name, nlis_tag, origin, sex, dob,
-  breed, grade, coat_colour, polled, marking_code,
+  breed, grade, coat_colour, horn, marking_code,
   heritage_id, property_id, origin_property_id, purchased_on, purchase_note,
   birth_weight_kg, weaned_on, notes
 ) values (
   'T 14', 'T', 14,
   'Bre. Tonnie T14', '3BWWR044LBS00583', 'purchased', 'female', '2022-02-10',
-  'South Devon', 'P', null, true, 'R',
+  'South Devon', 'P', null, 'P', 'R',
   (select id from heritage where name = 'Garratt'),
   (select id from property where pic = '3BWWY089'),
   (select id from property where pic = '3BWWR044'),
@@ -195,13 +195,13 @@ insert into animal (
 );
 insert into animal (
   stock_code, year_letter, herd_number, name, nlis_tag, origin, sex, dob,
-  breed, grade, coat_colour, polled, marking_code,
+  breed, grade, coat_colour, horn, marking_code,
   heritage_id, property_id, origin_property_id, purchased_on, purchase_note,
   birth_weight_kg, weaned_on, notes
 ) values (
   'T 43', 'T', 43,
   'Bre. Teenova T43', '3BWWR044LBS00613', 'purchased', 'female', '2022-03-15',
-  'South Devon', 'P', null, true, 'R',
+  'South Devon', 'P', null, 'P', 'R',
   (select id from heritage where name = 'Garratt'),
   (select id from property where pic = '3BWWY089'),
   (select id from property where pic = '3BWWR044'),
@@ -210,13 +210,13 @@ insert into animal (
 );
 insert into animal (
   stock_code, year_letter, herd_number, name, nlis_tag, origin, sex, dob,
-  breed, grade, coat_colour, polled, marking_code,
+  breed, grade, coat_colour, horn, marking_code,
   heritage_id, property_id, origin_property_id, purchased_on, purchase_note,
   birth_weight_kg, weaned_on, notes
 ) values (
   'U 18', 'U', 8,
   'Bre. Ursula U18', '3BWWR044', 'bred', 'female', '2022-11-15',
-  'South Devon', 'P', null, true, 'R',
+  'South Devon', 'P', null, 'P', 'R',
   (select id from heritage where name = 'Garratt'),
   (select id from property where pic = '3BWWY089'),
   (select id from property where pic = '3BWWR044'),
@@ -225,13 +225,13 @@ insert into animal (
 );
 insert into animal (
   stock_code, year_letter, herd_number, name, nlis_tag, origin, sex, dob,
-  breed, grade, coat_colour, polled, marking_code,
+  breed, grade, coat_colour, horn, marking_code,
   heritage_id, property_id, origin_property_id, purchased_on, purchase_note,
   birth_weight_kg, weaned_on, notes
 ) values (
   'V 12', 'V', 12,
   'Vivvianne', null, 'bred', 'female', '2025-09-07',
-  'South Devon', 'P', 'orange-tan', true, 'R',
+  'South Devon', 'P', 'orange-tan', 'P', 'R',
   (select id from heritage where name = 'Buloke'),
   (select id from property where pic = '3BWWY089'),
   (select id from property where pic = null),
@@ -240,13 +240,13 @@ insert into animal (
 );
 insert into animal (
   stock_code, year_letter, herd_number, name, nlis_tag, origin, sex, dob,
-  breed, grade, coat_colour, polled, marking_code,
+  breed, grade, coat_colour, horn, marking_code,
   heritage_id, property_id, origin_property_id, purchased_on, purchase_note,
   birth_weight_kg, weaned_on, notes
 ) values (
   'V 14', 'V', 14,
   'Veronna', null, 'bred', 'female', '2024-09-09',
-  'South Devon', 'P', 'orange-tan', true, 'R',
+  'South Devon', 'P', 'orange-tan', 'P', 'R',
   (select id from heritage where name = 'Buloke'),
   (select id from property where pic = '3BWWY089'),
   (select id from property where pic = null),
@@ -255,13 +255,13 @@ insert into animal (
 );
 insert into animal (
   stock_code, year_letter, herd_number, name, nlis_tag, origin, sex, dob,
-  breed, grade, coat_colour, polled, marking_code,
+  breed, grade, coat_colour, horn, marking_code,
   heritage_id, property_id, origin_property_id, purchased_on, purchase_note,
   birth_weight_kg, weaned_on, notes
 ) values (
   'V 21', 'V', 21,
   'V-Market-21', null, 'bred', 'male', '2024-09-09',
-  'South Devon', 'P', 'orange-tan', true, 'R',
+  'South Devon', 'P', 'orange-tan', 'P', 'R',
   (select id from heritage where name = 'Buloke'),
   (select id from property where pic = '3BWWY089'),
   (select id from property where pic = null),
@@ -270,13 +270,13 @@ insert into animal (
 );
 insert into animal (
   stock_code, year_letter, herd_number, name, nlis_tag, origin, sex, dob,
-  breed, grade, coat_colour, polled, marking_code,
+  breed, grade, coat_colour, horn, marking_code,
   heritage_id, property_id, origin_property_id, purchased_on, purchase_note,
   birth_weight_kg, weaned_on, notes
 ) values (
   'V 27', 'V', 27,
   'V-Market-27', null, 'bred', 'male', '2024-10-07',
-  'South Devon', 'P', 'orange-tan', true, 'R',
+  'South Devon', 'P', 'orange-tan', 'P', 'R',
   (select id from heritage where name = 'Buloke'),
   (select id from property where pic = '3BWWY089'),
   (select id from property where pic = null),
@@ -285,13 +285,13 @@ insert into animal (
 );
 insert into animal (
   stock_code, year_letter, herd_number, name, nlis_tag, origin, sex, dob,
-  breed, grade, coat_colour, polled, marking_code,
+  breed, grade, coat_colour, horn, marking_code,
   heritage_id, property_id, origin_property_id, purchased_on, purchase_note,
   birth_weight_kg, weaned_on, notes
 ) values (
   'V 16', 'V', 16,
   'V-Market-16', null, 'bred', 'female', '2024-10-13',
-  'South Devon X Wagyu', 'F1-W', 'brown/red', true, null,
+  'South Devon X Wagyu', 'F1-W', 'brown/red', 'P', null,
   (select id from heritage where name = 'Buloke'),
   (select id from property where pic = '3BWWY089'),
   (select id from property where pic = null),
@@ -300,13 +300,13 @@ insert into animal (
 );
 insert into animal (
   stock_code, year_letter, herd_number, name, nlis_tag, origin, sex, dob,
-  breed, grade, coat_colour, polled, marking_code,
+  breed, grade, coat_colour, horn, marking_code,
   heritage_id, property_id, origin_property_id, purchased_on, purchase_note,
   birth_weight_kg, weaned_on, notes
 ) values (
   'V 20', 'V', 20,
   'V-Market-20', null, 'bred', 'female', '2024-10-26',
-  'South Devon X Wagyu', 'F1-W', 'black', true, 'Br',
+  'South Devon X Wagyu', 'F1-W', 'black', 'P', 'Br',
   (select id from heritage where name = 'Buloke'),
   (select id from property where pic = '3BWWY089'),
   (select id from property where pic = null),
@@ -315,13 +315,13 @@ insert into animal (
 );
 insert into animal (
   stock_code, year_letter, herd_number, name, nlis_tag, origin, sex, dob,
-  breed, grade, coat_colour, polled, marking_code,
+  breed, grade, coat_colour, horn, marking_code,
   heritage_id, property_id, origin_property_id, purchased_on, purchase_note,
   birth_weight_kg, weaned_on, notes
 ) values (
   'W 01', 'W', 1,
   'V-Market-01', null, 'bred', 'male', '2025-02-20',
-  'South Devon', 'P', 'brown', true, 'R',
+  'South Devon', 'P', 'brown', 'P', 'R',
   (select id from heritage where name = 'Buloke'),
   (select id from property where pic = '3BWWY089'),
   (select id from property where pic = null),
@@ -330,13 +330,13 @@ insert into animal (
 );
 insert into animal (
   stock_code, year_letter, herd_number, name, nlis_tag, origin, sex, dob,
-  breed, grade, coat_colour, polled, marking_code,
+  breed, grade, coat_colour, horn, marking_code,
   heritage_id, property_id, origin_property_id, purchased_on, purchase_note,
   birth_weight_kg, weaned_on, notes
 ) values (
   'W 03', 'W', 3,
   'V-Market-03', null, 'bred', 'male', '2025-04-08',
-  'South Devon', 'P', 'brown', true, 'R',
+  'South Devon', 'P', 'brown', 'P', 'R',
   (select id from heritage where name = 'Buloke'),
   (select id from property where pic = '3BWWY089'),
   (select id from property where pic = null),
@@ -345,13 +345,13 @@ insert into animal (
 );
 insert into animal (
   stock_code, year_letter, herd_number, name, nlis_tag, origin, sex, dob,
-  breed, grade, coat_colour, polled, marking_code,
+  breed, grade, coat_colour, horn, marking_code,
   heritage_id, property_id, origin_property_id, purchased_on, purchase_note,
   birth_weight_kg, weaned_on, notes
 ) values (
   'W 15', 'W', 15,
   'V-Market-15', null, 'bred', 'male', '2025-09-30',
-  'South Devon X Wagyu', 'F1-W', 'black', true, 'Br',
+  'South Devon X Wagyu', 'F1-W', 'black', 'P', 'Br',
   (select id from heritage where name = 'Buloke'),
   (select id from property where pic = '3BWWY089'),
   (select id from property where pic = null),
@@ -360,13 +360,13 @@ insert into animal (
 );
 insert into animal (
   stock_code, year_letter, herd_number, name, nlis_tag, origin, sex, dob,
-  breed, grade, coat_colour, polled, marking_code,
+  breed, grade, coat_colour, horn, marking_code,
   heritage_id, property_id, origin_property_id, purchased_on, purchase_note,
   birth_weight_kg, weaned_on, notes
 ) values (
   'W 12', 'W', 12,
   'B. Willow', null, 'bred', 'female', '2025-09-08',
-  'Red Angus X Sth Devon', null, 'brown', true, 'R',
+  'Red Angus X Sth Devon', null, 'brown', 'P', 'R',
   (select id from heritage where name = 'Buloke'),
   (select id from property where pic = '3BWWY089'),
   (select id from property where pic = null),
@@ -375,13 +375,13 @@ insert into animal (
 );
 insert into animal (
   stock_code, year_letter, herd_number, name, nlis_tag, origin, sex, dob,
-  breed, grade, coat_colour, polled, marking_code,
+  breed, grade, coat_colour, horn, marking_code,
   heritage_id, property_id, origin_property_id, purchased_on, purchase_note,
   birth_weight_kg, weaned_on, notes
 ) values (
   'W 14', 'W', 14,
   'B. Winnie', null, 'bred', 'female', '2025-09-14',
-  'South Devon', 'P', 'brown', true, 'R',
+  'South Devon', 'P', 'brown', 'P', 'R',
   (select id from heritage where name = 'Buloke'),
   (select id from property where pic = '3BWWY089'),
   (select id from property where pic = null),
@@ -390,13 +390,13 @@ insert into animal (
 );
 insert into animal (
   stock_code, year_letter, herd_number, name, nlis_tag, origin, sex, dob,
-  breed, grade, coat_colour, polled, marking_code,
+  breed, grade, coat_colour, horn, marking_code,
   heritage_id, property_id, origin_property_id, purchased_on, purchase_note,
   birth_weight_kg, weaned_on, notes
 ) values (
   'W 16', 'W', 16,
   'B. Waffles', null, 'bred', 'female', '2025-09-19',
-  'South Devon', 'P', 'brown', true, 'R',
+  'South Devon', 'P', 'brown', 'P', 'R',
   (select id from heritage where name = 'Buloke'),
   (select id from property where pic = '3BWWY089'),
   (select id from property where pic = null),
@@ -405,13 +405,13 @@ insert into animal (
 );
 insert into animal (
   stock_code, year_letter, herd_number, name, nlis_tag, origin, sex, dob,
-  breed, grade, coat_colour, polled, marking_code,
+  breed, grade, coat_colour, horn, marking_code,
   heritage_id, property_id, origin_property_id, purchased_on, purchase_note,
   birth_weight_kg, weaned_on, notes
 ) values (
   'W 18', 'W', 18,
   'B. Whitney', null, 'bred', 'female', '2025-09-29',
-  'Red Angus X Sth Devon', null, 'brown', true, 'R',
+  'Red Angus X Sth Devon', null, 'brown', 'P', 'R',
   (select id from heritage where name = 'Buloke'),
   (select id from property where pic = '3BWWY089'),
   (select id from property where pic = null),
@@ -420,13 +420,13 @@ insert into animal (
 );
 insert into animal (
   stock_code, year_letter, herd_number, name, nlis_tag, origin, sex, dob,
-  breed, grade, coat_colour, polled, marking_code,
+  breed, grade, coat_colour, horn, marking_code,
   heritage_id, property_id, origin_property_id, purchased_on, purchase_note,
   birth_weight_kg, weaned_on, notes
 ) values (
   'W 20', 'W', 20,
   'B. Winona', null, 'bred', 'female', '2025-10-09',
-  'South Devon', 'P', 'brown', true, 'R',
+  'South Devon', 'P', 'brown', 'P', 'R',
   (select id from heritage where name = 'Buloke'),
   (select id from property where pic = '3BWWY089'),
   (select id from property where pic = null),
@@ -435,13 +435,13 @@ insert into animal (
 );
 insert into animal (
   stock_code, year_letter, herd_number, name, nlis_tag, origin, sex, dob,
-  breed, grade, coat_colour, polled, marking_code,
+  breed, grade, coat_colour, horn, marking_code,
   heritage_id, property_id, origin_property_id, purchased_on, purchase_note,
   birth_weight_kg, weaned_on, notes
 ) values (
   'W 22', 'W', 22,
   'V-Market-22', null, 'bred', 'female', '2025-09-25',
-  'South Devon X Wagyu', 'F1-W', 'black', true, 'Br',
+  'South Devon X Wagyu', 'F1-W', 'black', 'P', 'Br',
   (select id from heritage where name = 'Buloke'),
   (select id from property where pic = '3BWWY089'),
   (select id from property where pic = null),
@@ -450,13 +450,13 @@ insert into animal (
 );
 insert into animal (
   stock_code, year_letter, herd_number, name, nlis_tag, origin, sex, dob,
-  breed, grade, coat_colour, polled, marking_code,
+  breed, grade, coat_colour, horn, marking_code,
   heritage_id, property_id, origin_property_id, purchased_on, purchase_note,
   birth_weight_kg, weaned_on, notes
 ) values (
   'W 24', 'W', 24,
   'V-Market-24', null, 'bred', 'female', '2025-10-30',
-  'South Devon X Wagyu', 'F1-W', 'black', true, 'Br',
+  'South Devon X Wagyu', 'F1-W', 'black', 'P', 'Br',
   (select id from heritage where name = 'Buloke'),
   (select id from property where pic = '3BWWY089'),
   (select id from property where pic = null),
@@ -465,13 +465,13 @@ insert into animal (
 );
 insert into animal (
   stock_code, year_letter, herd_number, name, nlis_tag, origin, sex, dob,
-  breed, grade, coat_colour, polled, marking_code,
+  breed, grade, coat_colour, horn, marking_code,
   heritage_id, property_id, origin_property_id, purchased_on, purchase_note,
   birth_weight_kg, weaned_on, notes
 ) values (
   'X 02', 'X', 2,
   'X - Two', null, 'bred', 'female', '2026-03-11',
-  'South Devon', 'P', 'brown', true, 'R',
+  'South Devon', 'P', 'brown', 'P', 'R',
   (select id from heritage where name = 'Buloke'),
   (select id from property where pic = '3BWWY089'),
   (select id from property where pic = null),
@@ -480,13 +480,13 @@ insert into animal (
 );
 insert into animal (
   stock_code, year_letter, herd_number, name, nlis_tag, origin, sex, dob,
-  breed, grade, coat_colour, polled, marking_code,
+  breed, grade, coat_colour, horn, marking_code,
   heritage_id, property_id, origin_property_id, purchased_on, purchase_note,
   birth_weight_kg, weaned_on, notes
 ) values (
   'X 05', 'X', 5,
   'X - Five', null, 'bred', 'male', '2026-03-20',
-  'South Devon', 'P', 'brown', true, 'R',
+  'South Devon', 'P', 'brown', 'P', 'R',
   (select id from heritage where name = 'Buloke'),
   (select id from property where pic = '3BWWY089'),
   (select id from property where pic = null),
@@ -495,13 +495,13 @@ insert into animal (
 );
 insert into animal (
   stock_code, year_letter, herd_number, name, nlis_tag, origin, sex, dob,
-  breed, grade, coat_colour, polled, marking_code,
+  breed, grade, coat_colour, horn, marking_code,
   heritage_id, property_id, origin_property_id, purchased_on, purchase_note,
   birth_weight_kg, weaned_on, notes
 ) values (
   'X 06', 'X', 6,
   'X - Six', null, 'bred', 'male', '2026-03-30',
-  'South Devon', 'P', 'brown', true, 'R',
+  'South Devon', 'P', 'brown', 'P', 'R',
   (select id from heritage where name = 'Buloke'),
   (select id from property where pic = '3BWWY089'),
   (select id from property where pic = null),

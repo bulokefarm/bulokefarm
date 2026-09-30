@@ -115,16 +115,16 @@ for r, tag, status in animals:
     sex = str(g(r,'Sex') or 'unknown').strip().lower()
     if sex not in ('female','male','steer'): sex = 'unknown'
     ph = str(g(r,'P/H') or '').strip().upper()
-    polled = 'true' if ph.startswith('P') else ('false' if ph.startswith('H') else 'null')
+    horn = "'P'" if ph.startswith('P') else ("'H'" if ph.startswith('H') else 'null')   # as seen, never tested
     dob = dt(g(r,'DOB'))
     if not dob: warn.append(f"row {r} ({tag}): no date of birth — age and pedigree dating unavailable")
     o.append(f"""insert into animal (stock_code, year_letter, herd_number, name, nlis_tag, origin,
-  sex, dob, breed, grade, coat_colour, polled, marking_code, birth_weight_kg,
+  sex, dob, breed, grade, coat_colour, horn, marking_code, birth_weight_kg,
   heritage_id, property_id, origin_property_id, notes)
 select {q(tag)}, {q(tag[0])}, {tag.split()[1].lstrip('0') or 0}, {q(g(r,'Name'))},
   {q(g(r,'NLIS Tag No') if str(g(r,'NLIS Tag No') or '').startswith('3') else None)},
   '{origin}', {q(sex)}, {q(dob)}, {q(g(r,'Breed'))}, {q(g(r,'Grade'))},
-  {q(g(r,'Bread Color'))}, {polled}, {q(g(r,'n/B/R'))}, {q(g(r,'Birth Wt'))},
+  {q(g(r,'Bread Color'))}, {horn}, {q(g(r,'n/B/R'))}, {q(g(r,'Birth Wt'))},
   (select id from heritage where name = {q(g(r,'Location'))}),
   (select id from property where pic = {q(g(r,'PIC'))}),
   (select id from property where pic = {q(g(r,'Original PIC'))}),

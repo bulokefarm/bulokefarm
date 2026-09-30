@@ -416,9 +416,11 @@ const AF = [
   ["dam_id","Dam","ref:dam","Breeding",1,0],
   ["sire_id","Sire","ref:sire","Breeding",1,0],
   ["birth_weight_kg","Birth weight (kg)","number","Breeding",0,0],
+  ["born_as","Born as","pick:1=Single|2=Twin|3=Triplet|4=Quads|5=Quins","Breeding",0,1],
   ["weaned_on","Weaned","date","Breeding",0,1],
   ["coat_colour","Coat colour","text","Markings",0,1],
-  ["polled","Polled","bool","Markings",0,1],
+  // P or H as seen; PP, PH, HH as tested. A stud breeds on the middle one.
+  ["horn","Horn","pick:P=P · polled|H=H · horned|PP=PP · polled, tested|PH=PH · polled, carries horn|HH=HH · horned, tested","Markings",0,1],
   ["marking_code","Marking code","text","Markings",0,1],
   ["heritage_id","Heritage line","ref:heritage","Provenance",0,1],
   ["property_id","PIC","ref:property","Provenance",0,1],
@@ -985,9 +987,10 @@ async function viewDetail(){
   if(shown("breed"))        F("Breed", esc(a.breed||"—"));
   if(shown("grade"))        F("Grade", esc(a.grade||"—"));
   if(shown("coat_colour"))  F("Coat colour", esc(a.coat_colour||"—"));
-  if(shown("polled"))       F("Polled", a.polled===true?"Polled":a.polled===false?"Horned":"—");
+  if(shown("horn"))         F("Horn", esc(pickLabel("horn", a.horn)));
   if(shown("marking_code")) F("Marking code", esc(a.marking_code||"—"), false, true);
   if(shown("birth_weight_kg")) F("Birth weight", a.birth_weight_kg?a.birth_weight_kg+" kg":"—");
+  if(shown("born_as"))      F("Born as", esc(pickLabel("born_as", a.born_as)));
   if(shown("weaned_on"))    F("Weaned", fmt(a.weaned_on));
   if(shown("heritage_name"))F("Heritage", esc(a.heritage_name||"—"));
   if(shown("pic"))          F("PIC", esc(a.pic||"—"), false, true);
@@ -3892,9 +3895,11 @@ function fieldInput(f, value, prefix=""){
       <option value="">—</option>
       <option value="1"${v===true?" selected":""}>Yes</option>
       <option value="0"${v===false?" selected":""}>No</option></select></label>`;
+  // An option is a value, or value=label when the stored value is a
+  // code — "2=Twin". What is shown is the label; what is saved is the value.
   if(type.startsWith("pick:"))
     return `<label><span>${label}</span><select name="${n}"><option value="">—</option>
-      ${type.slice(5).split("|").map(o=>`<option ${v===o?"selected":""}>${o}</option>`).join("")}
+      ${pickOptions(type).map(([val,lab])=>`<option value="${esc(val)}"${String(v??"")===val?" selected":""}>${esc(lab)}</option>`).join("")}
     </select></label>`;
   if(type.startsWith("ref:")){
     const list = S.refs[type.slice(4)]||[];
@@ -3913,8 +3918,19 @@ function readField(fd, f, prefix=""){
   if(raw===null || raw==="") return null;
   if(type==="bool")   return raw==="1";
   if(type==="number") return Number(raw);
+  // A pick whose values are numbers — born_as — saves the number.
+  if(type.startsWith("pick:") && pickOptions(type).every(([val]) => /^\d+$/.test(val))) return Number(raw);
   return String(raw).trim() || null;
 }
+// "pick:a|b=B label" -> [["a","a"],["b","B label"]]
+const pickOptions = type => type.slice(5).split("|").map(o => {
+  const i = o.indexOf("="); return i < 0 ? [o, o] : [o.slice(0, i), o.slice(i + 1)];
+});
+// The label for a stored pick value, for the card.
+const pickLabel = (k, v) => {
+  const f = AF.find(x => x[0] === k);
+  return (f && pickOptions(f[2]).find(([val]) => val === String(v ?? ""))?.[1]) || "—";
+};
 
 // ─── edit one animal ────────────────────────────────────────────
 function editAnimal(){
