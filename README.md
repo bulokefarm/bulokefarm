@@ -383,7 +383,9 @@ supabase/
   migrations/           schema, applied in filename order
   seed/buloke/          Buloke's data loads, run once, in numeric order
     notes/              flagged rows from each import
-  seed/tools/           the xlsx -> SQL converters; last argument is the farm slug
+  seed/toland/          Toland Merino's, the same way
+    notes/
+  seed/tools/           the xlsx/csv -> SQL converters; last argument is the farm slug
   config.toml           the Supabase CLI, for a local stack (ports 544xx)
   schema.sql            snapshot, written back by the backup workflow
 .github/workflows/      keepalive and backup
@@ -439,6 +441,7 @@ rebuild, so anything depending on imported records has to be a seed.
 | 59 | Bringing stock on: `receive_stock()`, bought in or bred here, by tag or head count, with the inward consignment for LPA 5A |
 | 60 | `add_member()` no longer tells an owner to have someone sign up; logins are created, there is no sign-up screen |
 | 61 | `animal.polled` becomes `animal.horn`: P or H as seen, PP, PH or HH as tested. `animal.born_as`: single, twin, triplet, as a stud records it |
+| 62 | A tag can have six digits: `BU 230040` is a Toland ewe, colour then her stud number |
 
 ### Seeds
 
@@ -764,4 +767,4 @@ automatically. The one-line accept is in the migration's comments.
 `n/B/R` (`marking_code`) meaning still unknown. `TOL 20-P1065`'s EID is
 the placeholder `3SBES046ASR06xxx`.
 
-Flagged rows from every import are in `supabase/seed/notes/`.
+Flagged rows from every import are in `supabase/seed/<farm>/notes/`.
