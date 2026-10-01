@@ -232,6 +232,12 @@ counting as a failure. An expectation with no joining behind it is
 refused by name, not deleted. A ewe you do know about gets her lambing
 recorded, or her joining marked empty, before the mob is closed.
 
+**A season is a financial year.** It runs July to June and is named
+for the year the calf or lamb is due in: due 21 Sept 2027 is 2027-2028.
+It is not typed once there is a date — `season_of()` works it out from
+a joining's due date and a plan's forecast, so moving either moves the
+season. Only an undated joining or plan keeps the season it was given.
+
 **A plan is not a joining.** **Record → Join planning** is the same two
 forms as a joining — a straw to one cow, a bull to a mob — writing a
 `planned_joining` row instead. Everything that reads `joining` treats
@@ -448,6 +454,7 @@ rebuild, so anything depending on imported records has to be a seed.
 | 61 | `animal.polled` becomes `animal.horn`: P or H as seen, PP, PH or HH as tested. `animal.born_as`: single, twin, triplet, as a stud records it |
 | 62 | A tag can have six digits: `BU 230040` is a Toland ewe, colour then her stud number |
 | 63 | Back-up plans: `planned_joining.attempt`, one open plan per dam, season and attempt; the joining closes the plan it answers, and in calf drops the back-ups |
+| 64 | A season is the July–June financial year the birth is due in: `season_of()`; a joining's season follows its due date and a plan's its forecast, by trigger, and a dam's gestation correction moves her plans' seasons. The April 2026 ewe joining moved from 2025-2026 to 2026-2027 |
 
 ### Seeds
 

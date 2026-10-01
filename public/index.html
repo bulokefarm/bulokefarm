@@ -1798,7 +1798,14 @@ const addDays = (iso, n) => {
   d.setUTCDate(d.getUTCDate() + n);
   return d.toISOString().slice(0,10);
 };
-const seasonNow = () => { const y = new Date().getFullYear(); return `${y}-${y+1}`; };
+// A season is the July–June financial year the calf or lamb is due
+// in, so a due 21 Sept 2027 is 2027-2028. The database works it out
+// from the due date or the forecast too; the forms show the same so
+// what is on screen is what is saved.
+const seasonOf  = iso => { const y = +iso.slice(0,4), m = +iso.slice(5,7);
+  return m >= 7 ? `${y}-${y+1}` : `${y-1}-${y}`; };
+// With no date yet: the season a joining made today would land in.
+const seasonNow = () => seasonOf(addDays(today(), GEST_BY_SPECIES[S.species] || GEST_DEFAULT));
 // The open plans for this animal in the order they are meant to happen:
 // by planned date, the join number settling a tie, undated ones last.
 // Plans are loaded open-only, so the first is the next thing for her.
@@ -1815,7 +1822,8 @@ const planText = p => `${p.method === "ai" ? "AI" : w("sire", p.species || "catt
 // puts a default on file that reads like a finding.
 const joinCommon = (plan) => `
   <div class="two">
-    <label><span>Season</span><input type="text" name="season" value="${seasonNow()}" required></label>
+    <label><span>Season</span><input type="text" name="season" value="${seasonNow()}" required
+      title="The July–June year the ${wl("birth")} is due in. It follows the date."></label>
     <label><span>Cycle</span><select name="cycle">
       <option value="spring">Spring</option><option value="autumn">Autumn</option></select></label>
   </div>
@@ -2104,12 +2112,17 @@ function joinAI(plan = false){
     calc();
   };
   const calc = () => {
-    if(due.dataset.touched) return;
-    if(!on.value){ if(plan) due.value = ""; return; }
-    due.value = addDays(on.value, Number(gest.value)||gestFor(cows.find(c=>c.id===dam.value)));
+    if(!due.dataset.touched){
+      if(on.value) due.value = addDays(on.value, Number(gest.value)||gestFor(cows.find(c=>c.id===dam.value)));
+      else if(plan) due.value = "";
+    }
+    // Dated, the season is the due date's; only undated is it typed.
+    const se = q('[name=season]');
+    se.readOnly = !!due.value;
+    if(due.value) se.value = seasonOf(due.value);
   };
   dam.onchange = loadGest; on.onchange = calc; gest.onchange = calc;
-  if(!plan) due.oninput = () => due.dataset.touched = "1";
+  if(!plan) due.oninput = () => { due.dataset.touched = "1"; calc(); };
   sem.addEventListener("change", () => sem.dataset.touched = "1");
   loadGest();
 
@@ -2328,6 +2341,21 @@ function joinNatural(plan = false){
   };
   pk.onchange = fill; fill();
 
+  // Each cow's season is her own due date's, worked out on save. The
+  // field shows the earliest's, and is only typed when there's no date.
+  const mobSeason = () => {
+    const on = q('[name=on]').value, se = q('[name=season]');
+    se.readOnly = !!on;
+    if(!on) return;
+    const ds = [...listWrap.querySelectorAll(".mob label")]
+      .filter(l => l.querySelector("input[type=checkbox]").checked)
+      .map(l => addDays(on, Number(l.querySelector(".gd").value) || GEST_DEFAULT)).sort();
+    if(ds.length) se.value = seasonOf(ds[0]);
+  };
+  inner.addEventListener("input", mobSeason);
+  inner.addEventListener("change", mobSeason);
+  mobSeason();
+
   // The mob forecast: a span of dates when the gestations differ, one
   // date when they don't. Recomputed as the date or any gestation moves.
   if(plan){
@@ -2392,7 +2420,8 @@ function joinNatural(plan = false){
         const g = Number(l.querySelector(".gd").value) || null;
         return {
           dam_id:l.dataset.id, sire_id:f.get("sire"), method:"natural",
-          paddock_id:f.get("paddock"), season, cycle:f.get("cycle"),
+          paddock_id:f.get("paddock"), cycle:f.get("cycle"),
+          season: onD ? seasonOf(addDays(onD, g || Number(l.dataset.g) || GEST_DEFAULT)) : season,
           attempt:attemptOf(f),
           planned_on:onD,
           gestation_days: g && g !== Number(l.dataset.g) ? g : null,
@@ -2415,7 +2444,8 @@ function joinNatural(plan = false){
       const g = Number(l.querySelector(".gd").value) || GEST_DEFAULT;
       return {
         dam_id:l.dataset.id, sire_id:f.get("sire"), method:"natural",
-        paddock_id:f.get("paddock"), season, cycle:f.get("cycle"),
+        paddock_id:f.get("paddock"), cycle:f.get("cycle"),
+        season: onD ? seasonOf(addDays(onD, g)) : season,
         attempt:Number(f.get("attempt")||1),
         joined_on:onD, bull_out:f.get("out")||null,
         gestation_days:g, due_on: onD ? addDays(onD, g) : null,
@@ -3080,7 +3110,8 @@ async function editJoining(){
       <label><span>Due</span><input type="date" name="due_on" value="${j.due_on||""}"></label>
     </div>
     <div class="two">
-      <label><span>Season</span><input type="text" name="season" value="${esc(j.season||"")}" placeholder="2026-2027"></label>
+      <label><span>Season</span><input type="text" name="season" value="${esc(j.season||"")}" placeholder="2026-2027"
+        title="With a due date, the season is the July–June year it falls in, whatever is typed here."></label>
       <label><span>Attempt</span><input type="number" name="attempt" min="1" max="9" inputmode="numeric"
         value="${j.attempt}" required></label>
     </div>
