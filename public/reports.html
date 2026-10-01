@@ -636,7 +636,8 @@ function renderJoinings(){
       <td class="m">${p.method==="ai" ? "AI" : (SIRE_WORD[p.species] || "bull")}</td>
       <td>${esc(p.sire_name||"—")}${p.straw_code?`<br><span style="color:var(--ink2)">${esc(p.straw_code)}</span>`:""}</td>
       <td>${esc(p.paddock_name||(p.method==="ai"?"—":"not recorded"))}</td>
-      <td class="m">${esc(p.season||"—")}${p.cycle?`<br><span style="color:var(--ink2)">${esc(p.cycle)}</span>`:""}</td>
+      <td class="m">${esc(p.season||"—")}${p.cycle?`<br><span style="color:var(--ink2)">${esc(p.cycle)}</span>`:""}${
+        p.attempt>1?`<br><span style="color:var(--ink2)">attempt ${p.attempt} · back-up</span>`:""}</td>
       <td class="m">${p.planned_on ? `planned<br>${fmt(p.planned_on)}` : "date not set"}</td>
       <td class="m">${p.forecast_on ? `forecast<br>${fmt(p.forecast_on)}` : "—"}${p.nominated_days
         ?`<br><span style="color:var(--ink2)">${p.nominated_days} d</span>`:""}</td>

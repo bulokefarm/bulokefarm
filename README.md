@@ -244,10 +244,15 @@ works it out as `planned_on` plus the plan's nominated gestation, else
 the dam's own, else 285 or 145, so correcting a cow's gestation moves
 every open forecast for her. A nominated figure on a plan does not
 rewrite the cow — the joining form does that because a joining is her
-being measured, and a plan is not. Recording the joining closes the
-plan: a trigger sets `joining_id` on any open plan for that dam and
-season, so the joining is recorded exactly as before and nothing is
-retyped. Dropping a plan sets `cancelled_on`; the row stays. The card
+being measured, and a plan is not. A dam can carry a plan for each join —
+the first AI, a back-up straw, then usually the bull — numbered by the
+same `attempt` a joining has, one open plan per dam, season and attempt.
+Recording the joining closes the plan it answers: a trigger sets
+`joining_id` on the open plan for that dam, season and attempt (else
+her earliest open one), so the joining is recorded exactly as before
+and nothing is retyped. An earlier plan still open when a later joining
+goes in has been passed over and is dropped; when a joining is marked
+in calf or calved, the back-ups after it are dropped as of the test. Dropping a plan sets `cancelled_on`; the row stays. The card
 shows her open plan, the herd list has a *Planned* filter, the joining
 register on `/reports` lists open plans under their own filter whatever
 the report period, and the AI form pre-selects the planned straw when
@@ -442,6 +447,7 @@ rebuild, so anything depending on imported records has to be a seed.
 | 60 | `add_member()` no longer tells an owner to have someone sign up; logins are created, there is no sign-up screen |
 | 61 | `animal.polled` becomes `animal.horn`: P or H as seen, PP, PH or HH as tested. `animal.born_as`: single, twin, triplet, as a stud records it |
 | 62 | A tag can have six digits: `BU 230040` is a Toland ewe, colour then her stud number |
+| 63 | Back-up plans: `planned_joining.attempt`, one open plan per dam, season and attempt; the joining closes the plan it answers, and in calf drops the back-ups |
 
 ### Seeds
 

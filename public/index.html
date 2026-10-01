@@ -550,18 +550,24 @@ function feedBlockHTML(a){
 // The plan on the herd row: method, who to, and when it should land.
 // Same furniture as the feed block, because it answers the same kind
 // of question while walking the mob — what is this one doing next.
+// With back-ups on file the next plan leads and the rest follow on one
+// line, in order, so the whole sequence reads off the row.
 function planBlockHTML(a){
-  const p = planFor(a);
+  const [p, ...rest] = plansFor(a);
   if(!p) return "";
   const sp = speciesOf(a);
   const l2 = [p.planned_on ? `planned ${fmt(p.planned_on)}` : "date not set",
     p.forecast_on ? `forecast ${wl("birth", sp)} ${fmt(p.forecast_on)}` : null,
     p.method === "natural" && p.paddock_name ? esc(p.paddock_name) : null].filter(Boolean).join(" · ");
-  return `<span class="feed plan"><span class="ttl">Planned joining</span>`
+  return `<span class="feed plan"><span class="ttl">Planned joining${
+        rest.length ? ` · ${ordinal(p.attempt || 1)} of ${rest.length + 1}` : ""}</span>`
     + `<b>${p.method === "ai" ? "AI" : esc(w("sire", sp)) + " out"}</b> · ${
         esc(p.sire_name || (p.method === "ai" ? "straw not named" : wl("sire", sp) + " not named"))}${
         p.straw_code ? ` <span style="opacity:.8">${esc(p.straw_code)}</span>` : ""}`
-    + `<br>${l2}</span>`;
+    + `<br>${l2}`
+    + (rest.length ? `<br>then ${rest.map(r => `${ordinal(r.attempt || 1)} ${esc(planText(r))}${
+        r.planned_on ? " " + fmt(r.planned_on) : ""}`).join(" · ")}` : "")
+    + `</span>`;
 }
 const dofHTML = a => a.days_on_feed == null ? ""
   : `<span class="dof${feedLow(a)?" low":""}" title="On ${esc(a.on_feed_feedstuff||"feed")} since ${
@@ -970,9 +976,11 @@ async function viewDetail(){
       + `<br>finished ${fmt(a.off_feed_on)}</span>`, true);
   // What is meant to happen to her, if anything is. A plan is not a
   // joining, so it sits with the facts rather than in the joinings list.
-  const pl = a.sex==="female" ? planFor(a) : null;
-  if(pl)
-    F("Planned joining", `${esc(planText(pl))}<span style="font-weight:400;color:var(--ink2)">`
+  // One fact per plan, first choice first, so the back-ups read in order.
+  const pls = a.sex==="female" ? plansFor(a) : [];
+  for(const pl of pls)
+    F(pls.length > 1 ? `Planned · ${ordinal(pl.attempt || 1)} join` : "Planned joining",
+      `${esc(planText(pl))}<span style="font-weight:400;color:var(--ink2)">`
       + (pl.paddock_name ? ` · ${esc(pl.paddock_name)}` : "")
       + `<br>${pl.planned_on ? "planned " + fmt(pl.planned_on) : "date not set"}`
       + (pl.forecast_on ? ` · forecast ${wl("birth", speciesOf(a))} ${fmt(pl.forecast_on)}` : "")
@@ -1791,9 +1799,13 @@ const addDays = (iso, n) => {
   return d.toISOString().slice(0,10);
 };
 const seasonNow = () => { const y = new Date().getFullYear(); return `${y}-${y+1}`; };
-// An open plan for this animal, if there is one. Plans are loaded
-// open-only, so the first match is the one that matters.
-const planFor  = a => S.plans.find(p => p.dam_id === (a?.id ?? a));
+// The open plans for this animal, first choice first: a first AI, a
+// back-up straw, then usually the bull. Plans are loaded open-only, so
+// the first of these is the next thing meant to happen to her.
+const plansFor = a => S.plans.filter(p => p.dam_id === (a?.id ?? a))
+  .sort((x, y) => String(x.season).localeCompare(String(y.season)) || (x.attempt||1) - (y.attempt||1));
+const planFor  = a => plansFor(a)[0];
+const ordinal  = n => ["", "1st", "2nd", "3rd"][n] || `${n}th`;
 const planText = p => `${p.method === "ai" ? "AI" : w("sire", p.species || "cattle") + " out"}${
   p.sire_name ? " — " + p.sire_name : ""}`;
 
@@ -1806,9 +1818,16 @@ const joinCommon = (plan) => `
     <label><span>Cycle</span><select name="cycle">
       <option value="spring">Spring</option><option value="autumn">Autumn</option></select></label>
   </div>
-  ${plan ? "" : `<label><span>Attempt</span><select name="attempt">
-    <option value="1">First join</option><option value="2">Second join</option>
-    <option value="3">Third join</option></select></label>`}`;
+  <label><span>${plan ? "Which join" : "Attempt"}</span><select name="attempt">
+    ${plan ? `<option value="next">Next for her — first, or the back-up if she has one</option>` : ""}
+    <option value="1">First join</option><option value="2">Second join${plan ? " (back-up)" : ""}</option>
+    <option value="3">Third join</option></select></label>
+  ${plan ? `<p class="hint">Plan the back-ups the same way — a second straw, then the ${wl("sire")}.
+    Each is kept, and the joining that happens closes the one it answers. If she holds,
+    the back-ups after it drop off by themselves.</p>` : ""}`;
+// What the form asked for: a join number, or "next" to be worked out
+// per dam when the plan is saved.
+const attemptOf = f => f.get("attempt") === "next" ? "next" : Number(f.get("attempt") || 1);
 
 // With plan set this is Join planning: the same two forms, writing a
 // plan instead of a joining. Nothing is joined, no straw leaves the
@@ -1839,13 +1858,19 @@ function recJoining(plan = false){
   return wrap;
 }
 
-// The open plans in scope, newest season first, each with a Drop.
-// Dropping sets cancelled_on and leaves the row: a plan that was
-// made and unmade is still a thing that happened.
+// The open plans in scope, each with a Drop. A dam's plans sit
+// together, first choice then back-ups, in the order her first one
+// falls. Dropping sets cancelled_on and leaves the row: a plan that
+// was made and unmade is still a thing that happened.
 function planList(){
   const wrap  = el(`<div></div>`);
   const plans = S.plans.filter(p => S.species === "all" || (p.species || "cattle") === S.species);
-  wrap.appendChild(el(`<h3 class="sec">Planned — ${plans.length} ${wl("dam")}${plans.length===1?"":"s"}</h3>`));
+  const key = p => p.dam_id + "|" + p.season, lead = new Map();
+  plans.forEach((p, i) => { if(!lead.has(key(p))) lead.set(key(p), i); });
+  plans.sort((x, y) => lead.get(key(x)) - lead.get(key(y)) || (x.attempt||1) - (y.attempt||1));
+  const dams = new Set(plans.map(p => p.dam_id)).size;
+  wrap.appendChild(el(`<h3 class="sec">Planned — ${dams} ${wl("dam")}${dams===1?"":"s"}${
+    plans.length > dams ? ` · ${plans.length} plans` : ""}</h3>`));
   if(!plans.length){
     wrap.appendChild(el(`<p class="hint" style="padding:0 14px 6px">Nothing planned yet. Choose
       a ${wl("sire")} or a straw below, the same as recording a joining, and it goes on file as a plan.</p>`));
@@ -1857,7 +1882,7 @@ function planList(){
     const li = el(`<li><button class="row">
       ${tagHTML(p.dam_code, "sm", sp)}
       <span class="meta">
-        <span class="nm">${esc(planText(p))}</span>
+        <span class="nm">${ordinal(p.attempt || 1)} · ${esc(planText(p))}</span>
         <span class="sub">${esc(p.season)}${p.cycle ? " " + esc(p.cycle) : ""}${
           p.paddock_name ? " · " + esc(p.paddock_name) : ""}${
           p.forecast_on ? ` · ${wl("birth", sp)} ${fmt(p.forecast_on)}` : ""}</span>
@@ -1879,7 +1904,7 @@ function planList(){
       const drop = el(`<button type="button" class="chip" style="margin:0 10px 0 0;flex:none">Drop</button>`);
       drop.onclick = async (e) => {
         e.stopPropagation();
-        if(!confirm(`Drop the plan for ${p.dam_code || p.dam_name}? It stays on the register as dropped.`)) return;
+        if(!confirm(`Drop the ${ordinal(p.attempt || 1)} plan for ${p.dam_code || p.dam_name}? It stays on the register as dropped.`)) return;
         const { error } = await db.from("planned_joining")
           .update({cancelled_on: today()}).eq("id", p.id);
         if(error){ alert(error.message); return; }
@@ -1894,28 +1919,49 @@ function planList(){
   return wrap;
 }
 
-// Write one plan per dam. A dam already planned for that season is
-// updated rather than doubled: one plan per dam per season is what
-// the card shows, so it is what the form keeps.
+// Write one plan per dam. A dam can hold a plan for each join — the
+// first choice, a back-up, the bull — so a dam already planned for that
+// season and that join is updated rather than doubled.
 async function savePlans(rows, edit = null){
+  // The plan being changed takes the edit whatever the form now says
+  // about dam or season; a one-cow form moved to another cow moves
+  // the plan. Anyone else on the form goes by dam, season and join.
+  const isEdit = r => edit && (r.dam_id === edit.dam_id || rows.length === 1);
+  // "Next" is one past the highest join she already has that season,
+  // planned or done, so planning a back-up never needs counting.
+  let done = [];
+  const want = rows.filter(r => r.attempt === "next" && !isEdit(r));
+  if(want.length){
+    const { data, error } = await db.from("joining").select("dam_id,season,attempt")
+      .in("dam_id", [...new Set(want.map(r => r.dam_id))]);
+    if(error) throw error;
+    done = data || [];
+  }
   const upd = [], ins = [];
   for(const r of rows){
-    // The plan being changed takes the edit whatever the form now says
-    // about dam or season; a one-cow form moved to another cow moves
-    // the plan. Anyone else on the form goes by dam and season as usual.
-    const have = edit && (r.dam_id === edit.dam_id || rows.length === 1) ? edit
-      : S.plans.find(p => p.dam_id === r.dam_id && p.season === r.season);
+    if(r.attempt === "next")
+      r.attempt = isEdit(r) ? (edit.attempt || 1)
+        : 1 + Math.max(0, ...S.plans.concat(done)
+            .filter(p => p.dam_id === r.dam_id && p.season === r.season)
+            .map(p => p.attempt || 1));
+    const have = isEdit(r) ? edit
+      : S.plans.find(p => p.dam_id === r.dam_id && p.season === r.season && (p.attempt||1) === r.attempt);
     if(have) upd.push({id: have.id, ...r}); else ins.push(r);
   }
   S.editPlan = null;
+  // One open plan per dam, season and join. Moving a plan onto a join
+  // she already has planned is the one way to hit it.
+  const clash = e => e.code === "23505"
+    ? new Error(`That ${wl("dam")} already has a plan for that join this season — change or drop that one first.`)
+    : e;
   for(const r of upd){
     const { id, ...patch } = r;
     const { error } = await db.from("planned_joining").update(patch).eq("id", id);
-    if(error) throw error;
+    if(error) throw clash(error);
   }
   if(ins.length){
     const { error } = await db.from("planned_joining").insert(ins);
-    if(error) throw error;
+    if(error) throw clash(error);
   }
   return { updated: upd.length, added: ins.length };
 }
@@ -2037,12 +2083,14 @@ function joinAI(plan = false){
           plan ? "Change it here and it's this plan's only." : "Change it and it's remembered."}`;
     // Recording the AI a plan asked for: the straw and season come
     // from the plan, so what was decided is what gets recorded.
-    const pl = !plan && a ? planFor(a) : null;
-    if(pl && pl.method === "ai" && !sem.dataset.touched){
+    // With back-ups on file it is her next AI plan, and its join number.
+    const pl = !plan && a ? plansFor(a).find(p => p.method === "ai") : null;
+    if(pl && !sem.dataset.touched){
       if(straws.some(s => s.id === pl.ai_semen_id)) sem.value = pl.ai_semen_id;
       const se = inner.querySelector('[name=season]'), cy = inner.querySelector('[name=cycle]');
       if(pl.season) se.value = pl.season;
       if(pl.cycle)  cy.value = pl.cycle;
+      inner.querySelector('[name=attempt]').value = String(pl.attempt || 1);
     }
     calc();
   };
@@ -2062,6 +2110,7 @@ function joinAI(plan = false){
     if(straws.some(x => x.id === ed.ai_semen_id)) sem.value = ed.ai_semen_id;
     q('[name=season]').value = ed.season || seasonNow();
     if(ed.cycle) q('[name=cycle]').value = ed.cycle;
+    q('[name=attempt]').value = String(ed.attempt || 1);
     q('[name=notes]').value = ed.notes || "";
     loadGest();
     if(ed.nominated_days) gest.value = ed.nominated_days;
@@ -2071,7 +2120,7 @@ function joinAI(plan = false){
       hint.textContent += ` The straw this plan named is no longer in stock — choose another.`;
   }
 
-  const shell = formShell(ed ? `Change the plan for ${esc(ed.dam_code || wl("dam"))}`
+  const shell = formShell(ed ? `Change the ${ordinal(ed.attempt || 1)} plan for ${esc(ed.dam_code || wl("dam"))}`
       : plan ? `Plan an AI — one ${wl("dam")}` : `AI — one ${wl("dam")}`, inner, async (f) => {
     if(!f.get("dam")) throw new Error(`Choose the ${wl("dam")}.`);
     let semenId = f.get("semen") || null, sireId = null;
@@ -2083,16 +2132,18 @@ function joinAI(plan = false){
       // her record moves the forecast rather than being overridden.
       const cow = cows.find(c => c.id===f.get("dam"));
       const g = Number(f.get("gest")) || null;
-      const r = await savePlans([{
+      const row = {
         dam_id: cow.id, method: "ai", ai_semen_id: semenId,
         sire_id: inStock.find(s => s.id===semenId)?.sire_id || null,
         season: (f.get("season")||"").trim(), cycle: f.get("cycle"),
+        attempt: attemptOf(f),
         planned_on: f.get("on") || null,
         gestation_days: g && g !== gestFor(cow) ? g : null,
         notes: (f.get("notes")||"").trim() || null
-      }], ed);
+      };
+      const r = await savePlans([row], ed);
       const fc = f.get("on") ? ` — forecast ${wl("birth", speciesOf(cow))} ${fmt(f.get("due"))}` : "";
-      return `${ed ? "Plan changed" : "AI planned"} for ${codeOf(cow)}${
+      return `${ed ? "Plan changed" : `${ordinal(row.attempt)} AI planned`} for ${codeOf(cow)}${
         r.updated && !ed ? " (plan updated)" : ""}${fc}.`;
     }
     if(plan) throw new Error("Register the straw first, then plan against it.");
@@ -2283,6 +2334,7 @@ function joinNatural(plan = false){
     if(ed.paddock_id && S.paddocks.some(x => x.id === ed.paddock_id)) pk.value = ed.paddock_id;
     q('[name=season]').value = ed.season || seasonNow();
     if(ed.cycle) q('[name=cycle]').value = ed.cycle;
+    q('[name=attempt]').value = String(ed.attempt || 1);
     q('[name=notes]').value = ed.notes || "";
     if(ed.planned_on) q('[name=on]').value = ed.planned_on;
     fill();
@@ -2310,7 +2362,7 @@ function joinNatural(plan = false){
     inner.dispatchEvent(new Event("change"));
   }
 
-  return formShell(ed ? `Change the plan for ${esc(ed.dam_code || wl("dam"))}`
+  return formShell(ed ? `Change the ${ordinal(ed.attempt || 1)} plan for ${esc(ed.dam_code || wl("dam"))}`
       : plan ? `Plan: ${wl("sire")} out to a mob` : `${w("sire")} out to a mob`, inner, async (f) => {
     if(!f.get("sire"))    throw new Error(`Choose the ${wl("sire")}.`);
     if(!f.get("paddock")) throw new Error(plan ? "Choose the paddock he's to go out to." : "Choose the paddock he went out to.");
@@ -2325,6 +2377,7 @@ function joinNatural(plan = false){
         return {
           dam_id:l.dataset.id, sire_id:f.get("sire"), method:"natural",
           paddock_id:f.get("paddock"), season, cycle:f.get("cycle"),
+          attempt:attemptOf(f),
           planned_on:onD,
           gestation_days: g && g !== Number(l.dataset.g) ? g : null,
           notes:(f.get("notes")||"").trim()||null
@@ -2336,7 +2389,9 @@ function joinNatural(plan = false){
       if(ed && rows.length === 1)
         return `Plan changed for ${ed.dam_code || wl("dam")}: ${bull ? codeOf(bull) : wl("sire")} in ${name}${
           onD ? ` — forecast ${wl("birth")} ${q('[name=fc]').value || ""}` : ""}.`;
-      return `${rows.length} planned for ${bull ? codeOf(bull) : wl("sire")} in ${name}${
+      const joins = [...new Set(rows.map(r => r.attempt))].sort().map(ordinal);
+      return `${rows.length} planned for ${bull ? codeOf(bull) : wl("sire")} in ${name} as the ${
+        joins.join(" / ")} join${
         r.updated ? ` (${r.updated} plan${r.updated>1?"s":""} updated)` : ""}${
         onD ? ` — forecast ${wl("birth")} ${q('[name=fc]').value || ""}` : ""}.`;
     }
