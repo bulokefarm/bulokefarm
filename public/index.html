@@ -1799,11 +1799,12 @@ const addDays = (iso, n) => {
   return d.toISOString().slice(0,10);
 };
 const seasonNow = () => { const y = new Date().getFullYear(); return `${y}-${y+1}`; };
-// The open plans for this animal, first choice first: a first AI, a
-// back-up straw, then usually the bull. Plans are loaded open-only, so
-// the first of these is the next thing meant to happen to her.
-const plansFor = a => S.plans.filter(p => p.dam_id === (a?.id ?? a))
-  .sort((x, y) => String(x.season).localeCompare(String(y.season)) || (x.attempt||1) - (y.attempt||1));
+// The open plans for this animal in the order they are meant to happen:
+// by planned date, the join number settling a tie, undated ones last.
+// Plans are loaded open-only, so the first is the next thing for her.
+const byPlanDate = (x, y) => (x.planned_on || "9999").localeCompare(y.planned_on || "9999")
+  || (x.attempt||1) - (y.attempt||1);
+const plansFor = a => S.plans.filter(p => p.dam_id === (a?.id ?? a)).sort(byPlanDate);
 const planFor  = a => plansFor(a)[0];
 const ordinal  = n => ["", "1st", "2nd", "3rd"][n] || `${n}th`;
 const planText = p => `${p.method === "ai" ? "AI" : w("sire", p.species || "cattle") + " out"}${
@@ -1865,9 +1866,9 @@ function recJoining(plan = false){
 function planList(){
   const wrap  = el(`<div></div>`);
   const plans = S.plans.filter(p => S.species === "all" || (p.species || "cattle") === S.species);
-  const key = p => p.dam_id + "|" + p.season, lead = new Map();
+  const key = p => p.dam_id, lead = new Map();
   plans.forEach((p, i) => { if(!lead.has(key(p))) lead.set(key(p), i); });
-  plans.sort((x, y) => lead.get(key(x)) - lead.get(key(y)) || (x.attempt||1) - (y.attempt||1));
+  plans.sort((x, y) => lead.get(key(x)) - lead.get(key(y)) || byPlanDate(x, y));
   const dams = new Set(plans.map(p => p.dam_id)).size;
   wrap.appendChild(el(`<h3 class="sec">Planned — ${dams} ${wl("dam")}${dams===1?"":"s"}${
     plans.length > dams ? ` · ${plans.length} plans` : ""}</h3>`));
@@ -2092,6 +2093,14 @@ function joinAI(plan = false){
       if(pl.cycle)  cy.value = pl.cycle;
       inner.querySelector('[name=attempt]').value = String(pl.attempt || 1);
     }
+    // A back-up belongs to the same season as the plan it backs up.
+    // Left on this year's default it lands in another season, where the
+    // joining never finds it and it sorts apart from her first choice.
+    const mine = plan && !S.editPlan && a ? planFor(a) : null;
+    if(mine){
+      inner.querySelector('[name=season]').value = mine.season;
+      if(mine.cycle) inner.querySelector('[name=cycle]').value = mine.cycle;
+    }
     calc();
   };
   const calc = () => {
@@ -2284,6 +2293,13 @@ function joinNatural(plan = false){
       list.appendChild(row);
     }
     listWrap.appendChild(list);
+
+    // Planning the bull behind their straws: the season is the one their
+    // plans are already in, when they agree on one.
+    if(plan && !S.editPlan){
+      const seasons = new Set(females.map(a => planFor(a)?.season).filter(Boolean));
+      if(seasons.size === 1) inner.querySelector('[name=season]').value = [...seasons][0];
+    }
 
     const chips = el(`<div class="chips" style="padding:8px 0 0"></div>`);
     const setAll = fn => list.querySelectorAll("label").forEach((l,i) =>
