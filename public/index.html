@@ -4254,20 +4254,100 @@ function sgColumns(rows){
   return { head, idCol, eidCol, traits, rows: out };
 }
 
+// The results file Sheep Genetics sends a member is XML, and big: every
+// animal the flock has ever recorded, with every outside sire behind
+// them (Toland's of 21 Sep 2026 is 153 MB, 39,871 animals). It is read
+// a piece at a time, so a phone gets through it too, and only animals
+// that might be on file here are kept; import_asbv still decides.
+//   <ANIMAL><ATTRIBUTES><ID>601082-2023-230040</ID>…</ATTRIBUTES>
+//     <ASBV><YFD>-0.65</YFD><ACC_YFD>81</ACC_YFD>…</ASBV>
+//     <INDEX><INDEX1>…</INDEX1><A_INDEX1>…</A_INDEX1>…</INDEX></ANIMAL>
+function sgXmlReader(keep){
+  const alnum = s => (s||"").replace(/[^0-9A-Za-z]/g, "").toUpperCase();
+  const out = { runName:null, runDate:null, total:0, rows:[], traits:new Set() };
+  let buf = "";
+  const animal = (x) => {
+    out.total++;
+    const id = alnum((x.match(/<ID>([^<]*)<\/ID>/)||[])[1]);
+    if(!id || !keep(id)) return;
+    const vals = {}, acc = {};
+    for(const block of x.match(/<(ASBV|INDEX)>[\s\S]*?<\/\1>/g) || [])
+      for(const [, k, v] of block.matchAll(/<([A-Z][A-Z0-9_+]*)>([^<]*)<\/\1>/g)){
+        if(k === "ASBV" || k === "INDEX" || v.trim() === "" || !isFinite(Number(v))) continue;
+        if(k.startsWith("ACC_")) acc[k.slice(4)] = Number(v);
+        else if(k.startsWith("A_")) acc[k.slice(2)] = Number(v);
+        else vals[k] = Number(v);
+      }
+    const values = {};
+    for(const k in vals){
+      values[k] = [vals[k], k in acc ? Math.round(acc[k]) : null];
+      out.traits.add(k);
+    }
+    out.rows.push({ sg_id: id, eid: null, values });
+  };
+  return {
+    push(text){
+      buf += text;
+      if(!out.runDate){
+        const d = buf.match(/<RUN_DATE>\s*(\d{4}-\d\d-\d\d)/); if(d) out.runDate = d[1];
+        const n = buf.match(/<RUN_NAME>([^<]*)<\/RUN_NAME>/);  if(n) out.runName = n[1].trim();
+      }
+      let at;
+      while((at = buf.indexOf("</ANIMAL>")) >= 0){
+        animal(buf.slice(buf.indexOf("<ANIMAL>"), at));
+        buf = buf.slice(at + 9);
+      }
+    },
+    end(){ return { ...out, traits: [...out.traits] }; }
+  };
+}
+
+async function readSgXml(file, keep, progress){
+  const r = sgXmlReader(keep);
+  const reader = file.stream().pipeThrough(new TextDecoderStream()).getReader();
+  let seen = 0, shown = -1;
+  for(;;){
+    const { value, done } = await reader.read();
+    if(done) break;
+    r.push(value);
+    seen += value.length;
+    const pct = Math.min(99, Math.floor(seen / file.size * 100));
+    if(pct !== shown){ shown = pct; progress?.(pct); }
+  }
+  return r.end();
+}
+
+// Which IDs in a file could be one of ours: any Sheep Genetics ID we
+// hold, or our own flock's prefix on a tag we hold (a ewe's number,
+// or a sire or dam on file only by name).
+async function sgKeep(){
+  const { data, error } = await db.from("animal").select("sg_id,herd_number,name,origin")
+    .eq("species", "sheep").range(0, 19999);
+  if(error) throw error;
+  const ids = new Set(), tags = new Set(), flock = S.farm.sg_flock_id;
+  for(const a of data||[]){
+    if(a.sg_id) ids.add(a.sg_id);
+    if(a.origin !== "reference" && a.herd_number) tags.add(String(a.herd_number).padStart(6, "0"));
+    if(a.origin === "reference" && a.name) tags.add(a.name.toUpperCase());
+  }
+  return id => ids.has(id) || (id.slice(0, 6) === flock && tags.has(id.slice(10)));
+}
+
 async function viewAsbv(){
   const wrap = el(`<div></div>`);
   wrap.appendChild(el(`<h3 class="sec">Breeding values</h3>`));
   const box = el(`<div style="padding:0 14px 14px">
-    <p class="hint" style="margin-top:0">From your Sheep Genetics login, export the ASBV report for
-      flock ${esc(S.farm.sg_flock_id)} as a CSV and drop it in here. Each animal is found by its
-      Sheep Genetics ID, then its EID, then its tag. Loading a file never changes an earlier one;
-      the newest analysis is what the herd shows.</p>
+    <p class="hint" style="margin-top:0">From your Sheep Genetics login, download the results file
+      for flock ${esc(S.farm.sg_flock_id)} (the XML, as it comes, or a CSV) and drop it in here.
+      Each animal is found by its Sheep Genetics ID, then its EID, then its tag; only the ones on
+      file here are loaded. Loading a file never changes an earlier one; the newest analysis is
+      what the herd shows.</p>
     <label><span>Analysis date on the report</span><input type="date" name="on" required></label>
     <label class="drop" style="border:2px dashed var(--rule);border-radius:12px;padding:22px 14px;
       text-align:center;cursor:pointer;background:var(--card)">
       <span style="text-transform:none;letter-spacing:0;font-size:15px;color:var(--ink);margin:0">
-        Drop the CSV here, or tap to choose it</span>
-      <input type="file" accept=".csv,.txt,text/csv" style="display:none"></label>
+        Drop the file here, or tap to choose it</span>
+      <input type="file" accept=".xml,.csv,.txt,text/xml,application/xml,text/csv" style="display:none"></label>
     <div class="found"></div>
     <button type="button" class="btn" disabled>Load</button>
   </div>`);
@@ -4282,6 +4362,31 @@ async function viewAsbv(){
     // Analysis date in the file name, if it has one (2026-09-15, 20260915).
     const m = file.name.match(/(20\d\d)[-_]?(\d\d)[-_]?(\d\d)/);
     if(m && !dateIn.value) dateIn.value = `${m[1]}-${m[2]}-${m[3]}`;
+
+    if(/\.xml$/i.test(file.name) || (await file.slice(0, 200).text()).trimStart().startsWith("<?xml")){
+      found.innerHTML = `<p class="hint">Reading ${esc(file.name)}…</p>`;
+      const note = found.firstElementChild;
+      try{
+        const x = await readSgXml(file, await sgKeep(), pct => note.textContent = `Reading ${file.name}… ${pct}%`);
+        if(!x.total) throw new Error("no animals in it. Is this the Sheep Genetics results file?");
+        if(x.runDate) dateIn.value = x.runDate;
+        if(!x.rows.length){
+          found.innerHTML = `<div class="msg err">${esc(file.name)}: ${x.total.toLocaleString()} animals,
+            none of them on file here. Is it flock ${esc(S.farm.sg_flock_id)}'s?</div>`;
+          return;
+        }
+        parsed = { rows: x.rows }; go.disabled = false;
+        found.innerHTML = `<div class="msg ok"><b>${esc(file.name)}</b>: ${esc(x.runName||"Sheep Genetics")}
+          analysis of ${fmt(x.runDate)}. ${x.total.toLocaleString()} animals in the file,
+          <b>${x.rows.length}</b> of them on file here; ${x.traits.length} traits and indexes.</div>
+          <p class="hint" style="line-height:1.7">${x.traits.map(t =>
+            `<span class="chip" style="cursor:default">${esc(t)}</span>`).join(" ")}</p>`;
+      }catch(err){
+        found.innerHTML = `<div class="msg err">${esc(file.name)}: ${esc(err.message)}</div>`;
+      }
+      return;
+    }
+
     const p = sgColumns(readCsv(await file.text()));
     if(p.idCol < 0 && p.eidCol < 0){
       found.innerHTML = `<div class="msg err">${esc(file.name)}: no column of Sheep Genetics IDs
