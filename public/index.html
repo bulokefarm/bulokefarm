@@ -194,6 +194,22 @@ h3.sec{
 .tl .what{min-width:0}
 .tl .what b{display:block;font-weight:600}
 .tl .what span{font-size:13px;color:var(--ink2)}
+.bv{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));margin:0;
+  background:var(--card);border-top:1px solid var(--rule)}
+.bv div{padding:8px 10px;min-width:0;border-right:1px solid var(--rule);border-bottom:1px solid var(--rule)}
+.bv dt{font-family:var(--mono);font-size:11.5px;font-weight:600;color:var(--ink2)}
+.bv dd{margin:1px 0 0;font-family:var(--mono);font-size:16px;font-weight:600}
+.bv dd small{display:block;font-size:11px;font-weight:400;color:var(--ink2)}
+.bv .low dd{color:var(--ink2);font-weight:500}
+.bvall{padding:0 14px 6px;font-size:13px}
+.bvall summary{cursor:pointer;color:var(--accent);font-weight:600;padding:9px 0}
+.bvall table{width:100%;border-collapse:collapse;font-size:13px}
+.bvall th{text-align:left;font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--ink2);
+  font-weight:700;padding:12px 0 4px}
+.bvall td{padding:5px 0;border-bottom:1px solid var(--rule);vertical-align:top}
+.bvall td.c{font-family:var(--mono);font-weight:600;width:72px}
+.bvall td.n{font-family:var(--mono);text-align:right;white-space:nowrap;padding-left:8px}
+.bvall td.n small{color:var(--ink2)}
 
 /* ---------- forms ---------- */
 form{padding:4px 14px 20px}
@@ -940,6 +956,66 @@ function closeDue(){
   });
 }
 
+// Breeding values on the card (65, 66): the newest analysis of each
+// trait, as Sheep Genetics writes it. The codes are what a breeder
+// reads off a sale catalogue, so they lead; a name is given only where
+// the code's meaning is certain, and the rest are left as the code.
+// The first letter of a trait is the age it is measured at: P post-
+// weaning, Y yearling, H hogget, A adult, C carcase.
+const BV_HEAD = ["YWT","YEMD","YFAT","YCFW","YFD","YFDCV","YSL","YSS","EBWR","YWEC"];
+const BV_AGE  = {B:"birth", W:"weaning", P:"post-weaning", Y:"yearling", H:"hogget", A:"adult", C:"carcase"};
+const BV_BASE = {WT:"weight", EMD:"eye muscle depth", FAT:"fat depth", GFW:"greasy fleece weight",
+  CFW:"clean fleece weight", FD:"fibre diameter", FDCV:"fibre diameter CV", CURV:"curvature",
+  SL:"staple length", SS:"staple strength", WEC:"worm egg count", SC:"scrotal circumference"};
+const BV_NAME = {MWWT:"maternal weaning weight", CCFAT:"carcase fat (C-site)", DRESS:"dressing %",
+  LMY:"lean meat yield", IMF:"intramuscular fat", SHRF5:"shear force", EBWR:"early breech wrinkle",
+  EBCOV:"early breech cover", LDAG:"late dag", LFROT:"late fleece rot", CON:"conception",
+  LS:"litter size", ERA:"ewe rearing ability", LE_DIR:"lambing ease", GL_DIR:"gestation length"};
+const BV_GROUP = [
+  ["Weight and growth", /^(B|W|P|Y|H|A)WT$|^MWWT$/],
+  ["Carcase",           /EMD$|FAT$|^CWT$|^DRESS$|^LMY$|^IMF$|^SHRF5$/],
+  ["Wool",              /GFW$|CFW$|FD$|FDCV$|CURV$|SL$|SS$/],
+  ["Worms and welfare", /WEC$|^EB|^L(DAG|FROT)$/],
+  ["Reproduction",      /^(CON|LS|ERA|LE_DIR|GL_DIR)$|SC$/],
+  ["Indexes",           /^INDEX/]];
+const bvName = k => BV_NAME[k]
+  || (BV_BASE[k.slice(1)] && BV_AGE[k[0]] ? `${BV_AGE[k[0]]} ${BV_BASE[k.slice(1)]}` : "")
+  || (/^INDEX(\d+)$/.test(k) ? "index — name to confirm" : "");
+// A trait is a difference, signed; an index is a score, around 100 to 200.
+const bvNum = (v, k) => { const n = Number(v);
+  return /^INDEX/.test(k) ? n.toFixed(1) : (n > 0 ? "+" : "") + n.toFixed(2); };
+
+function breedingValues(rows){
+  const by = new Map(rows.map(r => [r.trait, r]));
+  const on = rows.reduce((d, r) => r.analysis_on > d ? r.analysis_on : d, "");
+  const box = el(`<div></div>`);
+  box.appendChild(el(`<h3 class="sec">Breeding values · ${fmt(on)} analysis</h3>`));
+  const cell = r => `<div class="${r.accuracy != null && r.accuracy < 50 ? "low" : ""}" title="${esc(bvName(r.trait))}">
+      <dt>${esc(r.trait)}</dt><dd>${bvNum(r.value, r.trait)}<small>${r.accuracy != null ? r.accuracy + "% acc" : "&nbsp;"}</small></dd></div>`;
+  const head = [...BV_HEAD.map(k => by.get(k)), ...rows.filter(r => /^INDEX/.test(r.trait))
+    .sort((x, y) => x.trait.localeCompare(y.trait, undefined, {numeric:true}))].filter(Boolean);
+  if(head.length) box.appendChild(el(`<dl class="bv">${head.map(cell).join("")}</dl>`));
+
+  const left = new Set(rows.map(r => r.trait));
+  let table = "";
+  for(const [title, re] of [...BV_GROUP, ["Other", /./]]){
+    // Each trait together, youngest first: PFD, YFD, HFD, AFD.
+    const key = k => BV_BASE[k.slice(1)] && BV_AGE[k[0]] ? k.slice(1) + " " + "BWPYHAC".indexOf(k[0]) : k;
+    const g = [...left].filter(k => re.test(k))
+      .sort((x, y) => key(x).localeCompare(key(y), undefined, {numeric:true}));
+    if(!g.length) continue;
+    g.forEach(k => left.delete(k));
+    table += `<tr><th colspan="3">${title}</th></tr>` + g.map(k => { const r = by.get(k);
+      return `<tr><td class="c">${esc(k)}</td><td>${esc(bvName(k))}</td>
+        <td class="n">${bvNum(r.value, k)} <small>${r.accuracy != null ? r.accuracy + "%" : ""}</small></td></tr>`; }).join("");
+  }
+  box.appendChild(el(`<details class="bvall"><summary>All ${rows.length} traits and indexes</summary>
+    <table>${table}</table>
+    <p class="hint">From Sheep Genetics (MERINOSELECT), with the accuracy of each. Faded values are
+      under 50% accuracy. Record → Manage → Breeding values loads the next analysis.</p></details>`));
+  return box;
+}
+
 async function viewDetail(){
   const a = S.animals.find(x => x.id===S.sel);
   const wrap = el(`<div></div>`);
@@ -1018,14 +1094,19 @@ async function viewDetail(){
   if(shown("notes") && a.notes) F("Notes", esc(a.notes), true);
   wrap.appendChild(el(`<dl class="facts">${facts.join("")}</dl>`));
 
-  const [wts, t, c, sh] = await Promise.all([
+  const [wts, t, c, sh, bv] = await Promise.all([
     db.from("weight_event").select("weighed_on,weight_kg,method").eq("animal_id",a.id).order("weighed_on",{ascending:false}),
     db.from("treatment_animal").select("treatment:treatment_id(treated_on,product_name,batch_number,withholding_days,safe_for_slaughter)").eq("animal_id",a.id),
     db.from("calving").select("calved_on,outcome,assisted,notes,calf:calf_id(stock_code,name)").eq("dam_id",a.id).order("calved_on",{ascending:false}),
     speciesOf(a) === "sheep"
       ? db.from("shearing_animal").select("shearing:shearing_id(shorn_on,kind,description,contractor,bales,micron)").eq("animal_id",a.id)
+      : Promise.resolve({data:[]}),
+    speciesOf(a) === "sheep" && S.farm?.sg_flock_id
+      ? db.from("v_asbv_latest").select("trait,value,accuracy,analysis_on").eq("animal_id",a.id)
       : Promise.resolve({data:[]})
   ]);
+
+  if(bv.data?.length) wrap.appendChild(breedingValues(bv.data));
 
   const timeline = (title, rows, empty) => {
     wrap.appendChild(el(`<h3 class="sec">${title}</h3>`));
