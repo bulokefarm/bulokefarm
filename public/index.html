@@ -623,7 +623,13 @@ function planBlockHTML(a){
         r.planned_on ? " " + fmt(r.planned_on) : ""}`).join(" · ")}` : "")
     + `</span>`;
 }
-const dofHTML = a => a.days_on_feed == null ? ""
+// Sire × dam on the herd row, as a breeder says it. A dam on file goes
+// by her tag, an outside one by her name; an unknown side is a "?".
+const parentsHTML = a => {
+  const sire = a.sire_name || a.sire_code, dam = a.dam_code || a.dam_name;
+  return sire || dam ? `${esc(sire || "?")} × ${esc(dam || "?")}` : "";
+};
+const dofHTML = a =>a.days_on_feed == null ? ""
   : `<span class="dof${feedLow(a)?" low":""}" title="On ${esc(a.on_feed_feedstuff||"feed")} since ${
       fmt(a.on_feed_since)}${a.est_empty_on?" — est. empty "+fmt(a.est_empty_on):""}">${
       a.days_on_feed} d fed</span>`;
@@ -895,12 +901,13 @@ function viewHerd(){
         ${tagHTML(codeOf(a), "sm", speciesOf(a))}
         <span class="meta${planFor(a)?" hasplan":""}">
           <span class="nm">${esc(a.name||"Unnamed")}</span>
-          <span class="sub">${!isActive(a)
+          <span class="sub">${[!isActive(a)
               ? `<span style="opacity:.75">${esc(a.life_state)}${
-                  a.exit_on ? " " + fmt(a.exit_on) : ""}</span> · ${esc(a.breed||"")}`
+                  a.exit_on ? " " + fmt(a.exit_on) : ""}</span>`
               : (a.paddock_name
                   ? `<span class="dot" style="background:${esc(a.paddock_colour||"#999")}"></span>`+esc(a.paddock_name)
-                  : "<span style='opacity:.6'>no paddock</span>") + ` · ${esc(a.breed||"")}`}</span>
+                  : "<span style='opacity:.6'>no paddock</span>"),
+              esc(a.breed||""), parentsHTML(a)].filter(Boolean).join(" · ")}</span>
           ${planBlockHTML(a)}${feedBlockHTML(a)}
         </span>
         ${bvListHTML(a)}<span class="rt">${age(a.age_years)}${a.last_weight_kg?"<br>"+Math.round(a.last_weight_kg)+" kg":""}</span>
