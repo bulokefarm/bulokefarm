@@ -49,7 +49,7 @@ alter table animal add column if not exists sg_id text;
 
 do $$
 begin
-  alter table animal add constraint animal_sg_id_ck check (sg_id ~ '^\d{16}$');
+  alter table animal add constraint animal_sg_id_ck check (sg_id ~ '^[0-9A-Z]{16}$');
 exception when duplicate_object then null;
 end $$;
 
@@ -175,9 +175,12 @@ grant select on v_asbv_latest to authenticated;
 --
 -- An animal is found by Sheep Genetics ID, then by EID, then by the
 -- last six digits of the ID against a tag (or a reference animal of
--- that name, so outside-bred sires and old dams get theirs too). Two
--- candidates is no match. Runs as the caller, so it only ever sees and
--- writes the caller's farm.
+-- that name, so old dams on file only as a name get theirs too). The
+-- tag match only trusts an ID that starts with the farm's own flock
+-- number, and for a sheep with a birthday, one whose drop year is
+-- hers: an export carries outside sires, and another flock's 200400
+-- is not our 200400. Two candidates is no match. Runs as the caller,
+-- so it only ever sees and writes the caller's farm.
 -- ------------------------------------------------------------
 
 create or replace function import_asbv(
@@ -190,6 +193,7 @@ language plpgsql set search_path = public as $$
 declare
   run       uuid;
   farm      uuid := current_farm();
+  flock     text;
   n_rows    int;
   n_matched int;
   n_values  int;
@@ -207,6 +211,7 @@ begin
   if jsonb_typeof(p_rows) <> 'array' then
     raise exception 'p_rows must be a JSON array';
   end if;
+  select f.sg_flock_id into flock from farm f where f.id = farm;
 
   insert into asbv_run (analysis_on, source, file_name)
   values (p_analysis_on, p_source, p_file_name)
@@ -215,7 +220,7 @@ begin
   if to_regclass('pg_temp._sg') is not null then drop table _sg; end if;
   create temp table _sg on commit drop as
   select r.ord,
-         nullif(regexp_replace(r.row ->> 'sg_id', '\D', '', 'g'), '') as sg_id,
+         nullif(upper(regexp_replace(r.row ->> 'sg_id', '[^0-9A-Za-z]', '', 'g')), '') as sg_id,
          nullif(regexp_replace(r.row ->> 'eid',   '\D', '', 'g'), '') as eid,
          r.row -> 'values' as vals,
          null::uuid as animal_id
@@ -243,23 +248,29 @@ begin
             from _sg s2
             join animal a on a.farm_id = farm
                          and a.species = 'sheep'
-                         and ((a.origin <> 'reference' and a.herd_number = right(s2.sg_id, 6)::int)
+                         and ((a.origin <> 'reference' and a.herd_number = right(s2.sg_id, 6)::int
+                               and (a.dob is null
+                                    or extract(year from a.dob)::int = substr(s2.sg_id, 7, 4)::int))
                            or (a.origin =  'reference' and a.name = right(s2.sg_id, 6)))
            where s2.animal_id is null and s2.sg_id ~ '^\d{16}$'
+             and left(s2.sg_id, 6) = flock
            group by s2.ord) m
    where s.ord = m.ord and m.n = 1;
 
   -- An animal found by EID or tag takes the ID Sheep Genetics gave it,
-  -- unless another animal on the farm already holds it.
+  -- unless another animal on the farm already holds it. One animal per
+  -- ID, should the file name the same ID twice.
   update animal a set sg_id = s.sg_id
-    from _sg s
+    from (select distinct on (sg_id) sg_id, animal_id
+            from _sg
+           where animal_id is not null and sg_id ~ '^[0-9A-Z]{16}$'
+           order by sg_id, ord) s
    where a.id = s.animal_id
-     and s.sg_id ~ '^\d{16}$'
      and a.sg_id is distinct from s.sg_id
      and not exists (select 1 from animal o where o.farm_id = farm and o.sg_id = s.sg_id);
 
   insert into asbv (farm_id, run_id, animal_id, trait, value, accuracy)
-  select distinct on (s.animal_id, v.key)
+  select distinct on (s.animal_id, upper(v.key))
          farm, run, s.animal_id, upper(v.key),
          (v.value ->> 0)::numeric,
          nullif(v.value ->> 1, '')::numeric::smallint
@@ -267,7 +278,7 @@ begin
     cross join lateral jsonb_each(s.vals) v
    where s.animal_id is not null
      and jsonb_typeof(v.value -> 0) = 'number'
-   order by s.animal_id, v.key, s.ord desc;
+   order by s.animal_id, upper(v.key), s.ord desc;
   get diagnostics n_values = row_count;
 
   select count(*), count(animal_id),

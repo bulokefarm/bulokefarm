@@ -10,7 +10,8 @@ you get two runs; delete one from asbv_run and its values go with it.
 
 The export's exact columns are not known until Toland sends one, so
 this reads the header rather than trusting fixed names:
-  - the ID column is the one whose values are sixteen digits,
+  - the ID column is the one whose values are sixteen characters: ten
+    digits (flock, drop year) and a tag that may have letters in it,
   - the EID column is the one whose values are fifteen digits once the
     space is gone (940 110012345678),
   - a trait is any other column of small numbers (not a sire, dam,
@@ -31,6 +32,8 @@ with open(SRC, newline="", encoding="utf-8-sig") as f:
     rows = list(csv.reader(f))
 head, body = [h.strip() for h in rows[0]], [r for r in rows[1:] if any(c.strip() for c in r)]
 digits = lambda s: re.sub(r"\D", "", s or "")
+alnum = lambda s: re.sub(r"[^0-9A-Za-z]", "", s or "").upper()
+is_sg_id = lambda v: re.fullmatch(r"\d{10}[0-9A-Z]{6}", alnum(v)) is not None
 col = lambda i: [r[i].strip() if i < len(r) else "" for r in body]
 
 def share(i, test):
@@ -43,10 +46,10 @@ def num(v):
     except ValueError:
         return None
 
-id_col  = next((i for i in range(len(head)) if share(i, lambda v: len(digits(v)) == 16)), None)
+id_col  = next((i for i in range(len(head)) if share(i, is_sg_id)), None)
 eid_col = next((i for i in range(len(head)) if i != id_col and share(i, lambda v: len(digits(v)) == 15)), None)
 if id_col is None and eid_col is None:
-    sys.exit("no sixteen-digit ID or fifteen-digit EID column found")
+    sys.exit("no sixteen-character ID or fifteen-digit EID column found")
 
 # Columns of numbers that are not breeding values: who the parents are,
 # tags, years. A value never has five digits before the point.
@@ -84,7 +87,7 @@ for r in body:
         if v is not None:
             acc = num(cell(a)) if a is not None else None
             vals[t] = [v, round(acc) if acc is not None else None]
-    out.append({"sg_id": digits(cell(id_col)) or None, "eid": digits(cell(eid_col)) or None, "values": vals})
+    out.append({"sg_id": alnum(cell(id_col)) or None, "eid": digits(cell(eid_col)) or None, "values": vals})
 
 print(f"{len(out)} animals, {len(traits)} traits", file=sys.stderr)
 print(f"select set_config('app.farm', (select id::text from farm where slug = '{FARM}'), false);")
