@@ -164,6 +164,17 @@ ul.rows li{border-bottom:1px solid var(--rule)}
 /* On anything wider than a phone the plan sits beside the name rather
    than under it: the row has the room, and the age stays hard right.
    Below that it stacks, as the feed block always has. */
+/* Breeding values in the herd list, for a farm that records: as many
+   as the row has room for, most asked-about first, none on a phone. */
+.row .bvl{display:none;flex:none;align-self:center;margin-right:12px}
+.row .bvc{display:none;flex-direction:column;align-items:flex-end;width:60px;
+  font-family:var(--mono);font-size:13px;font-weight:600;line-height:1.25}
+.row .bvc i{font-style:normal;font-size:10.5px;font-weight:500;color:var(--ink2)}
+.row .bvc.low{color:var(--ink2);font-weight:400}
+@media (min-width:760px){ .row .bvl{display:flex} .row .bvc:nth-child(-n+4){display:flex} }
+@media (min-width:960px){ .row .bvc:nth-child(-n+6){display:flex} }
+@media (min-width:1160px){ .row .bvc:nth-child(-n+8){display:flex} }
+@media (min-width:1360px){ .row .bvc{display:flex} }
 @media (min-width:640px){
   .row .meta.hasplan{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.4fr);
     column-gap:20px;align-items:start}
@@ -599,6 +610,33 @@ async function loadHerd(){
   if(error) throw error;
   S.animals = data || [];
 }
+// The herd list's breeding values (65): the newest of a few traits for
+// every animal, only on a farm that records. A page holds 1,000 rows,
+// so it comes a page at a time; it changes only when a file is loaded,
+// so the herd shows first and these fill in behind it.
+const BV_LIST = ["YCFW","YFD","YWT","YSL","YFDCV","YSS","YEMD","YFAT","EBWR","YWEC"];
+async function loadBv(){
+  const bv = new Map();
+  if(S.farm?.sg_flock_id)
+    for(let from = 0; ; from += 1000){
+      const { data, error } = await db.from("v_asbv_latest").select("animal_id,trait,value,accuracy")
+        .in("trait", BV_LIST).order("animal_id").order("trait").range(from, from + 999);
+      if(error || !data?.length) break;
+      for(const r of data){
+        if(!bv.has(r.animal_id)) bv.set(r.animal_id, {});
+        bv.get(r.animal_id)[r.trait] = r;
+      }
+      if(data.length < 1000) break;
+    }
+  S.bv = bv;
+}
+function bvListHTML(a){
+  const v = S.bv?.get(a.id);
+  if(!v) return "";
+  return `<span class="bvl">${BV_LIST.map(k => { const r = v[k];
+    return `<span class="bvc${r && r.accuracy != null && r.accuracy < 50 ? " low" : ""}"><i>${k}</i>${
+      r ? bvNum(r.value, k) : "–"}</span>`; }).join("")}</span>`;
+}
 async function loadPending(){
   const { data } = await db.from("expected_calving")
     .select("id,dam_id,due_on,season,sire:sire_id(name)")
@@ -838,7 +876,7 @@ function viewHerd(){
                   : "<span style='opacity:.6'>no paddock</span>") + ` · ${esc(a.breed||"")}`}</span>
           ${planBlockHTML(a)}${feedBlockHTML(a)}
         </span>
-        <span class="rt">${age(a.age_years)}${a.last_weight_kg?"<br>"+Math.round(a.last_weight_kg)+" kg":""}</span>
+        ${bvListHTML(a)}<span class="rt">${age(a.age_years)}${a.last_weight_kg?"<br>"+Math.round(a.last_weight_kg)+" kg":""}</span>
       </button></li>`);
       li.querySelector("button").onclick = () => { S.sel=a.id; S.view="detail"; render(); };
       ul.appendChild(li);
@@ -4508,6 +4546,7 @@ async function viewAsbv(){
         un.map(esc).join("<br>")}</p><p>Usually outside sires and older ewes not yet entered.
         They load the next time the file goes in, once they are on file.</p></details>` : ""}`;
       parsed = null; fileIn.value = "";
+      loadBv().catch(() => {});
       await asbvRuns(runs);
     }catch(err){
       say(box, "err", err.message || "Could not load. Check your connection and try again.");
@@ -4852,6 +4891,9 @@ async function boot(loginErr){
     await loadPrefs();
     await Promise.all([loadHerd(), loadPaddocks(), loadRefs(), loadPending(), loadPlans()]);
     render();
+    // Not while someone is typing in the search: a render would take the box away.
+    loadBv().then(() => { if(S.bv.size && S.view === "herd" && document.activeElement?.tagName !== "INPUT") render(); })
+      .catch(() => {});
   }catch(e){
     // Every path above touches the network, and a cold launch on a weak
     // signal is where it goes wrong. Show the reason and a way to retry;
