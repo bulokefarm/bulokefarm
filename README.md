@@ -44,7 +44,8 @@ joinings.
 
 **Record** — feed out, move mob, weights, treatments, joinings, join
 planning, calvings, shed work, stock brought on, sale/consignment. Plus the flasks (tank store and
-straw movements) and Manage (feed store, bulk update, field visibility).
+straw movements) and Manage (feed store, bulk update, field visibility, and for a stud that
+records with Sheep Genetics, breeding values: drop in the ASBV export CSV).
 
 **Correcting a joining** — a joining on an animal's card opens: result,
 dates, sire, season, attempt. Anyone who records can correct one; an

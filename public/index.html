@@ -647,7 +647,14 @@ async function loadMe(){
   S.me = data ? {...data, email:user.email} : {id:user.id, email:user.email, role:null, active:false};
   S.farm = data ? { id:data.farm_id, slug:data.slug, name:data.farm_name,
                     address:data.farm_address, logo_url:data.logo_url } : null;
-  if(S.farm){ document.title = S.farm.name; window.__setFarm?.(S.farm); S.farms = await loadFarms(); }
+  if(S.farm){
+    document.title = S.farm.name; window.__setFarm?.(S.farm);
+    // A farm that records with Sheep Genetics has a flock number (65);
+    // only then is there a breeding-values file to drop in.
+    const [farms, sg] = await Promise.all([loadFarms(),
+      db.from("farm").select("sg_flock_id").eq("id", S.farm.id).maybeSingle()]);
+    S.farms = farms; S.farm.sg_flock_id = sg.data?.sg_flock_id || null;
+  }
   return S.me;
 }
 // Farms this login is on, for the switch in the menu (v_my_farms, migration 57).
@@ -1583,6 +1590,8 @@ function viewRecord(){
     ...(untagged ? [["tagdrop","Tag the drop", `${untagged} without a number yet`]] : []),
     ["store","Feed store", low ? `${low} low on stock` : `${S.feeds.length} in the shed`],
     ["bulk","Bulk update","Change a field across many animals"],
+    ...(S.farm?.sg_flock_id ? [["asbv","Breeding values",
+      `Drop in the Sheep Genetics file · flock ${S.farm.sg_flock_id}`]] : []),
     ["settings","Which fields to show","Turn animal details on or off"],
     ...(isOwner() ? [["users","Who can see this farm","Add people, set what they can do"]] : [])]);
 
@@ -4175,6 +4184,187 @@ function tagDrop(){
 }
 
 // ─── bulk update ────────────────────────────────────────────────
+// Breeding values (65). The Sheep Genetics export goes in as it comes:
+// the file is read here, in the browser, the way
+// seed/tools/import_sg_asbv.py reads it, and import_asbv places each row.
+// Its exact columns are not known until a real one arrives, so the
+// columns are worked out from what is in them, and shown before loading.
+function readCsv(text){
+  text = text.replace(/^﻿/, "");
+  const first = text.split(/\r?\n/, 1)[0];
+  const sep = (first.match(/\t/g)||[]).length > (first.match(/,/g)||[]).length ? "\t" : ",";
+  const rows = []; let row = [], cell = "", q = false;
+  for(let i = 0; i < text.length; i++){
+    const c = text[i];
+    if(q){
+      if(c === '"' && text[i+1] === '"'){ cell += '"'; i++; }
+      else if(c === '"') q = false;
+      else cell += c;
+    }
+    else if(c === '"') q = true;
+    else if(c === sep){ row.push(cell); cell = ""; }
+    else if(c === "\n" || c === "\r"){
+      if(c === "\r" && text[i+1] === "\n") i++;
+      row.push(cell); rows.push(row); row = []; cell = "";
+    }
+    else cell += c;
+  }
+  if(cell !== "" || row.length){ row.push(cell); rows.push(row); }
+  return rows;
+}
+
+function sgColumns(rows){
+  const head = (rows[0]||[]).map(h => h.trim());
+  const body = rows.slice(1).filter(r => r.some(c => c.trim()));
+  const col = i => body.map(r => (r[i]||"").trim());
+  const share = (i, test) => { const v = col(i).filter(Boolean); return v.length && v.filter(test).length / v.length >= .9; };
+  const digits = s => (s||"").replace(/\D/g, "");
+  const alnum  = s => (s||"").replace(/[^0-9A-Za-z]/g, "").toUpperCase();
+  const num    = s => { const n = Number(String(s).replace(/,/g, "")); return s !== "" && isFinite(n) ? n : null; };
+  const isId   = v => /^\d{10}[0-9A-Z]{6}$/.test(alnum(v));
+
+  const idCol  = head.findIndex((_, i) => share(i, isId));
+  const eidCol = head.findIndex((_, i) => i !== idCol && share(i, v => digits(v).length === 15));
+  // Columns of numbers that are not breeding values: parents, tags, years.
+  const NOT = /sire|dam|tag|\bid\b|ident|year|drop|birth|dob|sex|flock|born|rear|group|no\.?$/i;
+  const ACC = /^(.*?)[\s_.-]*(acc|accuracy|%)$/i;
+  const traits = [];
+  head.forEach((h, i) => {
+    if(i === idCol || i === eidCol || ACC.test(h) || NOT.test(h)) return;
+    if(!share(i, v => num(v) !== null) || share(i, v => /^\d{5,}$/.test(v.replace(/,/g, "")))) return;
+    const trait = h.replace(/[^A-Za-z0-9+_-]/g, "").toUpperCase().slice(0, 16);
+    if(!trait) return;
+    const acc = head.findIndex((g, j) => { const m = g.match(ACC);
+      return m && (m[1].replace(/[^A-Za-z0-9+]/g, "").toUpperCase() === trait.replace(/_/g, "")
+                   || (j === i + 1 && !m[1].trim())); });
+    traits.push({ i, trait, acc: acc < 0 ? null : acc });
+  });
+
+  const out = body.map(r => {
+    const cell = i => i == null || i < 0 ? "" : (r[i]||"").trim();
+    const values = {};
+    for(const t of traits){
+      const v = num(cell(t.i));
+      if(v === null) continue;
+      const a = t.acc === null ? null : num(cell(t.acc));
+      values[t.trait] = [v, a === null ? null : Math.round(a)];
+    }
+    return { sg_id: alnum(cell(idCol)) || null, eid: digits(cell(eidCol)) || null, values };
+  });
+  return { head, idCol, eidCol, traits, rows: out };
+}
+
+async function viewAsbv(){
+  const wrap = el(`<div></div>`);
+  wrap.appendChild(el(`<h3 class="sec">Breeding values</h3>`));
+  const box = el(`<div style="padding:0 14px 14px">
+    <p class="hint" style="margin-top:0">From your Sheep Genetics login, export the ASBV report for
+      flock ${esc(S.farm.sg_flock_id)} as a CSV and drop it in here. Each animal is found by its
+      Sheep Genetics ID, then its EID, then its tag. Loading a file never changes an earlier one;
+      the newest analysis is what the herd shows.</p>
+    <label><span>Analysis date on the report</span><input type="date" name="on" required></label>
+    <label class="drop" style="border:2px dashed var(--rule);border-radius:12px;padding:22px 14px;
+      text-align:center;cursor:pointer;background:var(--card)">
+      <span style="text-transform:none;letter-spacing:0;font-size:15px;color:var(--ink);margin:0">
+        Drop the CSV here, or tap to choose it</span>
+      <input type="file" accept=".csv,.txt,text/csv" style="display:none"></label>
+    <div class="found"></div>
+    <button type="button" class="btn" disabled>Load</button>
+  </div>`);
+  wrap.appendChild(box);
+  const dateIn = box.querySelector("input[type=date]"), fileIn = box.querySelector("input[type=file]");
+  const drop = box.querySelector(".drop"), found = box.querySelector(".found"), go = box.querySelector(".btn");
+  let parsed = null, fileName = null;
+
+  const take = async (file) => {
+    if(!file) return;
+    fileName = file.name; parsed = null; go.disabled = true;
+    // Analysis date in the file name, if it has one (2026-09-15, 20260915).
+    const m = file.name.match(/(20\d\d)[-_]?(\d\d)[-_]?(\d\d)/);
+    if(m && !dateIn.value) dateIn.value = `${m[1]}-${m[2]}-${m[3]}`;
+    const p = sgColumns(readCsv(await file.text()));
+    if(p.idCol < 0 && p.eidCol < 0){
+      found.innerHTML = `<div class="msg err">${esc(file.name)}: no column of Sheep Genetics IDs
+        (sixteen characters) or EIDs (fifteen digits) found. Is this the ASBV export?</div>`;
+      return;
+    }
+    if(!p.traits.length){
+      found.innerHTML = `<div class="msg err">${esc(file.name)}: no breeding-value columns found.</div>`;
+      return;
+    }
+    parsed = p; go.disabled = false;
+    found.innerHTML = `<div class="msg ok"><b>${esc(file.name)}</b>: ${p.rows.length} animals,
+      ${p.traits.length} traits.</div>
+      <p class="hint">Animals by <b>${esc(p.idCol >= 0 ? p.head[p.idCol] : "—")}</b>${
+        p.eidCol >= 0 ? `, EID from <b>${esc(p.head[p.eidCol])}</b>` : ""}.</p>
+      <p class="hint" style="line-height:1.7">${p.traits.map(t =>
+        `<span class="chip" style="cursor:default">${esc(t.trait)}${
+          t.acc === null ? "" : ` <small style="opacity:.7">± ${esc(p.head[t.acc])}</small>`}</span>`).join(" ")}</p>
+      <p class="hint">Check these are the columns you expect before loading.</p>`;
+  };
+  fileIn.onchange = () => take(fileIn.files[0]);
+  drop.ondragover = e => { e.preventDefault(); drop.style.borderColor = "var(--accent)"; };
+  drop.ondragleave = () => drop.style.borderColor = "";
+  drop.ondrop = e => { e.preventDefault(); drop.style.borderColor = ""; take(e.dataTransfer.files[0]); };
+
+  go.onclick = async () => {
+    if(!parsed || S.busy) return;
+    if(!dateIn.value){ say(box, "err", "Put in the analysis date from the report."); return; }
+    S.busy = true; go.disabled = true; go.textContent = "Loading…";
+    try{
+      const { data, error } = await db.rpc("import_asbv", {
+        p_analysis_on: dateIn.value, p_rows: parsed.rows, p_file_name: fileName });
+      if(error) throw error;
+      const un = data.unmatched || [];
+      found.innerHTML = `<div class="msg ok">Loaded: ${data.matched} of ${data.rows} animals found,
+        ${data.values} values.</div>${un.length ? `<details class="hint"><summary>${un.length} not on file
+        here</summary><p style="font-family:var(--mono);font-size:12px;line-height:1.6">${
+        un.map(esc).join("<br>")}</p><p>Usually outside sires and older ewes not yet entered.
+        They load the next time the file goes in, once they are on file.</p></details>` : ""}`;
+      parsed = null; fileIn.value = "";
+      await asbvRuns(runs);
+    }catch(err){
+      say(box, "err", err.message || "Could not load. Check your connection and try again.");
+      go.disabled = false;
+    }
+    S.busy = false; go.textContent = "Load";
+  };
+
+  const runs = el(`<div></div>`);
+  await asbvRuns(runs);
+  wrap.appendChild(runs);
+  const back = el(`<button type="button" class="btn ghost" style="margin:0 14px 14px;width:calc(100% - 28px)">Back</button>`);
+  back.onclick = () => { S.view = "record"; render(); };
+  wrap.appendChild(back);
+  return wrap;
+}
+
+async function asbvRuns(box){
+  box.innerHTML = "";
+  const { data } = await db.from("asbv_run")
+    .select("id,analysis_on,file_name,rows_in,matched,imported_at")
+    .order("analysis_on", {ascending:false}).order("imported_at", {ascending:false});
+  if(!data?.length) return;
+  box.appendChild(el(`<h3 class="sec">Loaded so far</h3>`));
+  const ul = el(`<ul class="rows"></ul>`);
+  for(const r of data){
+    const li = el(`<li><div class="row"><span class="meta">
+      <span class="nm">${fmt(r.analysis_on)} analysis</span>
+      <span class="sub">${r.matched} of ${r.rows_in} found · ${esc(r.file_name||"")} · loaded ${
+        fmt(r.imported_at.slice(0,10))}</span></span>${
+      isOwner() ? `<button type="button" class="chip" style="flex:none">Remove</button>` : ""}</div></li>`);
+    const del = li.querySelector("button");
+    if(del) del.onclick = async () => {
+      if(!confirm(`Remove the ${fmt(r.analysis_on)} analysis and every value it brought in?`)) return;
+      const { error } = await db.from("asbv_run").delete().eq("id", r.id);
+      if(error){ alert(error.message); return; }
+      await asbvRuns(box);
+    };
+    ul.appendChild(li);
+  }
+  box.appendChild(ul);
+}
+
 function bulkEdit(){
   const bulkable = AF.filter(f => f[5]);
   const inner = el(`<div>
@@ -4420,6 +4610,7 @@ async function render(){
   else if(S.view==="rec:editjoin")  body = await editJoining();
   else if(S.view==="rec:sell")      body = recSell();
   else if(S.view==="rec:bulk")      body = bulkEdit();
+  else if(S.view==="rec:asbv")      body = await viewAsbv();
   else if(S.view==="rec:tagdrop")   body = tagDrop();
   else if(S.view==="rec:closedue")  body = closeDue();
   else if(S.view==="rec:settings")  body = viewSettings();
