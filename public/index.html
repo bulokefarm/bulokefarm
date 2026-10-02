@@ -244,6 +244,7 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-
 .picker{display:flex;flex-wrap:wrap;gap:7px;margin-top:6px}
 .pick{border:1px solid var(--rule);background:var(--card);border-radius:9px;padding:0;cursor:pointer}
 .pick[aria-pressed="true"]{outline:2.5px solid var(--accent);outline-offset:1px}
+.pick:disabled{opacity:.3;filter:grayscale(1);cursor:default}
 .hint{font-size:12.5px;color:var(--ink2);margin:6px 0 0}
 .note{background:var(--accent-soft);border-radius:10px;padding:11px 13px;font-size:13.5px;margin:14px 0 0}
 label.chk{display:flex;align-items:center;gap:10px;min-height:var(--tap)}
@@ -484,7 +485,16 @@ const headIn = id => S.animals.filter(a => isActive(a) && inSpecies(a) && a.padd
 // settled before the words on the buttons can be.
 const SPECIES = ["cattle","sheep"];
 const sLabel = sp => ({cattle:"Cattle", sheep:"Sheep"})[sp] || sp;
-const inSpecies = a => S.species === "all" || a.species === S.species;
+// The PIC scope rides along with the species: two own PICs stock
+// together on one farm (Richard's and Dad's), and everywhere the herd
+// is narrowed to a species it is narrowed to a PIC too. A PIC not on
+// this farm's stock (after switching farms) scopes to nothing, so it
+// reads as all.
+const herdPics = () => [...new Set(S.animals.filter(isActive).map(a => a.pic).filter(Boolean))].sort();
+const inPic = a => S.pic === "all" || a.pic === S.pic || !herdPics().includes(S.pic);
+const inSpecies = a => (S.species === "all" || a.species === S.species) && inPic(a);
+// Due and plans carry the dam's id, not her PIC.
+const damInPic = id => S.pic === "all" || inPic(S.animals.find(a => a.id === id) || {});
 const speciesOf = a => a?.species || "cattle";
 const hasBoth = () => new Set(S.animals.map(speciesOf)).size > 1;
 const hasSpecies = sp => S.animals.some(a => speciesOf(a) === sp);
@@ -493,8 +503,9 @@ const hasSpecies = sp => S.animals.some(a => speciesOf(a) === sp);
 // recorded, and not a reference sire that has never set foot on the
 // place — those exist to hang a pedigree on, not to join a mob.
 const sireWord = sp => (sp === "sheep" ? "ram" : "bull");
+// Not narrowed by PIC: the two herds run together and share a bull.
 const workingSires = () => S.animals.filter(a =>
-  isActive(a) && inSpecies(a) && a.class === sireWord(speciesOf(a)));
+  isActive(a) && (S.species === "all" || a.species === S.species) && a.class === sireWord(speciesOf(a)));
 
 const CLASS_ORDER = {
   cattle: ["breeder","harvest","yearling","weaner","calf","protector","bull"],
@@ -522,15 +533,31 @@ const wl = (k, sp = S.species) => w(k, sp).toLowerCase();
 // The scope control, wherever it is needed. One piece of state, so
 // setting it on the herd screen carries into the record forms.
 function speciesBar(){
-  if(!hasBoth()) return null;
-  const bar = el(`<div class="search" style="padding-top:0"><div class="seg">
-    <button aria-pressed="${S.species==="all"}">All stock</button>
-    <button aria-pressed="${S.species==="cattle"}">Cattle</button>
-    <button aria-pressed="${S.species==="sheep"}">Sheep</button>
-  </div></div>`);
-  bar.querySelectorAll(".seg button").forEach((b,i) => b.onclick = () => {
-    S.species = ["all","cattle","sheep"][i]; S.filter = "all"; render();
-  });
+  const pics = herdPics();
+  if(!pics.includes(S.pic)) S.pic = "all";
+  if(!hasBoth() && pics.length < 2) return null;
+  const bar = el(`<div class="search" style="padding-top:0"></div>`);
+  if(hasBoth()){
+    const seg = el(`<div class="seg">
+      <button aria-pressed="${S.species==="all"}">All stock</button>
+      <button aria-pressed="${S.species==="cattle"}">Cattle</button>
+      <button aria-pressed="${S.species==="sheep"}">Sheep</button>
+    </div>`);
+    seg.querySelectorAll("button").forEach((b,i) => b.onclick = () => {
+      S.species = ["all","cattle","sheep"][i]; S.filter = "all"; render();
+    });
+    bar.appendChild(seg);
+  }
+  if(pics.length > 1){
+    const seg = el(`<div class="seg pics">
+      <button aria-pressed="${S.pic==="all"}">All PICs</button>
+      ${pics.map(p => `<button aria-pressed="${S.pic===p}">${esc(p)}</button>`).join("")}
+    </div>`);
+    seg.querySelectorAll("button").forEach((b,i) => b.onclick = () => {
+      S.pic = i ? pics[i-1] : "all"; S.filter = "all"; render();
+    });
+    bar.appendChild(seg);
+  }
   return bar;
 }
 
@@ -602,7 +629,7 @@ const dofHTML = a => a.days_on_feed == null ? ""
       a.days_on_feed} d fed</span>`;
 
 // ─── state ──────────────────────────────────────────────────────
-const S = { me:null, farm:null, farms:[], editJoin:null, farmPublic:undefined, members:[], animals:[], herdMode:"list", species:"all", treeLink:null, cryoLot:null, joinMode:"natural", pending:[], plans:[], editPlan:null, treeFam:undefined, treePend:false, paddocks:[], feeds:[], feedsDone:[], refs:{}, prefs:null, selFeed:null, closeDue:null, view:"herd", filter:"all", q:"", sel:null, selPk:null, busy:false };
+const S = { me:null, farm:null, farms:[], editJoin:null, farmPublic:undefined, members:[], animals:[], herdMode:"list", species:"all", pic:"all", treeLink:null, cryoLot:null, joinMode:"natural", pending:[], plans:[], editPlan:null, treeFam:undefined, treePend:false, paddocks:[], feeds:[], feedsDone:[], refs:{}, prefs:null, selFeed:null, closeDue:null, view:"herd", filter:"all", q:"", sel:null, selPk:null, busy:false };
 
 // ═══ data ═══════════════════════════════════════════════════════
 async function loadHerd(){
@@ -908,7 +935,7 @@ async function viewDue(){
   // Filtered here rather than in the query: the species is on the dam,
   // and PostgREST can't filter a parent by an embedded child's column.
   const rows0 = (data || []).filter(r =>
-    S.species === "all" || (r.dam?.species || "cattle") === S.species);
+    (S.species === "all" || (r.dam?.species || "cattle") === S.species) && damInPic(r.dam_id));
 
   if(!rows0.length){
     wrap.appendChild(el(`<div class="empty"><b>Nothing due</b>Expected ${
@@ -1122,7 +1149,8 @@ async function viewDetail(){
   if(shown("born_as"))      F("Born as", esc(pickLabel("born_as", a.born_as)));
   if(shown("weaned_on"))    F("Weaned", fmt(a.weaned_on));
   if(shown("heritage_name"))F("Heritage", esc(a.heritage_name||"—"));
-  if(shown("pic"))          F("PIC", esc(a.pic||"—"), false, true);
+  // With more than one PIC on the farm, whose an animal is always shows.
+  if(shown("pic") || herdPics().length > 1) F("PIC", esc(a.pic||"—"), false, true);
   if(shown("origin_pic"))   F("Original PIC", esc(a.origin_pic||"—"), false, true);
   if(shown("purchased_on")) F("Purchased", fmt(a.purchased_on));
   if(shown("purchase_note"))F("Purchase note", esc(a.purchase_note||"—"), true);
@@ -2001,7 +2029,7 @@ function recJoining(plan = false){
 // was made and unmade is still a thing that happened.
 function planList(){
   const wrap  = el(`<div></div>`);
-  const plans = S.plans.filter(p => S.species === "all" || (p.species || "cattle") === S.species);
+  const plans = S.plans.filter(p => (S.species === "all" || (p.species || "cattle") === S.species) && damInPic(p.dam_id));
   const key = p => p.dam_id, lead = new Map();
   plans.forEach((p, i) => { if(!lead.has(key(p))) lead.set(key(p), i); });
   plans.sort((x, y) => lead.get(key(x)) - lead.get(key(y)) || byPlanDate(x, y));
@@ -4041,7 +4069,7 @@ function recMove(){
   const setAll = (ids, on) => {
     pick.querySelectorAll(".pick").forEach((b,i) => {
       const a = pick.list[i];
-      if(b.hidden || !ids.includes(a.id)) return;
+      if(b.disabled || !ids.includes(a.id)) return;
       on ? pick.chosen.add(a.id) : pick.chosen.delete(a.id);
       b.setAttribute("aria-pressed", on);
     });
@@ -4073,14 +4101,16 @@ function recMove(){
   inner.appendChild(count);
 
   // An animal already standing in the destination has nowhere to go, so it
-  // isn't offered — and its chip would select nothing. Follows the select,
-  // not just the paddock the map handed us, since the destination can change.
+  // can't be picked — but it stays on screen, greyed, so the mob that will
+  // be there afterwards can be seen whole. Follows the select, not just the
+  // paddock the map handed us, since the destination can change.
   const to = inner.querySelector('select[name="to"]');
   const applyDest = () => {
     const pid = to.value; let n = 0;
     pick.querySelectorAll(".pick").forEach((b,i) => {
       const here = !!pid && pick.list[i].paddock_id===pid;
-      b.hidden = here;
+      b.disabled = here;
+      b.title = here ? `${pick.list[i].name ? pick.list[i].name + " — " : ""}already here` : (pick.list[i].name || "");
       if(here && pick.chosen.delete(pick.list[i].id)) b.setAttribute("aria-pressed","false");
       if(here) n++;
     });
