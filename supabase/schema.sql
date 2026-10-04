@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict Qqwfq3B7RJ6PK1qJCGEsxUETcBhqRyguLYT3kzTe8PKFVmuVnivTpSwfSxihMKf
+\restrict y1PCvn1ss0MVALr0E8CoFQXFUF4lZBjnC3KgbNb42ISTCWwtf2dq6NnCuQGwQA8
 
 -- Dumped from database version 17.6
 -- Dumped by pg_dump version 17.11 (Ubuntu 17.11-1.pgdg24.04+2)
@@ -214,22 +214,58 @@ CREATE TYPE public.species_t AS ENUM (
 
 
 --
+-- Name: add_member(text, public.farm_role_t); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.add_member(p_email text, p_role public.farm_role_t DEFAULT 'viewer'::public.farm_role_t) RETURNS text
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+declare
+  uid   uuid;
+  fid   uuid := current_farm();
+  who   text;
+begin
+  if fid is null or my_role() <> 'owner' then
+    raise exception 'Only an owner can add people to the farm';
+  end if;
+  select u.id into uid from auth.users u
+   where lower(u.email) = lower(trim(p_email));
+  if uid is null then
+    raise exception 'There is no login for % yet. One has to be created for them first; then add them here.', trim(p_email);
+  end if;
+  insert into farm_member (farm_id, user_id, role, active)
+  values (fid, uid, p_role, true)
+  on conflict (farm_id, user_id) do update set role = excluded.role, active = true;
+  update farm_user set current_farm_id = coalesce(current_farm_id, fid) where id = uid;
+  select display_name into who from farm_user where id = uid;
+  return who;
+end $$;
+
+
+--
 -- Name: animal_code_parts(); Type: FUNCTION; Schema: public; Owner: -
 --
 
 CREATE FUNCTION public.animal_code_parts() RETURNS trigger
     LANGUAGE plpgsql
-    SET search_path TO 'public'
     AS $_$
 declare m text[];
 begin
-  m := regexp_match(coalesce(new.stock_code, ''), '^\s*([A-Za-z]{1,2})\s*(\d{1,4})\s*$');
+  m := regexp_match(coalesce(new.stock_code, ''), '^\s*([A-Za-z]{1,2})\s*(\d{1,6})\s*$');
   if m is not null then
     new.year_letter := upper(m[1]);
     new.herd_number := m[2]::int;
   end if;
   return new;
 end $_$;
+
+
+--
+-- Name: FUNCTION animal_code_parts(); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.animal_code_parts() IS 'Splits a typed stock code into year_letter (one or two letters) and herd_number (up to six digits). Anything else is kept as written.';
 
 
 --
@@ -439,6 +475,96 @@ COMMENT ON FUNCTION public.cryo_ref_code(ref text) IS 'Pulls the stock code out 
 
 
 --
+-- Name: current_farm(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.current_farm() RETURNS uuid
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+  select coalesce(
+    (select u.current_farm_id
+       from farm_user u
+       join farm_member m on m.farm_id = u.current_farm_id
+                         and m.user_id = u.id and m.active
+      where u.id = auth.uid()),
+    (select m.farm_id
+       from farm_member m
+      where m.user_id = auth.uid() and m.active
+      order by m.created_at
+      limit 1),
+    case when auth.uid() is null
+         then nullif(current_setting('app.farm', true), '')::uuid
+    end)
+$$;
+
+
+--
+-- Name: FUNCTION current_farm(); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.current_farm() IS 'The farm this session works in: membership for a signed-in user, the app.farm setting for a script with no JWT.';
+
+
+--
+-- Name: dam_gestation_moves_plans(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.dam_gestation_moves_plans() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+begin
+  if new.gestation_days is distinct from old.gestation_days then
+    update planned_joining set planned_on = planned_on
+     where dam_id = new.id and planned_on is not null
+       and joining_id is null and cancelled_on is null;
+  end if;
+  return new;
+end $$;
+
+
+--
+-- Name: farm_id_from_parent(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.farm_id_from_parent() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path TO 'public'
+    AS $_$   -- invoker: the lookups are under RLS
+declare
+  i   int := 0;
+  ref uuid;
+  f   uuid;
+  found_farm uuid;
+begin
+  while i < tg_nargs loop
+    ref := (to_jsonb(new) ->> tg_argv[i + 1])::uuid;
+    if ref is not null then
+      execute format('select farm_id from %I where id = $1', tg_argv[i])
+         into f using ref;
+      if f is null then
+        raise exception 'No % on this farm for %', tg_argv[i], tg_argv[i + 1]
+          using errcode = 'foreign_key_violation';
+      end if;
+      if found_farm is not null and f <> found_farm then
+        raise exception '% belongs to another farm', tg_argv[i + 1]
+          using errcode = 'foreign_key_violation';
+      end if;
+      found_farm := f;
+    end if;
+    i := i + 2;
+  end loop;
+
+  new.farm_id := coalesce(found_farm, new.farm_id, current_farm());
+  if new.farm_id is null then
+    raise exception 'No farm for this %', tg_table_name;
+  end if;
+  return new;
+end $_$;
+
+
+--
 -- Name: feed_line_changed(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -584,8 +710,146 @@ CREATE FUNCTION public.handle_new_user() RETURNS trigger
     SET search_path TO 'public'
     AS $$
 begin
-  insert into farm_user (id, display_name, role, active)
-  values (new.id, coalesce(new.raw_user_meta_data->>'name', new.email), 'viewer', false);
+  insert into farm_user (id, display_name)
+  values (new.id, coalesce(new.raw_user_meta_data->>'name', new.email))
+  on conflict (id) do nothing;
+  return new;
+end $$;
+
+
+--
+-- Name: import_asbv(date, jsonb, text, text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.import_asbv(p_analysis_on date, p_rows jsonb, p_file_name text DEFAULT NULL::text, p_source text DEFAULT 'MERINOSELECT'::text) RETURNS jsonb
+    LANGUAGE plpgsql
+    SET search_path TO 'public'
+    AS $_$
+declare
+  run       uuid;
+  farm      uuid := current_farm();
+  flock     text;
+  n_rows    int;
+  n_matched int;
+  n_values  int;
+  unmatched jsonb;
+begin
+  -- A signed-in caller must be able to write. Run from the SQL editor or a
+  -- seed (no sign-in), the farm comes from app.farm, as the seeds name it.
+  if auth.uid() is not null and not coalesce(can_write(), false) then
+    raise exception 'Only an owner or manager can load breeding values'
+      using errcode = 'insufficient_privilege';
+  end if;
+  if farm is null then
+    raise exception 'No farm: sign in, or set app.farm to the farm id first';
+  end if;
+  if jsonb_typeof(p_rows) <> 'array' then
+    raise exception 'p_rows must be a JSON array';
+  end if;
+  select f.sg_flock_id into flock from farm f where f.id = farm;
+
+  insert into asbv_run (analysis_on, source, file_name)
+  values (p_analysis_on, p_source, p_file_name)
+  returning id into run;
+
+  if to_regclass('pg_temp._sg') is not null then drop table _sg; end if;
+  create temp table _sg on commit drop as
+  select r.ord,
+         nullif(upper(regexp_replace(r.row ->> 'sg_id', '[^0-9A-Za-z]', '', 'g')), '') as sg_id,
+         nullif(regexp_replace(r.row ->> 'eid',   '\D', '', 'g'), '') as eid,
+         r.row -> 'values' as vals,
+         null::uuid as animal_id
+    from jsonb_array_elements(p_rows) with ordinality as r(row, ord);
+  -- A fresh table has no statistics; without them every match is a loop.
+  analyze _sg;
+
+  -- 1. By Sheep Genetics ID
+  update _sg s set animal_id = a.id
+    from animal a
+   where a.farm_id = farm and a.sg_id = s.sg_id;
+
+  -- 2. By EID, spaces aside
+  update _sg s set animal_id = m.id
+    from (select s2.ord, min(a.id::text)::uuid as id, count(*) as n
+            from _sg s2
+            join animal a on a.farm_id = farm
+                         and a.nlis_tag is not null
+                         and regexp_replace(a.nlis_tag, '\D', '', 'g') = s2.eid
+           where s2.animal_id is null and s2.eid is not null
+           group by s2.ord) m
+   where s.ord = m.ord and m.n = 1;
+
+  -- 3. By tag: the last six digits of the ID, our own flock only
+  update _sg s set animal_id = m.id
+    from (select s2.ord, min(a.id::text)::uuid as id, count(*) as n
+            from _sg s2
+            join animal a on a.farm_id = farm
+                         and a.species = 'sheep'
+                         and ((a.origin <> 'reference' and a.herd_number = right(s2.sg_id, 6)::int
+                               and (a.dob is null
+                                    or extract(year from a.dob)::int = substr(s2.sg_id, 7, 4)::int))
+                           or (a.origin =  'reference' and a.name = right(s2.sg_id, 6)))
+           where s2.animal_id is null and s2.sg_id ~ '^\d{16}$'
+             and left(s2.sg_id, 6) = flock
+           group by s2.ord) m
+   where s.ord = m.ord and m.n = 1;
+
+  -- An animal found by EID or tag takes the ID Sheep Genetics gave it,
+  -- unless another animal on the farm already holds it. One animal per
+  -- ID, should the file name the same ID twice.
+  update animal a set sg_id = s.sg_id
+    from (select distinct on (sg_id) sg_id, animal_id
+            from _sg
+           where animal_id is not null and sg_id ~ '^[0-9A-Z]{16}$'
+           order by sg_id, ord) s
+   where a.id = s.animal_id
+     and a.sg_id is distinct from s.sg_id
+     and not exists (select 1 from animal o where o.farm_id = farm and o.sg_id = s.sg_id);
+
+  insert into asbv (farm_id, run_id, animal_id, trait, value, accuracy)
+  select distinct on (s.animal_id, upper(v.key))
+         farm, run, s.animal_id, upper(v.key),
+         (v.value ->> 0)::numeric,
+         nullif(v.value ->> 1, '')::numeric::smallint
+    from _sg s
+    cross join lateral jsonb_each(s.vals) v
+   where s.animal_id is not null
+     and jsonb_typeof(v.value -> 0) = 'number'
+   order by s.animal_id, upper(v.key), s.ord desc;
+  get diagnostics n_values = row_count;
+
+  select count(*), count(animal_id),
+         coalesce(jsonb_agg(coalesce(sg_id, eid) order by ord) filter (where animal_id is null), '[]')
+    into n_rows, n_matched, unmatched
+    from _sg;
+
+  update asbv_run set rows_in = n_rows, matched = n_matched where id = run;
+
+  return jsonb_build_object(
+    'run_id', run, 'rows', n_rows, 'matched', n_matched,
+    'values', n_values, 'unmatched', unmatched);
+end $_$;
+
+
+--
+-- Name: FUNCTION import_asbv(p_analysis_on date, p_rows jsonb, p_file_name text, p_source text); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.import_asbv(p_analysis_on date, p_rows jsonb, p_file_name text, p_source text) IS 'Loads one Sheep Genetics run for the caller''s farm. Returns the run id, rows, matched, values written and the IDs it could not place.';
+
+
+--
+-- Name: joining_season(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.joining_season() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path TO 'public'
+    AS $$
+begin
+  if new.due_on is not null then
+    new.season := season_of(new.due_on);
+  end if;
   return new;
 end $$;
 
@@ -617,16 +881,17 @@ CREATE FUNCTION public.log_record_change() RETURNS trigger
     AS $$
 begin
   if tg_op = 'UPDATE' then
-    -- Ignore no-op saves so the log stays readable.
     if to_jsonb(old) - 'created_at' = to_jsonb(new) - 'created_at' then
       return new;
     end if;
-    insert into record_change_log (table_name, row_id, action, old_row, new_row)
-    values (tg_table_name, old.id, 'update', to_jsonb(old), to_jsonb(new));
+    insert into record_change_log (table_name, row_id, action, old_row, new_row, farm_id)
+    values (tg_table_name, old.id, 'update', to_jsonb(old), to_jsonb(new),
+            coalesce((to_jsonb(old) ->> 'farm_id')::uuid, current_farm()));
     return new;
   else
-    insert into record_change_log (table_name, row_id, action, old_row)
-    values (tg_table_name, old.id, 'delete', to_jsonb(old));
+    insert into record_change_log (table_name, row_id, action, old_row, farm_id)
+    values (tg_table_name, old.id, 'delete', to_jsonb(old),
+            coalesce((to_jsonb(old) ->> 'farm_id')::uuid, current_farm()));
     return old;
   end if;
 end $$;
@@ -685,7 +950,11 @@ CREATE FUNCTION public.my_role() RETURNS public.farm_role_t
     LANGUAGE sql STABLE SECURITY DEFINER
     SET search_path TO 'public'
     AS $$
-  select role from farm_user where id = auth.uid() and active
+  select m.role
+    from farm_member m
+   where m.user_id = auth.uid()
+     and m.farm_id = current_farm()
+     and m.active
 $$;
 
 
@@ -732,6 +1001,29 @@ COMMENT ON FUNCTION public.paddock_graze_block(p_paddock_id uuid, p_on date) IS 
 
 
 --
+-- Name: plan_backups_not_needed(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.plan_backups_not_needed() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+begin
+  if new.outcome in ('in_calf', 'calved')
+     and old.outcome is distinct from new.outcome then
+    update planned_joining
+       set cancelled_on = coalesce(new.tested_on, farm_today())
+     where dam_id = new.dam_id
+       and season = new.season
+       and attempt > new.attempt
+       and joining_id is null
+       and cancelled_on is null;
+  end if;
+  return new;
+end $$;
+
+
+--
 -- Name: plan_fulfilled(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -739,15 +1031,236 @@ CREATE FUNCTION public.plan_fulfilled() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path TO 'public'
     AS $$
+declare
+  answered uuid;
 begin
-  update planned_joining
-     set joining_id = new.id
+  select id into answered
+    from planned_joining
    where dam_id = new.dam_id
      and season = new.season
+     and joining_id is null
+     and cancelled_on is null
+   order by (attempt = new.attempt) desc, attempt
+   limit 1;
+
+  if answered is null then return new; end if;
+
+  update planned_joining set joining_id = new.id where id = answered;
+
+  update planned_joining
+     set cancelled_on = coalesce(new.joined_on, farm_today())
+   where dam_id = new.dam_id
+     and season = new.season
+     and attempt < new.attempt
      and joining_id is null
      and cancelled_on is null;
   return new;
 end $$;
+
+
+--
+-- Name: planned_joining_season(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.planned_joining_season() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path TO 'public'
+    AS $$
+declare g int;
+begin
+  if new.planned_on is not null then
+    select coalesce(new.gestation_days, d.gestation_days,
+                    case when d.species = 'sheep' then 145 else 285 end)
+      into g from animal d where d.id = new.dam_id;
+    new.season := season_of(new.planned_on + coalesce(g, 285));
+  end if;
+  return new;
+end $$;
+
+
+--
+-- Name: receive_stock(date, public.species_t, text, public.animal_class_t, public.sex_t, text[], integer, uuid, uuid, text, text, public.nvd_kind_t, text, text, date, text, boolean); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.receive_stock(p_on date, p_species public.species_t, p_how text DEFAULT 'purchased'::text, p_class public.animal_class_t DEFAULT NULL::public.animal_class_t, p_sex public.sex_t DEFAULT 'unknown'::public.sex_t, p_tags text[] DEFAULT NULL::text[], p_count integer DEFAULT NULL::integer, p_paddock_id uuid DEFAULT NULL::uuid, p_property_id uuid DEFAULT NULL::uuid, p_vendor_name text DEFAULT NULL::text, p_vendor_pic text DEFAULT NULL::text, p_nvd_kind public.nvd_kind_t DEFAULT NULL::public.nvd_kind_t, p_nvd_serial text DEFAULT NULL::text, p_breed text DEFAULT NULL::text, p_born date DEFAULT NULL::date, p_notes text DEFAULT NULL::text, p_ignore_withhold boolean DEFAULT false) RETURNS uuid[]
+    LANGUAGE plpgsql
+    SET search_path TO 'public'
+    AS $_$
+declare
+  fid     uuid := current_farm();
+  bought  boolean := (p_how = 'purchased');
+  tags    text[];
+  t       text;
+  m       text[];
+  n       int;
+  dup     text;
+  own     property%rowtype;
+  pk      paddock%rowtype;
+  vendor  uuid;
+  vpic    text := nullif(upper(regexp_replace(coalesce(p_vendor_pic, ''), '\s', '', 'g')), '');
+  vname   text := nullif(trim(coalesce(p_vendor_name, '')), '');
+  nvd     text := nullif(upper(trim(coalesce(p_nvd_serial, ''))), '');
+  note    text := nullif(trim(coalesce(p_notes, '')), '');
+  cons    uuid;
+  eff     date;
+  letter  text;
+  reason  text;
+  ids     uuid[] := '{}';
+  one     uuid;
+  i       int;
+begin
+  if fid is null then
+    raise exception 'No farm for this session';
+  end if;
+  if p_on is null then
+    raise exception 'It needs a date';
+  end if;
+  if p_on > farm_today() then
+    raise exception 'That date has not happened yet';
+  end if;
+  if p_how is null or p_how not in ('purchased', 'bred') then
+    raise exception 'Bought in, or bred here';
+  end if;
+  if p_born is not null and p_born > p_on then
+    raise exception 'Born after they arrived';
+  end if;
+
+  if p_tags is not null then
+    foreach t in array p_tags loop
+      t := trim(coalesce(t, ''));
+      continue when t = '';
+      m := regexp_match(t, '^([A-Za-z]{1,2})\s*0*(\d{1,4})$');
+      if m is not null then
+        t := upper(m[1]) || ' ' || case when length(m[2]) >= 2 then m[2] else '0' || m[2] end;
+      else
+        t := upper(t);
+      end if;
+      if t = any(tags) then
+        raise exception '% is on the list twice', t;
+      end if;
+      tags := tags || t;
+    end loop;
+  end if;
+
+  n := coalesce(array_length(tags, 1), 0);
+  if n = 0 then
+    if p_count is null or p_count < 1 or p_count > 500 then
+      raise exception 'How many: between 1 and 500, or list their tags';
+    end if;
+    n := p_count;
+  elsif n > 500 then
+    raise exception 'That is % tags; 500 at a time', n;
+  else
+    select string_agg(a.stock_code, ', ' order by a.stock_code) into dup
+      from animal a
+     where a.farm_id = fid and a.species = p_species
+       and a.origin <> 'reference' and a.stock_code = any(tags);
+    if dup is not null then
+      raise exception 'Already on file: %', dup;
+    end if;
+  end if;
+
+  if p_property_id is not null then
+    select * into own from property
+     where id = p_property_id and farm_id = fid and is_own;
+    if not found then
+      raise exception 'That PIC is not one of this farm''s own';
+    end if;
+  else
+    select * into own from property
+     where farm_id = fid and is_own
+     order by is_primary desc, pic limit 1;
+    if not found then
+      raise exception 'This farm has no PIC of its own yet';
+    end if;
+  end if;
+
+  if p_paddock_id is not null then
+    select * into pk from paddock where id = p_paddock_id and farm_id = fid;
+    if not found then
+      raise exception 'No such paddock';
+    end if;
+    if pk.retired_on is not null then
+      raise exception '% is a retired paddock', pk.name;
+    end if;
+  end if;
+
+  if bought and vpic is not null then
+    if vpic !~ '^[A-Z0-9]{8}$' then
+      raise exception 'A PIC is eight letters and numbers: %', vpic;
+    end if;
+    if vpic = own.pic then
+      raise exception 'Bought from % and owned by % is the same PIC', vpic, own.pic;
+    end if;
+    select id into vendor from property where farm_id = fid and pic = vpic;
+    if vendor is null then
+      insert into property (farm_id, pic, is_own, name)
+      values (fid, vpic, false, vname)
+      returning id into vendor;
+    end if;
+  end if;
+
+  if bought then
+    begin
+      insert into consignment (direction, consigned_on, nvd_kind, nvd_serial,
+                               destination_kind, destination, destination_pic,
+                               counterparty, head_declared, notes, declared_on)
+      values ('in', p_on, p_nvd_kind, nvd, 'property',
+              'From ' || coalesce(vname, vpic, 'vendor not recorded'), vpic,
+              vname, n, note, p_on)
+      returning id into cons;
+    exception when unique_violation then
+      raise exception 'NVD % is already on another consignment', nvd;
+    end;
+  end if;
+
+  eff    := case when bought then p_on else coalesce(p_born, p_on) end;
+  letter := case when p_born is not null then year_letter(p_born, p_species) end;
+  reason := case when bought
+                 then concat_ws(' ', 'Bought in',
+                                case when coalesce(vname, vpic) is not null
+                                     then 'from ' || coalesce(vname, vpic) end,
+                                case when nvd is not null then '· NVD ' || nvd end)
+                 else 'Bred here' end;
+
+  for i in 1..n loop
+    insert into animal (species, origin, sex, dob, breed, stock_code, year_letter,
+                        property_id, origin_property_id, purchased_on, purchase_note, notes)
+    values (p_species,
+            case when bought then 'purchased'::origin_t else 'bred'::origin_t end,
+            coalesce(p_sex, 'unknown'), p_born, nullif(trim(coalesce(p_breed, '')), ''),
+            case when tags is not null then tags[i] end,
+            case when tags is null then letter end,
+            own.id,
+            case when bought then vendor end,
+            case when bought then p_on end,
+            case when bought then concat_ws(' · ', case when nvd is not null then 'NVD ' || nvd end, note) end,
+            case when not bought then note end)
+    returning id into one;
+
+    insert into animal_status (animal_id, effective_on, life_state, class, reason)
+    values (one, eff, 'alive', p_class, reason);
+
+    ids := ids || one;
+  end loop;
+
+  if cons is not null then
+    perform consign_animals(cons, ids);
+  end if;
+
+  if p_paddock_id is not null then
+    perform move_animals(ids, p_paddock_id, p_on, reason, p_ignore_withhold);
+  end if;
+
+  return ids;
+end $_$;
+
+
+--
+-- Name: FUNCTION receive_stock(p_on date, p_species public.species_t, p_how text, p_class public.animal_class_t, p_sex public.sex_t, p_tags text[], p_count integer, p_paddock_id uuid, p_property_id uuid, p_vendor_name text, p_vendor_pic text, p_nvd_kind public.nvd_kind_t, p_nvd_serial text, p_breed text, p_born date, p_notes text, p_ignore_withhold boolean); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.receive_stock(p_on date, p_species public.species_t, p_how text, p_class public.animal_class_t, p_sex public.sex_t, p_tags text[], p_count integer, p_paddock_id uuid, p_property_id uuid, p_vendor_name text, p_vendor_pic text, p_nvd_kind public.nvd_kind_t, p_nvd_serial text, p_breed text, p_born date, p_notes text, p_ignore_withhold boolean) IS 'Stock onto the place, bought in or bred here, by tag or head count: inward consignment, animals, status and paddock in one transaction.';
 
 
 --
@@ -1100,6 +1613,28 @@ $$;
 
 
 --
+-- Name: season_of(date); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.season_of(d date) RETURNS text
+    LANGUAGE sql IMMUTABLE
+    SET search_path TO 'public'
+    AS $$
+  select case when d is null then null
+              when extract(month from d) >= 7
+                then extract(year from d)::int || '-' || (extract(year from d)::int + 1)
+              else (extract(year from d)::int - 1) || '-' || extract(year from d)::int end
+$$;
+
+
+--
+-- Name: FUNCTION season_of(d date); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.season_of(d date) IS 'The season a birth on this date falls in: the July–June financial year, as 2027-2028.';
+
+
+--
 -- Name: set_animal_status(uuid[], public.life_state_t, public.animal_class_t, date, text); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -1299,6 +1834,7 @@ CREATE TABLE public.ai_semen (
     straw_desc text,
     straw_size text,
     goblet text,
+    farm_id uuid DEFAULT public.current_farm() NOT NULL,
     CONSTRAINT ai_semen_location_check CHECK (((location >= 1) AND (location <= 6))),
     CONSTRAINT ai_semen_straw_size_check CHECK ((straw_size = ANY (ARRAY['mini'::text, 'maxi'::text]))),
     CONSTRAINT ai_semen_straws_in_check CHECK ((straws_in >= 0))
@@ -1385,7 +1921,6 @@ CREATE TABLE public.animal (
     breed text,
     grade text,
     coat_colour text,
-    polled boolean,
     marking_code text,
     heritage_id uuid,
     property_id uuid,
@@ -1402,8 +1937,15 @@ CREATE TABLE public.animal (
     recorded_by uuid DEFAULT auth.uid(),
     gestation_days smallint,
     species public.species_t DEFAULT 'cattle'::public.species_t NOT NULL,
-    CONSTRAINT animal_gestation_days_check CHECK (((gestation_days >= 250) AND (gestation_days <= 310))),
-    CONSTRAINT animal_pic_required_ck CHECK (((origin = 'reference'::public.origin_t) OR (property_id IS NOT NULL)))
+    farm_id uuid DEFAULT public.current_farm() NOT NULL,
+    horn text,
+    born_as smallint,
+    sg_id text,
+    CONSTRAINT animal_born_as_ck CHECK (((born_as >= 1) AND (born_as <= 5))),
+    CONSTRAINT animal_gestation_days_check CHECK (((gestation_days >= 130) AND (gestation_days <= 310))),
+    CONSTRAINT animal_horn_ck CHECK ((horn = ANY (ARRAY['P'::text, 'H'::text, 'PP'::text, 'PH'::text, 'HH'::text]))),
+    CONSTRAINT animal_pic_required_ck CHECK (((origin = 'reference'::public.origin_t) OR (property_id IS NOT NULL))),
+    CONSTRAINT animal_sg_id_ck CHECK ((sg_id ~ '^[0-9A-Z]{16}$'::text))
 );
 
 
@@ -1418,7 +1960,7 @@ COMMENT ON COLUMN public.animal.property_id IS 'The PIC this animal is registere
 -- Name: COLUMN animal.gestation_days; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.animal.gestation_days IS 'This cow''s own gestation length, learnt from her calvings. Null = use 285.';
+COMMENT ON COLUMN public.animal.gestation_days IS 'This dam''s own gestation length where it is known to differ from the species default (cattle 285, sheep 145). 130 to 310.';
 
 
 --
@@ -1426,6 +1968,27 @@ COMMENT ON COLUMN public.animal.gestation_days IS 'This cow''s own gestation len
 --
 
 COMMENT ON COLUMN public.animal.species IS 'Everything on the books so far is cattle, so that is the default. Set explicitly on import.';
+
+
+--
+-- Name: COLUMN animal.horn; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.animal.horn IS 'P or H as seen; PP, PH or HH as tested. A P was never tested and may be PH.';
+
+
+--
+-- Name: COLUMN animal.born_as; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.animal.born_as IS 'How many were born with this one, itself included: 1 single, 2 twin, 3 triplet. Null when not known.';
+
+
+--
+-- Name: COLUMN animal.sg_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.animal.sg_id IS 'Sheep Genetics ID: flock (6), drop year (4), tag (6). Filled from the farm''s flock number and the tag; an ASBV import overwrites it with the one Sheep Genetics sent.';
 
 
 --
@@ -1440,7 +2003,8 @@ CREATE TABLE public.animal_status (
     class public.animal_class_t,
     reason text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    recorded_by uuid DEFAULT auth.uid()
+    recorded_by uuid DEFAULT auth.uid(),
+    farm_id uuid NOT NULL
 );
 
 
@@ -1449,6 +2013,53 @@ CREATE TABLE public.animal_status (
 --
 
 COMMENT ON COLUMN public.animal_status.effective_on IS 'The day the change took effect, not the day it was typed. For a sale or a death this is the date the animal left.';
+
+
+--
+-- Name: asbv; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.asbv (
+    farm_id uuid NOT NULL,
+    run_id uuid NOT NULL,
+    animal_id uuid NOT NULL,
+    trait text NOT NULL,
+    value numeric(9,3) NOT NULL,
+    accuracy smallint,
+    CONSTRAINT asbv_accuracy_check CHECK (((accuracy >= 0) AND (accuracy <= 100))),
+    CONSTRAINT asbv_trait_ck CHECK ((trait ~ '^[A-Za-z0-9+_-]{1,16}$'::text))
+);
+
+
+--
+-- Name: TABLE asbv; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.asbv IS 'An Australian Sheep Breeding Value: one trait of one animal in one run. Accuracy is the percent Sheep Genetics gives with it.';
+
+
+--
+-- Name: asbv_run; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.asbv_run (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    farm_id uuid DEFAULT public.current_farm() NOT NULL,
+    analysis_on date NOT NULL,
+    source text DEFAULT 'MERINOSELECT'::text NOT NULL,
+    file_name text,
+    rows_in integer DEFAULT 0 NOT NULL,
+    matched integer DEFAULT 0 NOT NULL,
+    imported_by uuid DEFAULT auth.uid(),
+    imported_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: TABLE asbv_run; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.asbv_run IS 'One Sheep Genetics analysis run as loaded from its export. Delete it and its values go with it.';
 
 
 --
@@ -1465,7 +2076,8 @@ CREATE TABLE public.calving (
     outcome text,
     notes text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    recorded_by uuid DEFAULT auth.uid()
+    recorded_by uuid DEFAULT auth.uid(),
+    farm_id uuid NOT NULL
 );
 
 
@@ -1500,7 +2112,8 @@ CREATE TABLE public.consignment (
     declared_by text,
     declared_on date,
     recorded_by uuid DEFAULT auth.uid(),
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    farm_id uuid DEFAULT public.current_farm() NOT NULL
 );
 
 
@@ -1517,7 +2130,8 @@ CREATE TABLE public.consignment_animal (
     price_per_kg numeric(8,3),
     amount_ex_gst numeric(12,2),
     gst numeric(12,2),
-    fees numeric(12,2)
+    fees numeric(12,2),
+    farm_id uuid NOT NULL
 );
 
 
@@ -1541,6 +2155,7 @@ CREATE TABLE public.cryo_txn (
     notes text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     created_by uuid DEFAULT auth.uid(),
+    farm_id uuid NOT NULL,
     CONSTRAINT cryo_txn_confidence_check CHECK (((confidence >= (0)::numeric) AND (confidence <= (1)::numeric))),
     CONSTRAINT cryo_txn_one_subject_ck CHECK (((ai_semen_id IS NOT NULL) <> (embryo_id IS NOT NULL))),
     CONSTRAINT cryo_txn_sign_ck CHECK ((((kind = ANY (ARRAY['received'::public.cryo_kind_t, 'returned'::public.cryo_kind_t])) AND (qty > (0)::numeric)) OR ((kind = ANY (ARRAY['used'::public.cryo_kind_t, 'discarded'::public.cryo_kind_t, 'sent_out'::public.cryo_kind_t])) AND (qty < (0)::numeric)) OR ((kind = 'stocktake'::public.cryo_kind_t) AND (qty <> (0)::numeric))))
@@ -1585,6 +2200,7 @@ CREATE TABLE public.embryo (
     retired_on date,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     created_by uuid DEFAULT auth.uid(),
+    farm_id uuid DEFAULT public.current_farm() NOT NULL,
     CONSTRAINT embryo_location_check CHECK (((location >= 1) AND (location <= 6))),
     CONSTRAINT embryo_units_in_check CHECK ((units_in >= 0))
 );
@@ -1611,8 +2227,85 @@ CREATE TABLE public.expected_calving (
     due_on date,
     resolved_calving_id uuid,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    recorded_by uuid DEFAULT auth.uid()
+    recorded_by uuid DEFAULT auth.uid(),
+    farm_id uuid NOT NULL
 );
+
+
+--
+-- Name: farm; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.farm (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    slug text NOT NULL,
+    name text NOT NULL,
+    address text,
+    hostname text,
+    logo_url text,
+    timezone text DEFAULT 'Australia/Melbourne'::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    lat numeric(9,6),
+    lng numeric(9,6),
+    sg_flock_id text,
+    CONSTRAINT farm_sg_flock_id_ck CHECK ((sg_flock_id ~ '^\d{6}$'::text)),
+    CONSTRAINT farm_slug_ck CHECK ((slug ~ '^[a-z0-9-]{2,40}$'::text))
+);
+
+
+--
+-- Name: TABLE farm; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.farm IS 'Who runs the app on this land. Above property (a PIC): one farm may trade under several PICs.';
+
+
+--
+-- Name: COLUMN farm.hostname; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.farm.hostname IS 'The site name that shows this farm''s name and logo on the login screen. After sign-in the farm comes from membership, not the hostname.';
+
+
+--
+-- Name: COLUMN farm.timezone; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.farm.timezone IS 'Recorded for the day this farm needs; nothing reads it yet. farm_today() is Melbourne until a farm elsewhere exists to test against.';
+
+
+--
+-- Name: COLUMN farm.lat; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.farm.lat IS 'Where the map opens for a farm with no paddocks yet. Looked up once from the address.';
+
+
+--
+-- Name: COLUMN farm.sg_flock_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.farm.sg_flock_id IS 'The six digits Sheep Genetics (MERINOSELECT, LAMBPLAN) knows this flock by, the front of every animal''s Sheep Genetics ID. Null if the farm does not record.';
+
+
+--
+-- Name: farm_member; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.farm_member (
+    farm_id uuid NOT NULL,
+    user_id uuid NOT NULL,
+    role public.farm_role_t DEFAULT 'viewer'::public.farm_role_t NOT NULL,
+    active boolean DEFAULT false NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: TABLE farm_member; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.farm_member IS 'One row per login per farm. A login with no active row belongs nowhere and sees nothing.';
 
 
 --
@@ -1622,10 +2315,9 @@ CREATE TABLE public.expected_calving (
 CREATE TABLE public.farm_user (
     id uuid NOT NULL,
     display_name text NOT NULL,
-    role public.farm_role_t DEFAULT 'viewer'::public.farm_role_t NOT NULL,
     phone text,
-    active boolean DEFAULT true NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    current_farm_id uuid
 );
 
 
@@ -1642,6 +2334,7 @@ CREATE TABLE public.feed_adjustment (
     notes text,
     recorded_by uuid DEFAULT auth.uid(),
     created_at timestamp with time zone DEFAULT now() NOT NULL,
+    farm_id uuid NOT NULL,
     CONSTRAINT feed_adjustment_qty_delta_check CHECK ((qty_delta <> (0)::numeric))
 );
 
@@ -1664,6 +2357,7 @@ CREATE TABLE public.feed_event (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     qty numeric(10,2),
     is_run boolean DEFAULT false NOT NULL,
+    farm_id uuid NOT NULL,
     CONSTRAINT feed_event_check CHECK (((ended_on IS NULL) OR (ended_on >= fed_on))),
     CONSTRAINT feed_event_check1 CHECK (((feed_source_id IS NOT NULL) OR (ration IS NOT NULL)))
 );
@@ -1682,7 +2376,8 @@ COMMENT ON COLUMN public.feed_event.is_run IS 'True when the animals stay on thi
 
 CREATE TABLE public.feed_event_animal (
     feed_event_id uuid NOT NULL,
-    animal_id uuid NOT NULL
+    animal_id uuid NOT NULL,
+    farm_id uuid NOT NULL
 );
 
 
@@ -1693,7 +2388,8 @@ CREATE TABLE public.feed_event_animal (
 CREATE TABLE public.feed_event_ref (
     feed_event_id uuid NOT NULL,
     stock_code text NOT NULL,
-    note text
+    note text,
+    farm_id uuid NOT NULL
 );
 
 
@@ -1728,7 +2424,8 @@ CREATE TABLE public.feed_source (
     feed_type text,
     quantity numeric(10,2),
     unit text,
-    intake_kg_head_day numeric(6,2)
+    intake_kg_head_day numeric(6,2),
+    farm_id uuid DEFAULT public.current_farm() NOT NULL
 );
 
 
@@ -1755,7 +2452,8 @@ CREATE TABLE public.heartbeat (
 
 CREATE TABLE public.heritage (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
-    name text NOT NULL
+    name text NOT NULL,
+    farm_id uuid DEFAULT public.current_farm() NOT NULL
 );
 
 
@@ -1784,6 +2482,7 @@ CREATE TABLE public.joining (
     ai_semen_id uuid,
     paddock_id uuid,
     confidence_pct smallint,
+    farm_id uuid NOT NULL,
     CONSTRAINT joining_confidence_ai_ck CHECK (((confidence_pct IS NULL) OR (method = 'ai'::text))),
     CONSTRAINT joining_confidence_check CHECK (((confidence >= (0)::numeric) AND (confidence <= (1)::numeric))),
     CONSTRAINT joining_confidence_pct_check CHECK (((confidence_pct >= 0) AND (confidence_pct <= 100))),
@@ -1839,7 +2538,8 @@ CREATE TABLE public.paddock (
     recorded_by uuid DEFAULT auth.uid(),
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     retired_on date,
-    retired_reason text
+    retired_reason text,
+    farm_id uuid DEFAULT public.current_farm() NOT NULL
 );
 
 
@@ -1854,7 +2554,8 @@ CREATE TABLE public.paddock_geometry_log (
     area_ha numeric(8,2),
     valid_from timestamp with time zone,
     valid_to timestamp with time zone DEFAULT now() NOT NULL,
-    changed_by uuid DEFAULT auth.uid()
+    changed_by uuid DEFAULT auth.uid(),
+    farm_id uuid NOT NULL
 );
 
 
@@ -1869,7 +2570,8 @@ CREATE TABLE public.paddock_lineage (
     change public.paddock_change_t NOT NULL,
     changed_on date DEFAULT CURRENT_DATE NOT NULL,
     notes text,
-    recorded_by uuid DEFAULT auth.uid()
+    recorded_by uuid DEFAULT auth.uid(),
+    farm_id uuid NOT NULL
 );
 
 
@@ -1886,6 +2588,7 @@ CREATE TABLE public.paddock_stay (
     reason text,
     recorded_by uuid DEFAULT auth.uid(),
     created_at timestamp with time zone DEFAULT now() NOT NULL,
+    farm_id uuid NOT NULL,
     CONSTRAINT paddock_stay_check CHECK (((moved_out IS NULL) OR (moved_out >= moved_in)))
 );
 
@@ -1910,6 +2613,9 @@ CREATE TABLE public.planned_joining (
     cancelled_on date,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     created_by uuid DEFAULT auth.uid(),
+    farm_id uuid NOT NULL,
+    attempt smallint DEFAULT 1 NOT NULL,
+    CONSTRAINT planned_joining_attempt_ck CHECK (((attempt >= 1) AND (attempt <= 9))),
     CONSTRAINT planned_joining_gestation_days_check CHECK (((gestation_days >= 130) AND (gestation_days <= 310))),
     CONSTRAINT planned_joining_method_fields_ck CHECK ((((method = 'ai'::public.joining_method_t) AND (paddock_id IS NULL)) OR ((method = 'natural'::public.joining_method_t) AND (ai_semen_id IS NULL))))
 );
@@ -1937,6 +2643,13 @@ COMMENT ON COLUMN public.planned_joining.gestation_days IS 'Nominated for this p
 
 
 --
+-- Name: COLUMN planned_joining.attempt; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.planned_joining.attempt IS 'Which join this is the plan for: 1 the first choice, 2 the back-up, 3 usually the bull. Same numbering as joining.attempt.';
+
+
+--
 -- Name: property; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1948,7 +2661,8 @@ CREATE TABLE public.property (
     address text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     is_primary boolean DEFAULT false NOT NULL,
-    trading_name text
+    trading_name text,
+    farm_id uuid DEFAULT public.current_farm() NOT NULL
 );
 
 
@@ -1956,7 +2670,7 @@ CREATE TABLE public.property (
 -- Name: COLUMN property.is_primary; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.property.is_primary IS 'The registration the property itself trades under. Drives page letterheads and where new paddocks are attached. Exactly one.';
+COMMENT ON COLUMN public.property.is_primary IS 'The registration this farm itself trades under. Drives page letterheads and where new paddocks are attached. Exactly one per farm.';
 
 
 --
@@ -1972,6 +2686,7 @@ CREATE TABLE public.record_change_log (
     new_row jsonb,
     changed_by uuid DEFAULT auth.uid(),
     changed_at timestamp with time zone DEFAULT now() NOT NULL,
+    farm_id uuid DEFAULT public.current_farm() NOT NULL,
     CONSTRAINT record_change_log_action_check CHECK ((action = ANY (ARRAY['update'::text, 'delete'::text])))
 );
 
@@ -2010,6 +2725,7 @@ CREATE TABLE public.shearing (
     notes text,
     recorded_by uuid DEFAULT auth.uid(),
     created_at timestamp with time zone DEFAULT now() NOT NULL,
+    farm_id uuid DEFAULT public.current_farm() NOT NULL,
     CONSTRAINT shearing_bales_check CHECK ((bales >= (0)::numeric)),
     CONSTRAINT shearing_micron_check CHECK ((micron > (0)::numeric))
 );
@@ -2021,7 +2737,8 @@ CREATE TABLE public.shearing (
 
 CREATE TABLE public.shearing_animal (
     shearing_id uuid NOT NULL,
-    animal_id uuid NOT NULL
+    animal_id uuid NOT NULL,
+    farm_id uuid NOT NULL
 );
 
 
@@ -2042,6 +2759,7 @@ CREATE TABLE public.spray_event (
     notes text,
     recorded_by uuid DEFAULT auth.uid(),
     created_at timestamp with time zone DEFAULT now() NOT NULL,
+    farm_id uuid DEFAULT public.current_farm() NOT NULL,
     CONSTRAINT spray_event_wind_speed_kmh_check CHECK (((wind_speed_kmh IS NULL) OR (wind_speed_kmh >= (0)::numeric)))
 );
 
@@ -2069,6 +2787,7 @@ CREATE TABLE public.spray_paddock (
     paddock_id uuid NOT NULL,
     area_ha numeric(8,2),
     location_note text,
+    farm_id uuid NOT NULL,
     CONSTRAINT spray_paddock_area_ha_check CHECK (((area_ha IS NULL) OR (area_ha > (0)::numeric)))
 );
 
@@ -2096,6 +2815,7 @@ CREATE TABLE public.spray_product (
     esi_days integer,
     notes text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
+    farm_id uuid NOT NULL,
     CONSTRAINT spray_product_esi_days_check CHECK (((esi_days IS NULL) OR (esi_days >= 0))),
     CONSTRAINT spray_product_graze_withhold_days_check CHECK (((graze_withhold_days IS NULL) OR (graze_withhold_days >= 0))),
     CONSTRAINT spray_product_harvest_withhold_days_check CHECK (((harvest_withhold_days IS NULL) OR (harvest_withhold_days >= 0)))
@@ -2139,7 +2859,8 @@ CREATE TABLE public.treatment (
     equipment_clean boolean,
     notes text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    recorded_by uuid DEFAULT auth.uid()
+    recorded_by uuid DEFAULT auth.uid(),
+    farm_id uuid DEFAULT public.current_farm() NOT NULL
 );
 
 
@@ -2149,7 +2870,8 @@ CREATE TABLE public.treatment (
 
 CREATE TABLE public.treatment_animal (
     treatment_id uuid NOT NULL,
-    animal_id uuid NOT NULL
+    animal_id uuid NOT NULL,
+    farm_id uuid NOT NULL
 );
 
 
@@ -2356,6 +3078,7 @@ CREATE TABLE public.weight_event (
     notes text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     recorded_by uuid DEFAULT auth.uid(),
+    farm_id uuid NOT NULL,
     CONSTRAINT weight_event_weight_kg_check CHECK ((weight_kg > (0)::numeric))
 );
 
@@ -2377,9 +3100,10 @@ CREATE VIEW public.v_animal_current WITH (security_invoker='on') AS
     a.breed,
     a.grade,
     a.coat_colour,
-    a.polled,
+    a.horn,
     a.marking_code,
     a.birth_weight_kg,
+    a.born_as,
     a.weaned_on,
     a.notes,
     a.purchased_on,
@@ -2463,6 +3187,22 @@ CREATE VIEW public.v_animal_current WITH (security_invoker='on') AS
      LEFT JOIN public.v_animal_feed fd ON ((fd.animal_id = a.id)))
      LEFT JOIN public.v_animal_feed_last lf ON ((lf.animal_id = a.id)))
   WHERE (a.origin <> 'reference'::public.origin_t);
+
+
+--
+-- Name: v_asbv_latest; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_asbv_latest WITH (security_invoker='on') AS
+ SELECT DISTINCT ON (v.animal_id, v.trait) v.animal_id,
+    v.trait,
+    v.value,
+    v.accuracy,
+    r.analysis_on,
+    r.id AS run_id
+   FROM (public.asbv v
+     JOIN public.asbv_run r ON ((r.id = v.run_id)))
+  ORDER BY v.animal_id, v.trait, r.analysis_on DESC, r.imported_at DESC;
 
 
 --
@@ -2659,6 +3399,18 @@ CREATE VIEW public.v_due_date_check WITH (security_invoker='on') AS
 
 
 --
+-- Name: v_farm_public; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_farm_public AS
+ SELECT slug,
+    name,
+    logo_url,
+    hostname
+   FROM public.farm;
+
+
+--
 -- Name: v_feed_event; Type: VIEW; Schema: public; Owner: -
 --
 
@@ -2845,6 +3597,47 @@ CREATE VIEW public.v_joining_result WITH (security_invoker='on') AS
 
 
 --
+-- Name: v_me; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_me WITH (security_invoker='on') AS
+ SELECT m.user_id AS id,
+    u.display_name,
+    u.phone,
+    m.role,
+    m.active,
+    m.farm_id,
+    f.slug,
+    f.name AS farm_name,
+    f.address AS farm_address,
+    f.logo_url,
+    f.timezone,
+    f.lat,
+    f.lng
+   FROM ((public.farm_member m
+     JOIN public.farm_user u ON ((u.id = m.user_id)))
+     JOIN public.farm f ON ((f.id = m.farm_id)))
+  WHERE ((m.user_id = auth.uid()) AND (m.farm_id = public.current_farm()));
+
+
+--
+-- Name: v_my_farms; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_my_farms WITH (security_invoker='on') AS
+ SELECT f.id AS farm_id,
+    f.slug,
+    f.name,
+    f.logo_url,
+    m.role,
+    (f.id = public.current_farm()) AS is_current
+   FROM (public.farm_member m
+     JOIN public.farm f ON ((f.id = m.farm_id)))
+  WHERE ((m.user_id = auth.uid()) AND m.active)
+  ORDER BY f.name;
+
+
+--
 -- Name: v_paddock_all; Type: VIEW; Schema: public; Owner: -
 --
 
@@ -2957,7 +3750,8 @@ CREATE VIEW public.v_planned_joining WITH (security_invoker='on') AS
             ELSE 'open'::text
         END AS status,
     pj.created_at,
-    pj.created_by
+    pj.created_by,
+    pj.attempt
    FROM ((((public.planned_joining pj
      JOIN public.animal d ON ((d.id = pj.dam_id)))
      LEFT JOIN public.animal s ON ((s.id = pj.sire_id)))
@@ -3408,6 +4202,30 @@ ALTER TABLE ONLY public.animal_status
 
 
 --
+-- Name: asbv asbv_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.asbv
+    ADD CONSTRAINT asbv_pkey PRIMARY KEY (run_id, animal_id, trait);
+
+
+--
+-- Name: asbv_run asbv_run_farm_id_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.asbv_run
+    ADD CONSTRAINT asbv_run_farm_id_id_key UNIQUE (farm_id, id);
+
+
+--
+-- Name: asbv_run asbv_run_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.asbv_run
+    ADD CONSTRAINT asbv_run_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: calving calving_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3453,6 +4271,38 @@ ALTER TABLE ONLY public.embryo
 
 ALTER TABLE ONLY public.expected_calving
     ADD CONSTRAINT expected_calving_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: farm farm_hostname_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.farm
+    ADD CONSTRAINT farm_hostname_key UNIQUE (hostname);
+
+
+--
+-- Name: farm_member farm_member_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.farm_member
+    ADD CONSTRAINT farm_member_pkey PRIMARY KEY (farm_id, user_id);
+
+
+--
+-- Name: farm farm_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.farm
+    ADD CONSTRAINT farm_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: farm farm_slug_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.farm
+    ADD CONSTRAINT farm_slug_key UNIQUE (slug);
 
 
 --
@@ -3509,14 +4359,6 @@ ALTER TABLE ONLY public.feed_source
 
 ALTER TABLE ONLY public.heartbeat
     ADD CONSTRAINT heartbeat_pkey PRIMARY KEY (ok);
-
-
---
--- Name: heritage heritage_name_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.heritage
-    ADD CONSTRAINT heritage_name_key UNIQUE (name);
 
 
 --
@@ -3589,14 +4431,6 @@ ALTER TABLE ONLY public.paddock_stay
 
 ALTER TABLE ONLY public.planned_joining
     ADD CONSTRAINT planned_joining_pkey PRIMARY KEY (id);
-
-
---
--- Name: property property_pic_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.property
-    ADD CONSTRAINT property_pic_key UNIQUE (pic);
 
 
 --
@@ -3696,6 +4530,13 @@ ALTER TABLE ONLY public.weight_event
 
 
 --
+-- Name: ai_semen_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX ai_semen_farm_idx ON public.ai_semen USING btree (farm_id);
+
+
+--
 -- Name: ai_semen_mark_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3724,10 +4565,31 @@ CREATE INDEX animal_dam_idx ON public.animal USING btree (dam_id);
 
 
 --
+-- Name: animal_farm_id_uq; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX animal_farm_id_uq ON public.animal USING btree (farm_id, id);
+
+
+--
+-- Name: animal_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX animal_farm_idx ON public.animal USING btree (farm_id);
+
+
+--
 -- Name: animal_nlis_uq; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX animal_nlis_uq ON public.animal USING btree (nlis_tag) WHERE (nlis_tag IS NOT NULL);
+CREATE UNIQUE INDEX animal_nlis_uq ON public.animal USING btree (farm_id, nlis_tag) WHERE (nlis_tag IS NOT NULL);
+
+
+--
+-- Name: animal_sg_id_uq; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX animal_sg_id_uq ON public.animal USING btree (farm_id, sg_id) WHERE (sg_id IS NOT NULL);
 
 
 --
@@ -3752,17 +4614,52 @@ CREATE INDEX animal_status_animal_idx ON public.animal_status USING btree (anima
 
 
 --
+-- Name: animal_status_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX animal_status_farm_idx ON public.animal_status USING btree (farm_id);
+
+
+--
 -- Name: animal_stock_code_resident_uq; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX animal_stock_code_resident_uq ON public.animal USING btree (species, stock_code) WHERE ((origin <> 'reference'::public.origin_t) AND (stock_code IS NOT NULL));
+CREATE UNIQUE INDEX animal_stock_code_resident_uq ON public.animal USING btree (farm_id, species, stock_code) WHERE ((origin <> 'reference'::public.origin_t) AND (stock_code IS NOT NULL));
 
 
 --
--- Name: INDEX animal_stock_code_resident_uq; Type: COMMENT; Schema: public; Owner: -
+-- Name: asbv_animal_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-COMMENT ON INDEX public.animal_stock_code_resident_uq IS 'Stock codes recycle on a 26-year letter cycle and run separately per species. Unique per species among non-reference animals.';
+CREATE INDEX asbv_animal_idx ON public.asbv USING btree (animal_id, trait);
+
+
+--
+-- Name: asbv_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX asbv_farm_idx ON public.asbv USING btree (farm_id);
+
+
+--
+-- Name: asbv_run_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX asbv_run_farm_idx ON public.asbv_run USING btree (farm_id, analysis_on DESC);
+
+
+--
+-- Name: calving_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX calving_farm_idx ON public.calving USING btree (farm_id);
+
+
+--
+-- Name: consignment_animal_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX consignment_animal_farm_idx ON public.consignment_animal USING btree (farm_id);
 
 
 --
@@ -3773,10 +4670,17 @@ CREATE INDEX consignment_date_idx ON public.consignment USING btree (consigned_o
 
 
 --
+-- Name: consignment_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX consignment_farm_idx ON public.consignment USING btree (farm_id);
+
+
+--
 -- Name: consignment_nvd_uq; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX consignment_nvd_uq ON public.consignment USING btree (nvd_serial) WHERE (nvd_serial IS NOT NULL);
+CREATE UNIQUE INDEX consignment_nvd_uq ON public.consignment USING btree (farm_id, nvd_serial) WHERE (nvd_serial IS NOT NULL);
 
 
 --
@@ -3784,6 +4688,13 @@ CREATE UNIQUE INDEX consignment_nvd_uq ON public.consignment USING btree (nvd_se
 --
 
 CREATE INDEX cryo_txn_embryo_idx ON public.cryo_txn USING btree (embryo_id, on_date);
+
+
+--
+-- Name: cryo_txn_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX cryo_txn_farm_idx ON public.cryo_txn USING btree (farm_id);
 
 
 --
@@ -3808,10 +4719,24 @@ CREATE INDEX embryo_donor_idx ON public.embryo USING btree (donor_id);
 
 
 --
+-- Name: embryo_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX embryo_farm_idx ON public.embryo USING btree (farm_id);
+
+
+--
 -- Name: embryo_where_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX embryo_where_idx ON public.embryo USING btree (tank, location);
+
+
+--
+-- Name: expected_calving_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX expected_calving_farm_idx ON public.expected_calving USING btree (farm_id);
 
 
 --
@@ -3829,10 +4754,24 @@ CREATE UNIQUE INDEX expected_calving_open_uq ON public.expected_calving USING bt
 
 
 --
+-- Name: feed_adjustment_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX feed_adjustment_farm_idx ON public.feed_adjustment USING btree (farm_id);
+
+
+--
 -- Name: feed_adjustment_source_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX feed_adjustment_source_idx ON public.feed_adjustment USING btree (feed_source_id, adjusted_on DESC);
+
+
+--
+-- Name: feed_event_animal_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX feed_event_animal_farm_idx ON public.feed_event_animal USING btree (farm_id);
 
 
 --
@@ -3843,10 +4782,31 @@ CREATE INDEX feed_event_date_idx ON public.feed_event USING btree (fed_on DESC);
 
 
 --
+-- Name: feed_event_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX feed_event_farm_idx ON public.feed_event USING btree (farm_id);
+
+
+--
 -- Name: feed_event_paddock_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX feed_event_paddock_idx ON public.feed_event USING btree (paddock_id, fed_on DESC);
+
+
+--
+-- Name: feed_event_ref_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX feed_event_ref_farm_idx ON public.feed_event_ref USING btree (farm_id);
+
+
+--
+-- Name: feed_source_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX feed_source_farm_idx ON public.feed_source USING btree (farm_id);
 
 
 --
@@ -3857,10 +4817,31 @@ CREATE INDEX feed_source_open_idx ON public.feed_source USING btree (feedstuff) 
 
 
 --
+-- Name: heritage_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX heritage_farm_idx ON public.heritage USING btree (farm_id);
+
+
+--
+-- Name: heritage_farm_name_uq; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX heritage_farm_name_uq ON public.heritage USING btree (farm_id, name);
+
+
+--
 -- Name: joining_dam_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX joining_dam_idx ON public.joining USING btree (dam_id);
+
+
+--
+-- Name: joining_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX joining_farm_idx ON public.joining USING btree (farm_id);
 
 
 --
@@ -3878,6 +4859,20 @@ CREATE INDEX joining_semen_idx ON public.joining USING btree (ai_semen_id);
 
 
 --
+-- Name: paddock_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX paddock_farm_idx ON public.paddock USING btree (farm_id);
+
+
+--
+-- Name: paddock_geometry_log_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX paddock_geometry_log_farm_idx ON public.paddock_geometry_log USING btree (farm_id);
+
+
+--
 -- Name: paddock_geometry_log_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3889,6 +4884,13 @@ CREATE INDEX paddock_geometry_log_idx ON public.paddock_geometry_log USING btree
 --
 
 CREATE INDEX paddock_lineage_child_idx ON public.paddock_lineage USING btree (child_id);
+
+
+--
+-- Name: paddock_lineage_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX paddock_lineage_farm_idx ON public.paddock_lineage USING btree (farm_id);
 
 
 --
@@ -3913,6 +4915,13 @@ CREATE INDEX paddock_stay_animal_idx ON public.paddock_stay USING btree (animal_
 
 
 --
+-- Name: paddock_stay_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX paddock_stay_farm_idx ON public.paddock_stay USING btree (farm_id);
+
+
+--
 -- Name: paddock_stay_one_current; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3934,6 +4943,20 @@ CREATE INDEX planned_joining_dam_idx ON public.planned_joining USING btree (dam_
 
 
 --
+-- Name: planned_joining_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX planned_joining_farm_idx ON public.planned_joining USING btree (farm_id);
+
+
+--
+-- Name: planned_joining_open_attempt_uq; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX planned_joining_open_attempt_uq ON public.planned_joining USING btree (dam_id, season, attempt) WHERE ((joining_id IS NULL) AND (cancelled_on IS NULL));
+
+
+--
 -- Name: planned_joining_open_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3941,10 +4964,31 @@ CREATE INDEX planned_joining_open_idx ON public.planned_joining USING btree (dam
 
 
 --
+-- Name: property_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX property_farm_idx ON public.property USING btree (farm_id);
+
+
+--
+-- Name: property_farm_pic_uq; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX property_farm_pic_uq ON public.property USING btree (farm_id, pic);
+
+
+--
 -- Name: property_one_primary; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX property_one_primary ON public.property USING btree ((true)) WHERE is_primary;
+CREATE UNIQUE INDEX property_one_primary ON public.property USING btree (farm_id) WHERE is_primary;
+
+
+--
+-- Name: record_change_log_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX record_change_log_farm_idx ON public.record_change_log USING btree (farm_id);
 
 
 --
@@ -3962,6 +5006,13 @@ CREATE INDEX record_change_log_when_idx ON public.record_change_log USING btree 
 
 
 --
+-- Name: shearing_animal_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX shearing_animal_farm_idx ON public.shearing_animal USING btree (farm_id);
+
+
+--
 -- Name: shearing_date_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3969,10 +5020,31 @@ CREATE INDEX shearing_date_idx ON public.shearing USING btree (shorn_on DESC);
 
 
 --
+-- Name: shearing_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX shearing_farm_idx ON public.shearing USING btree (farm_id);
+
+
+--
 -- Name: spray_event_date_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX spray_event_date_idx ON public.spray_event USING btree (applied_on DESC);
+
+
+--
+-- Name: spray_event_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX spray_event_farm_idx ON public.spray_event USING btree (farm_id);
+
+
+--
+-- Name: spray_paddock_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX spray_paddock_farm_idx ON public.spray_paddock USING btree (farm_id);
 
 
 --
@@ -3987,6 +5059,34 @@ CREATE INDEX spray_paddock_paddock_idx ON public.spray_paddock USING btree (padd
 --
 
 CREATE INDEX spray_product_event_idx ON public.spray_product USING btree (spray_event_id);
+
+
+--
+-- Name: spray_product_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX spray_product_farm_idx ON public.spray_product USING btree (farm_id);
+
+
+--
+-- Name: treatment_animal_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX treatment_animal_farm_idx ON public.treatment_animal USING btree (farm_id);
+
+
+--
+-- Name: treatment_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX treatment_farm_idx ON public.treatment USING btree (farm_id);
+
+
+--
+-- Name: weight_event_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX weight_event_farm_idx ON public.weight_event USING btree (farm_id);
 
 
 --
@@ -4163,6 +5263,13 @@ CREATE TRIGGER ai_semen_changed AFTER DELETE OR UPDATE ON public.ai_semen FOR EA
 
 
 --
+-- Name: ai_semen ai_semen_farm; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER ai_semen_farm BEFORE INSERT OR UPDATE ON public.ai_semen FOR EACH ROW EXECUTE FUNCTION public.farm_id_from_parent('animal', 'sire_id');
+
+
+--
 -- Name: animal animal_changed; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -4177,6 +5284,27 @@ CREATE TRIGGER animal_code_parts BEFORE INSERT OR UPDATE OF stock_code ON public
 
 
 --
+-- Name: animal animal_farm; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER animal_farm BEFORE INSERT OR UPDATE ON public.animal FOR EACH ROW EXECUTE FUNCTION public.farm_id_from_parent('animal', 'dam_id', 'animal', 'sire_id', 'property', 'property_id', 'property', 'origin_property_id', 'heritage', 'heritage_id');
+
+
+--
+-- Name: animal animal_gestation_moves_plans; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER animal_gestation_moves_plans AFTER UPDATE OF gestation_days ON public.animal FOR EACH ROW EXECUTE FUNCTION public.dam_gestation_moves_plans();
+
+
+--
+-- Name: animal_status animal_status_farm; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER animal_status_farm BEFORE INSERT OR UPDATE ON public.animal_status FOR EACH ROW EXECUTE FUNCTION public.farm_id_from_parent('animal', 'animal_id');
+
+
+--
 -- Name: calving calving_changed; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -4184,10 +5312,24 @@ CREATE TRIGGER calving_changed AFTER DELETE OR UPDATE ON public.calving FOR EACH
 
 
 --
+-- Name: calving calving_farm; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER calving_farm BEFORE INSERT OR UPDATE ON public.calving FOR EACH ROW EXECUTE FUNCTION public.farm_id_from_parent('animal', 'dam_id', 'joining', 'joining_id', 'animal', 'calf_id');
+
+
+--
 -- Name: calving calving_resolves; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER calving_resolves AFTER INSERT ON public.calving FOR EACH ROW EXECUTE FUNCTION public.resolve_expected_calving();
+
+
+--
+-- Name: consignment_animal consignment_animal_farm; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER consignment_animal_farm BEFORE INSERT OR UPDATE ON public.consignment_animal FOR EACH ROW EXECUTE FUNCTION public.farm_id_from_parent('consignment', 'consignment_id', 'animal', 'animal_id');
 
 
 --
@@ -4205,10 +5347,31 @@ CREATE TRIGGER cryo_txn_changed AFTER DELETE OR UPDATE ON public.cryo_txn FOR EA
 
 
 --
+-- Name: cryo_txn cryo_txn_farm; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER cryo_txn_farm BEFORE INSERT OR UPDATE ON public.cryo_txn FOR EACH ROW EXECUTE FUNCTION public.farm_id_from_parent('ai_semen', 'ai_semen_id', 'embryo', 'embryo_id', 'animal', 'female_id', 'joining', 'joining_id');
+
+
+--
 -- Name: embryo embryo_changed; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER embryo_changed AFTER DELETE OR UPDATE ON public.embryo FOR EACH ROW EXECUTE FUNCTION public.log_record_change();
+
+
+--
+-- Name: embryo embryo_farm; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER embryo_farm BEFORE INSERT OR UPDATE ON public.embryo FOR EACH ROW EXECUTE FUNCTION public.farm_id_from_parent('animal', 'donor_id', 'animal', 'sire_id');
+
+
+--
+-- Name: expected_calving expected_calving_farm; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER expected_calving_farm BEFORE INSERT OR UPDATE ON public.expected_calving FOR EACH ROW EXECUTE FUNCTION public.farm_id_from_parent('animal', 'dam_id', 'joining', 'joining_id', 'animal', 'sire_id');
 
 
 --
@@ -4226,6 +5389,20 @@ CREATE TRIGGER feed_adjustment_empties_source AFTER INSERT OR DELETE OR UPDATE O
 
 
 --
+-- Name: feed_adjustment feed_adjustment_farm; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER feed_adjustment_farm BEFORE INSERT OR UPDATE ON public.feed_adjustment FOR EACH ROW EXECUTE FUNCTION public.farm_id_from_parent('feed_source', 'feed_source_id');
+
+
+--
+-- Name: feed_event_animal feed_event_animal_farm; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER feed_event_animal_farm BEFORE INSERT OR UPDATE ON public.feed_event_animal FOR EACH ROW EXECUTE FUNCTION public.farm_id_from_parent('feed_event', 'feed_event_id', 'animal', 'animal_id');
+
+
+--
 -- Name: feed_event feed_event_changed; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -4237,6 +5414,20 @@ CREATE TRIGGER feed_event_changed AFTER DELETE OR UPDATE ON public.feed_event FO
 --
 
 CREATE TRIGGER feed_event_empties_source AFTER INSERT OR DELETE OR UPDATE ON public.feed_event FOR EACH ROW EXECUTE FUNCTION public.feed_line_changed();
+
+
+--
+-- Name: feed_event feed_event_farm; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER feed_event_farm BEFORE INSERT OR UPDATE ON public.feed_event FOR EACH ROW EXECUTE FUNCTION public.farm_id_from_parent('feed_source', 'feed_source_id', 'paddock', 'paddock_id');
+
+
+--
+-- Name: feed_event_ref feed_event_ref_farm; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER feed_event_ref_farm BEFORE INSERT OR UPDATE ON public.feed_event_ref FOR EACH ROW EXECUTE FUNCTION public.farm_id_from_parent('feed_event', 'feed_event_id');
 
 
 --
@@ -4282,10 +5473,38 @@ CREATE TRIGGER joining_expects_del AFTER DELETE ON public.joining FOR EACH ROW E
 
 
 --
+-- Name: joining joining_farm; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER joining_farm BEFORE INSERT OR UPDATE ON public.joining FOR EACH ROW EXECUTE FUNCTION public.farm_id_from_parent('animal', 'dam_id', 'animal', 'sire_id', 'ai_semen', 'ai_semen_id', 'paddock', 'paddock_id');
+
+
+--
 -- Name: joining joining_fulfils_plan; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER joining_fulfils_plan AFTER INSERT ON public.joining FOR EACH ROW EXECUTE FUNCTION public.plan_fulfilled();
+
+
+--
+-- Name: joining joining_held_drops_backups; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER joining_held_drops_backups AFTER UPDATE OF outcome ON public.joining FOR EACH ROW EXECUTE FUNCTION public.plan_backups_not_needed();
+
+
+--
+-- Name: joining joining_season; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER joining_season BEFORE INSERT OR UPDATE OF due_on, season ON public.joining FOR EACH ROW EXECUTE FUNCTION public.joining_season();
+
+
+--
+-- Name: paddock paddock_farm; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER paddock_farm BEFORE INSERT OR UPDATE ON public.paddock FOR EACH ROW EXECUTE FUNCTION public.farm_id_from_parent('property', 'property_id');
 
 
 --
@@ -4296,10 +5515,52 @@ CREATE TRIGGER paddock_geometry_changed BEFORE UPDATE ON public.paddock FOR EACH
 
 
 --
+-- Name: paddock_geometry_log paddock_geometry_log_farm; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER paddock_geometry_log_farm BEFORE INSERT OR UPDATE ON public.paddock_geometry_log FOR EACH ROW EXECUTE FUNCTION public.farm_id_from_parent('paddock', 'paddock_id');
+
+
+--
+-- Name: paddock_lineage paddock_lineage_farm; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER paddock_lineage_farm BEFORE INSERT OR UPDATE ON public.paddock_lineage FOR EACH ROW EXECUTE FUNCTION public.farm_id_from_parent('paddock', 'parent_id', 'paddock', 'child_id');
+
+
+--
+-- Name: paddock_stay paddock_stay_farm; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER paddock_stay_farm BEFORE INSERT OR UPDATE ON public.paddock_stay FOR EACH ROW EXECUTE FUNCTION public.farm_id_from_parent('paddock', 'paddock_id', 'animal', 'animal_id');
+
+
+--
 -- Name: planned_joining planned_joining_changed; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER planned_joining_changed AFTER DELETE OR UPDATE ON public.planned_joining FOR EACH ROW EXECUTE FUNCTION public.log_record_change();
+
+
+--
+-- Name: planned_joining planned_joining_farm; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER planned_joining_farm BEFORE INSERT OR UPDATE ON public.planned_joining FOR EACH ROW EXECUTE FUNCTION public.farm_id_from_parent('animal', 'dam_id', 'animal', 'sire_id', 'ai_semen', 'ai_semen_id', 'paddock', 'paddock_id', 'joining', 'joining_id');
+
+
+--
+-- Name: planned_joining planned_joining_season; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER planned_joining_season BEFORE INSERT OR UPDATE OF planned_on, gestation_days, dam_id, season ON public.planned_joining FOR EACH ROW EXECUTE FUNCTION public.planned_joining_season();
+
+
+--
+-- Name: shearing_animal shearing_animal_farm; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER shearing_animal_farm BEFORE INSERT OR UPDATE ON public.shearing_animal FOR EACH ROW EXECUTE FUNCTION public.farm_id_from_parent('shearing', 'shearing_id', 'animal', 'animal_id');
 
 
 --
@@ -4317,10 +5578,31 @@ CREATE TRIGGER spray_event_changed AFTER DELETE OR UPDATE ON public.spray_event 
 
 
 --
+-- Name: spray_paddock spray_paddock_farm; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER spray_paddock_farm BEFORE INSERT OR UPDATE ON public.spray_paddock FOR EACH ROW EXECUTE FUNCTION public.farm_id_from_parent('spray_event', 'spray_event_id', 'paddock', 'paddock_id');
+
+
+--
 -- Name: spray_product spray_product_changed; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER spray_product_changed AFTER DELETE OR UPDATE ON public.spray_product FOR EACH ROW EXECUTE FUNCTION public.log_record_change();
+
+
+--
+-- Name: spray_product spray_product_farm; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER spray_product_farm BEFORE INSERT OR UPDATE ON public.spray_product FOR EACH ROW EXECUTE FUNCTION public.farm_id_from_parent('spray_event', 'spray_event_id');
+
+
+--
+-- Name: treatment_animal treatment_animal_farm; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER treatment_animal_farm BEFORE INSERT OR UPDATE ON public.treatment_animal FOR EACH ROW EXECUTE FUNCTION public.farm_id_from_parent('treatment', 'treatment_id', 'animal', 'animal_id');
 
 
 --
@@ -4338,11 +5620,26 @@ CREATE TRIGGER weight_event_changed AFTER DELETE OR UPDATE ON public.weight_even
 
 
 --
+-- Name: weight_event weight_event_farm; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER weight_event_farm BEFORE INSERT OR UPDATE ON public.weight_event FOR EACH ROW EXECUTE FUNCTION public.farm_id_from_parent('animal', 'animal_id');
+
+
+--
 -- Name: ai_semen ai_semen_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.ai_semen
     ADD CONSTRAINT ai_semen_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.farm_user(id);
+
+
+--
+-- Name: ai_semen ai_semen_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ai_semen
+    ADD CONSTRAINT ai_semen_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
 
 
 --
@@ -4359,6 +5656,14 @@ ALTER TABLE ONLY public.ai_semen
 
 ALTER TABLE ONLY public.animal
     ADD CONSTRAINT animal_dam_id_fkey FOREIGN KEY (dam_id) REFERENCES public.animal(id);
+
+
+--
+-- Name: animal animal_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.animal
+    ADD CONSTRAINT animal_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
 
 
 --
@@ -4410,11 +5715,51 @@ ALTER TABLE ONLY public.animal_status
 
 
 --
+-- Name: animal_status animal_status_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.animal_status
+    ADD CONSTRAINT animal_status_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
+
+
+--
 -- Name: animal_status animal_status_recorded_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.animal_status
     ADD CONSTRAINT animal_status_recorded_by_fkey FOREIGN KEY (recorded_by) REFERENCES public.farm_user(id);
+
+
+--
+-- Name: asbv asbv_farm_id_animal_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.asbv
+    ADD CONSTRAINT asbv_farm_id_animal_id_fkey FOREIGN KEY (farm_id, animal_id) REFERENCES public.animal(farm_id, id) ON DELETE CASCADE;
+
+
+--
+-- Name: asbv asbv_farm_id_run_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.asbv
+    ADD CONSTRAINT asbv_farm_id_run_id_fkey FOREIGN KEY (farm_id, run_id) REFERENCES public.asbv_run(farm_id, id) ON DELETE CASCADE;
+
+
+--
+-- Name: asbv_run asbv_run_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.asbv_run
+    ADD CONSTRAINT asbv_run_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id) ON DELETE CASCADE;
+
+
+--
+-- Name: asbv_run asbv_run_imported_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.asbv_run
+    ADD CONSTRAINT asbv_run_imported_by_fkey FOREIGN KEY (imported_by) REFERENCES public.farm_user(id);
 
 
 --
@@ -4431,6 +5776,14 @@ ALTER TABLE ONLY public.calving
 
 ALTER TABLE ONLY public.calving
     ADD CONSTRAINT calving_dam_id_fkey FOREIGN KEY (dam_id) REFERENCES public.animal(id) ON DELETE CASCADE;
+
+
+--
+-- Name: calving calving_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.calving
+    ADD CONSTRAINT calving_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
 
 
 --
@@ -4466,6 +5819,22 @@ ALTER TABLE ONLY public.consignment_animal
 
 
 --
+-- Name: consignment_animal consignment_animal_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.consignment_animal
+    ADD CONSTRAINT consignment_animal_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
+
+
+--
+-- Name: consignment consignment_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.consignment
+    ADD CONSTRAINT consignment_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
+
+
+--
 -- Name: consignment consignment_recorded_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4495,6 +5864,14 @@ ALTER TABLE ONLY public.cryo_txn
 
 ALTER TABLE ONLY public.cryo_txn
     ADD CONSTRAINT cryo_txn_embryo_id_fkey FOREIGN KEY (embryo_id) REFERENCES public.embryo(id) ON DELETE CASCADE;
+
+
+--
+-- Name: cryo_txn cryo_txn_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cryo_txn
+    ADD CONSTRAINT cryo_txn_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
 
 
 --
@@ -4530,6 +5907,14 @@ ALTER TABLE ONLY public.embryo
 
 
 --
+-- Name: embryo embryo_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.embryo
+    ADD CONSTRAINT embryo_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
+
+
+--
 -- Name: embryo embryo_sire_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4543,6 +5928,14 @@ ALTER TABLE ONLY public.embryo
 
 ALTER TABLE ONLY public.expected_calving
     ADD CONSTRAINT expected_calving_dam_id_fkey FOREIGN KEY (dam_id) REFERENCES public.animal(id) ON DELETE CASCADE;
+
+
+--
+-- Name: expected_calving expected_calving_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.expected_calving
+    ADD CONSTRAINT expected_calving_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
 
 
 --
@@ -4578,11 +5971,43 @@ ALTER TABLE ONLY public.expected_calving
 
 
 --
+-- Name: farm_member farm_member_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.farm_member
+    ADD CONSTRAINT farm_member_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id) ON DELETE CASCADE;
+
+
+--
+-- Name: farm_member farm_member_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.farm_member
+    ADD CONSTRAINT farm_member_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.farm_user(id) ON DELETE CASCADE;
+
+
+--
+-- Name: farm_user farm_user_current_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.farm_user
+    ADD CONSTRAINT farm_user_current_farm_id_fkey FOREIGN KEY (current_farm_id) REFERENCES public.farm(id);
+
+
+--
 -- Name: farm_user farm_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.farm_user
     ADD CONSTRAINT farm_user_id_fkey FOREIGN KEY (id) REFERENCES auth.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: feed_adjustment feed_adjustment_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.feed_adjustment
+    ADD CONSTRAINT feed_adjustment_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
 
 
 --
@@ -4610,11 +6035,27 @@ ALTER TABLE ONLY public.feed_event_animal
 
 
 --
+-- Name: feed_event_animal feed_event_animal_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.feed_event_animal
+    ADD CONSTRAINT feed_event_animal_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
+
+
+--
 -- Name: feed_event_animal feed_event_animal_feed_event_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.feed_event_animal
     ADD CONSTRAINT feed_event_animal_feed_event_id_fkey FOREIGN KEY (feed_event_id) REFERENCES public.feed_event(id) ON DELETE CASCADE;
+
+
+--
+-- Name: feed_event feed_event_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.feed_event
+    ADD CONSTRAINT feed_event_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
 
 
 --
@@ -4642,6 +6083,14 @@ ALTER TABLE ONLY public.feed_event
 
 
 --
+-- Name: feed_event_ref feed_event_ref_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.feed_event_ref
+    ADD CONSTRAINT feed_event_ref_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
+
+
+--
 -- Name: feed_event_ref feed_event_ref_feed_event_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4650,11 +6099,27 @@ ALTER TABLE ONLY public.feed_event_ref
 
 
 --
+-- Name: feed_source feed_source_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.feed_source
+    ADD CONSTRAINT feed_source_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
+
+
+--
 -- Name: feed_source feed_source_recorded_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.feed_source
     ADD CONSTRAINT feed_source_recorded_by_fkey FOREIGN KEY (recorded_by) REFERENCES public.farm_user(id);
+
+
+--
+-- Name: heritage heritage_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.heritage
+    ADD CONSTRAINT heritage_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
 
 
 --
@@ -4671,6 +6136,14 @@ ALTER TABLE ONLY public.joining
 
 ALTER TABLE ONLY public.joining
     ADD CONSTRAINT joining_dam_id_fkey FOREIGN KEY (dam_id) REFERENCES public.animal(id) ON DELETE CASCADE;
+
+
+--
+-- Name: joining joining_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.joining
+    ADD CONSTRAINT joining_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
 
 
 --
@@ -4698,11 +6171,27 @@ ALTER TABLE ONLY public.joining
 
 
 --
+-- Name: paddock paddock_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.paddock
+    ADD CONSTRAINT paddock_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
+
+
+--
 -- Name: paddock_geometry_log paddock_geometry_log_changed_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.paddock_geometry_log
     ADD CONSTRAINT paddock_geometry_log_changed_by_fkey FOREIGN KEY (changed_by) REFERENCES public.farm_user(id);
+
+
+--
+-- Name: paddock_geometry_log paddock_geometry_log_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.paddock_geometry_log
+    ADD CONSTRAINT paddock_geometry_log_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
 
 
 --
@@ -4719,6 +6208,14 @@ ALTER TABLE ONLY public.paddock_geometry_log
 
 ALTER TABLE ONLY public.paddock_lineage
     ADD CONSTRAINT paddock_lineage_child_id_fkey FOREIGN KEY (child_id) REFERENCES public.paddock(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: paddock_lineage paddock_lineage_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.paddock_lineage
+    ADD CONSTRAINT paddock_lineage_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
 
 
 --
@@ -4762,6 +6259,14 @@ ALTER TABLE ONLY public.paddock_stay
 
 
 --
+-- Name: paddock_stay paddock_stay_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.paddock_stay
+    ADD CONSTRAINT paddock_stay_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
+
+
+--
 -- Name: paddock_stay paddock_stay_paddock_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4802,6 +6307,14 @@ ALTER TABLE ONLY public.planned_joining
 
 
 --
+-- Name: planned_joining planned_joining_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.planned_joining
+    ADD CONSTRAINT planned_joining_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
+
+
+--
 -- Name: planned_joining planned_joining_joining_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4826,11 +6339,27 @@ ALTER TABLE ONLY public.planned_joining
 
 
 --
+-- Name: property property_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.property
+    ADD CONSTRAINT property_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
+
+
+--
 -- Name: record_change_log record_change_log_changed_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.record_change_log
     ADD CONSTRAINT record_change_log_changed_by_fkey FOREIGN KEY (changed_by) REFERENCES public.farm_user(id);
+
+
+--
+-- Name: record_change_log record_change_log_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.record_change_log
+    ADD CONSTRAINT record_change_log_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
 
 
 --
@@ -4842,11 +6371,27 @@ ALTER TABLE ONLY public.shearing_animal
 
 
 --
+-- Name: shearing_animal shearing_animal_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.shearing_animal
+    ADD CONSTRAINT shearing_animal_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
+
+
+--
 -- Name: shearing_animal shearing_animal_shearing_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.shearing_animal
     ADD CONSTRAINT shearing_animal_shearing_id_fkey FOREIGN KEY (shearing_id) REFERENCES public.shearing(id) ON DELETE CASCADE;
+
+
+--
+-- Name: shearing shearing_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.shearing
+    ADD CONSTRAINT shearing_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
 
 
 --
@@ -4858,11 +6403,27 @@ ALTER TABLE ONLY public.shearing
 
 
 --
+-- Name: spray_event spray_event_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.spray_event
+    ADD CONSTRAINT spray_event_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
+
+
+--
 -- Name: spray_event spray_event_recorded_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.spray_event
     ADD CONSTRAINT spray_event_recorded_by_fkey FOREIGN KEY (recorded_by) REFERENCES public.farm_user(id);
+
+
+--
+-- Name: spray_paddock spray_paddock_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.spray_paddock
+    ADD CONSTRAINT spray_paddock_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
 
 
 --
@@ -4882,6 +6443,14 @@ ALTER TABLE ONLY public.spray_paddock
 
 
 --
+-- Name: spray_product spray_product_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.spray_product
+    ADD CONSTRAINT spray_product_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
+
+
+--
 -- Name: spray_product spray_product_spray_event_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4898,11 +6467,27 @@ ALTER TABLE ONLY public.treatment_animal
 
 
 --
+-- Name: treatment_animal treatment_animal_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.treatment_animal
+    ADD CONSTRAINT treatment_animal_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
+
+
+--
 -- Name: treatment_animal treatment_animal_treatment_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.treatment_animal
     ADD CONSTRAINT treatment_animal_treatment_id_fkey FOREIGN KEY (treatment_id) REFERENCES public.treatment(id) ON DELETE CASCADE;
+
+
+--
+-- Name: treatment treatment_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.treatment
+    ADD CONSTRAINT treatment_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
 
 
 --
@@ -4930,6 +6515,14 @@ ALTER TABLE ONLY public.weight_event
 
 
 --
+-- Name: weight_event weight_event_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.weight_event
+    ADD CONSTRAINT weight_event_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
+
+
+--
 -- Name: weight_event weight_event_recorded_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4947,39 +6540,28 @@ ALTER TABLE public.ai_semen ENABLE ROW LEVEL SECURITY;
 -- Name: ai_semen ai_semen_delete; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY ai_semen_delete ON public.ai_semen FOR DELETE TO authenticated USING ((public.my_role() = 'owner'::public.farm_role_t));
+CREATE POLICY ai_semen_delete ON public.ai_semen FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
 
 
 --
 -- Name: ai_semen ai_semen_insert; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY ai_semen_insert ON public.ai_semen FOR INSERT TO authenticated WITH CHECK (public.can_write());
+CREATE POLICY ai_semen_insert ON public.ai_semen FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: ai_semen ai_semen_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY ai_semen_read ON public.ai_semen FOR SELECT TO authenticated USING (public.can_read());
+CREATE POLICY ai_semen_read ON public.ai_semen FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
 
 
 --
 -- Name: ai_semen ai_semen_update; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY ai_semen_update ON public.ai_semen FOR UPDATE TO authenticated USING (public.can_write()) WITH CHECK (public.can_write());
-
-
---
--- Name: ai_semen ai_semen_write; Type: POLICY; Schema: public; Owner: -
---
-
-CREATE POLICY ai_semen_write ON public.ai_semen USING ((EXISTS ( SELECT 1
-   FROM public.farm_user u
-  WHERE ((u.id = auth.uid()) AND u.active)))) WITH CHECK ((EXISTS ( SELECT 1
-   FROM public.farm_user u
-  WHERE ((u.id = auth.uid()) AND u.active))));
+CREATE POLICY ai_semen_update ON public.ai_semen FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
@@ -4992,21 +6574,25 @@ ALTER TABLE public.animal ENABLE ROW LEVEL SECURITY;
 -- Name: animal animal_delete; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY animal_delete ON public.animal FOR DELETE TO authenticated USING ((public.my_role() = 'owner'::public.farm_role_t));
+CREATE POLICY animal_delete ON public.animal FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
 
 
 --
 -- Name: animal animal_insert; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY animal_insert ON public.animal FOR INSERT TO authenticated WITH CHECK (public.can_write());
+CREATE POLICY animal_insert ON public.animal FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write) AND ((property_id IS NULL) OR (EXISTS ( SELECT 1
+   FROM public.property p
+  WHERE (p.id = animal.property_id)))) AND ((origin_property_id IS NULL) OR (EXISTS ( SELECT 1
+   FROM public.property p
+  WHERE (p.id = animal.origin_property_id))))));
 
 
 --
 -- Name: animal animal_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY animal_read ON public.animal FOR SELECT TO authenticated USING (public.can_read());
+CREATE POLICY animal_read ON public.animal FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
 
 
 --
@@ -5019,35 +6605,107 @@ ALTER TABLE public.animal_status ENABLE ROW LEVEL SECURITY;
 -- Name: animal_status animal_status_delete; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY animal_status_delete ON public.animal_status FOR DELETE TO authenticated USING ((public.my_role() = 'owner'::public.farm_role_t));
+CREATE POLICY animal_status_delete ON public.animal_status FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
 
 
 --
 -- Name: animal_status animal_status_insert; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY animal_status_insert ON public.animal_status FOR INSERT TO authenticated WITH CHECK (public.can_write());
+CREATE POLICY animal_status_insert ON public.animal_status FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: animal_status animal_status_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY animal_status_read ON public.animal_status FOR SELECT TO authenticated USING (public.can_read());
+CREATE POLICY animal_status_read ON public.animal_status FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
 
 
 --
 -- Name: animal_status animal_status_update; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY animal_status_update ON public.animal_status FOR UPDATE TO authenticated USING (public.can_write()) WITH CHECK (public.can_write());
+CREATE POLICY animal_status_update ON public.animal_status FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: animal animal_update; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY animal_update ON public.animal FOR UPDATE TO authenticated USING (public.can_write()) WITH CHECK (public.can_write());
+CREATE POLICY animal_update ON public.animal FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write) AND ((property_id IS NULL) OR (EXISTS ( SELECT 1
+   FROM public.property p
+  WHERE (p.id = animal.property_id)))) AND ((origin_property_id IS NULL) OR (EXISTS ( SELECT 1
+   FROM public.property p
+  WHERE (p.id = animal.origin_property_id))))));
+
+
+--
+-- Name: asbv; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.asbv ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: asbv asbv_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY asbv_delete ON public.asbv FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
+
+
+--
+-- Name: asbv asbv_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY asbv_insert ON public.asbv FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
+
+
+--
+-- Name: asbv asbv_read; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY asbv_read ON public.asbv FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
+
+
+--
+-- Name: asbv_run; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.asbv_run ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: asbv_run asbv_run_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY asbv_run_delete ON public.asbv_run FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
+
+
+--
+-- Name: asbv_run asbv_run_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY asbv_run_insert ON public.asbv_run FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
+
+
+--
+-- Name: asbv_run asbv_run_read; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY asbv_run_read ON public.asbv_run FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
+
+
+--
+-- Name: asbv_run asbv_run_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY asbv_run_update ON public.asbv_run FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
+
+
+--
+-- Name: asbv asbv_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY asbv_update ON public.asbv FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
@@ -5060,28 +6718,28 @@ ALTER TABLE public.calving ENABLE ROW LEVEL SECURITY;
 -- Name: calving calving_delete; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY calving_delete ON public.calving FOR DELETE TO authenticated USING ((public.my_role() = 'owner'::public.farm_role_t));
+CREATE POLICY calving_delete ON public.calving FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
 
 
 --
 -- Name: calving calving_insert; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY calving_insert ON public.calving FOR INSERT TO authenticated WITH CHECK (public.can_write());
+CREATE POLICY calving_insert ON public.calving FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: calving calving_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY calving_read ON public.calving FOR SELECT TO authenticated USING (public.can_read());
+CREATE POLICY calving_read ON public.calving FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
 
 
 --
 -- Name: calving calving_update; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY calving_update ON public.calving FOR UPDATE TO authenticated USING (public.can_write()) WITH CHECK (public.can_write());
+CREATE POLICY calving_update ON public.calving FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
@@ -5100,56 +6758,56 @@ ALTER TABLE public.consignment_animal ENABLE ROW LEVEL SECURITY;
 -- Name: consignment_animal consignment_animal_delete; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY consignment_animal_delete ON public.consignment_animal FOR DELETE TO authenticated USING ((public.my_role() = 'owner'::public.farm_role_t));
+CREATE POLICY consignment_animal_delete ON public.consignment_animal FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
 
 
 --
 -- Name: consignment_animal consignment_animal_insert; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY consignment_animal_insert ON public.consignment_animal FOR INSERT TO authenticated WITH CHECK (public.can_write());
+CREATE POLICY consignment_animal_insert ON public.consignment_animal FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: consignment_animal consignment_animal_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY consignment_animal_read ON public.consignment_animal FOR SELECT TO authenticated USING (public.can_read());
+CREATE POLICY consignment_animal_read ON public.consignment_animal FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
 
 
 --
 -- Name: consignment_animal consignment_animal_update; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY consignment_animal_update ON public.consignment_animal FOR UPDATE TO authenticated USING (public.can_write()) WITH CHECK (public.can_write());
+CREATE POLICY consignment_animal_update ON public.consignment_animal FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: consignment consignment_delete; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY consignment_delete ON public.consignment FOR DELETE TO authenticated USING ((public.my_role() = 'owner'::public.farm_role_t));
+CREATE POLICY consignment_delete ON public.consignment FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
 
 
 --
 -- Name: consignment consignment_insert; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY consignment_insert ON public.consignment FOR INSERT TO authenticated WITH CHECK (public.can_write());
+CREATE POLICY consignment_insert ON public.consignment FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: consignment consignment_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY consignment_read ON public.consignment FOR SELECT TO authenticated USING (public.can_read());
+CREATE POLICY consignment_read ON public.consignment FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
 
 
 --
 -- Name: consignment consignment_update; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY consignment_update ON public.consignment FOR UPDATE TO authenticated USING (public.can_write()) WITH CHECK (public.can_write());
+CREATE POLICY consignment_update ON public.consignment FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
@@ -5162,28 +6820,28 @@ ALTER TABLE public.cryo_txn ENABLE ROW LEVEL SECURITY;
 -- Name: cryo_txn cryo_txn_delete; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY cryo_txn_delete ON public.cryo_txn FOR DELETE TO authenticated USING ((public.my_role() = 'owner'::public.farm_role_t));
+CREATE POLICY cryo_txn_delete ON public.cryo_txn FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
 
 
 --
 -- Name: cryo_txn cryo_txn_insert; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY cryo_txn_insert ON public.cryo_txn FOR INSERT TO authenticated WITH CHECK (public.can_write());
+CREATE POLICY cryo_txn_insert ON public.cryo_txn FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: cryo_txn cryo_txn_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY cryo_txn_read ON public.cryo_txn FOR SELECT TO authenticated USING (public.can_read());
+CREATE POLICY cryo_txn_read ON public.cryo_txn FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
 
 
 --
 -- Name: cryo_txn cryo_txn_update; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY cryo_txn_update ON public.cryo_txn FOR UPDATE TO authenticated USING (public.can_write()) WITH CHECK (public.can_write());
+CREATE POLICY cryo_txn_update ON public.cryo_txn FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
@@ -5196,28 +6854,28 @@ ALTER TABLE public.embryo ENABLE ROW LEVEL SECURITY;
 -- Name: embryo embryo_delete; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY embryo_delete ON public.embryo FOR DELETE TO authenticated USING ((public.my_role() = 'owner'::public.farm_role_t));
+CREATE POLICY embryo_delete ON public.embryo FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
 
 
 --
 -- Name: embryo embryo_insert; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY embryo_insert ON public.embryo FOR INSERT TO authenticated WITH CHECK (public.can_write());
+CREATE POLICY embryo_insert ON public.embryo FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: embryo embryo_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY embryo_read ON public.embryo FOR SELECT TO authenticated USING (public.can_read());
+CREATE POLICY embryo_read ON public.embryo FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
 
 
 --
 -- Name: embryo embryo_update; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY embryo_update ON public.embryo FOR UPDATE TO authenticated USING (public.can_write()) WITH CHECK (public.can_write());
+CREATE POLICY embryo_update ON public.embryo FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
@@ -5230,28 +6888,70 @@ ALTER TABLE public.expected_calving ENABLE ROW LEVEL SECURITY;
 -- Name: expected_calving expected_calving_delete; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY expected_calving_delete ON public.expected_calving FOR DELETE TO authenticated USING ((public.my_role() = 'owner'::public.farm_role_t));
+CREATE POLICY expected_calving_delete ON public.expected_calving FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
 
 
 --
 -- Name: expected_calving expected_calving_insert; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY expected_calving_insert ON public.expected_calving FOR INSERT TO authenticated WITH CHECK (public.can_write());
+CREATE POLICY expected_calving_insert ON public.expected_calving FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: expected_calving expected_calving_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY expected_calving_read ON public.expected_calving FOR SELECT TO authenticated USING (public.can_read());
+CREATE POLICY expected_calving_read ON public.expected_calving FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
 
 
 --
 -- Name: expected_calving expected_calving_update; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY expected_calving_update ON public.expected_calving FOR UPDATE TO authenticated USING (public.can_write()) WITH CHECK (public.can_write());
+CREATE POLICY expected_calving_update ON public.expected_calving FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
+
+
+--
+-- Name: farm; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.farm ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: farm_member; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.farm_member ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: farm_member farm_member_manage; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY farm_member_manage ON public.farm_member TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
+
+
+--
+-- Name: farm_member farm_member_read; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY farm_member_read ON public.farm_member FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) OR (user_id = auth.uid())));
+
+
+--
+-- Name: farm farm_read; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY farm_read ON public.farm FOR SELECT TO authenticated USING (((id = ( SELECT public.current_farm() AS current_farm)) OR (EXISTS ( SELECT 1
+   FROM public.farm_member m
+  WHERE ((m.farm_id = farm.id) AND (m.user_id = auth.uid()) AND m.active)))));
+
+
+--
+-- Name: farm farm_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY farm_update ON public.farm FOR UPDATE TO authenticated USING (((id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t))) WITH CHECK (((id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
 
 
 --
@@ -5261,17 +6961,23 @@ CREATE POLICY expected_calving_update ON public.expected_calving FOR UPDATE TO a
 ALTER TABLE public.farm_user ENABLE ROW LEVEL SECURITY;
 
 --
--- Name: farm_user farm_user_manage; Type: POLICY; Schema: public; Owner: -
---
-
-CREATE POLICY farm_user_manage ON public.farm_user TO authenticated USING ((public.my_role() = 'owner'::public.farm_role_t)) WITH CHECK ((public.my_role() = 'owner'::public.farm_role_t));
-
-
---
 -- Name: farm_user farm_user_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY farm_user_read ON public.farm_user FOR SELECT TO authenticated USING (public.can_read());
+CREATE POLICY farm_user_read ON public.farm_user FOR SELECT TO authenticated USING (((id = auth.uid()) OR (EXISTS ( SELECT 1
+   FROM public.farm_member m
+  WHERE ((m.user_id = farm_user.id) AND (m.farm_id = ( SELECT public.current_farm() AS current_farm)))))));
+
+
+--
+-- Name: farm_user farm_user_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY farm_user_update ON public.farm_user FOR UPDATE TO authenticated USING (((id = auth.uid()) OR ((( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t) AND (EXISTS ( SELECT 1
+   FROM public.farm_member m
+  WHERE ((m.user_id = farm_user.id) AND (m.farm_id = ( SELECT public.current_farm() AS current_farm)))))))) WITH CHECK (((id = auth.uid()) OR ((( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t) AND (EXISTS ( SELECT 1
+   FROM public.farm_member m
+  WHERE ((m.user_id = farm_user.id) AND (m.farm_id = ( SELECT public.current_farm() AS current_farm))))))));
 
 
 --
@@ -5284,28 +6990,28 @@ ALTER TABLE public.feed_adjustment ENABLE ROW LEVEL SECURITY;
 -- Name: feed_adjustment feed_adjustment_delete; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY feed_adjustment_delete ON public.feed_adjustment FOR DELETE TO authenticated USING ((public.my_role() = 'owner'::public.farm_role_t));
+CREATE POLICY feed_adjustment_delete ON public.feed_adjustment FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
 
 
 --
 -- Name: feed_adjustment feed_adjustment_insert; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY feed_adjustment_insert ON public.feed_adjustment FOR INSERT TO authenticated WITH CHECK (public.can_write());
+CREATE POLICY feed_adjustment_insert ON public.feed_adjustment FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: feed_adjustment feed_adjustment_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY feed_adjustment_read ON public.feed_adjustment FOR SELECT TO authenticated USING (public.can_read());
+CREATE POLICY feed_adjustment_read ON public.feed_adjustment FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
 
 
 --
 -- Name: feed_adjustment feed_adjustment_update; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY feed_adjustment_update ON public.feed_adjustment FOR UPDATE TO authenticated USING (public.can_write()) WITH CHECK (public.can_write());
+CREATE POLICY feed_adjustment_update ON public.feed_adjustment FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
@@ -5324,49 +7030,49 @@ ALTER TABLE public.feed_event_animal ENABLE ROW LEVEL SECURITY;
 -- Name: feed_event_animal feed_event_animal_delete; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY feed_event_animal_delete ON public.feed_event_animal FOR DELETE TO authenticated USING ((public.my_role() = 'owner'::public.farm_role_t));
+CREATE POLICY feed_event_animal_delete ON public.feed_event_animal FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
 
 
 --
 -- Name: feed_event_animal feed_event_animal_insert; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY feed_event_animal_insert ON public.feed_event_animal FOR INSERT TO authenticated WITH CHECK (public.can_write());
+CREATE POLICY feed_event_animal_insert ON public.feed_event_animal FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: feed_event_animal feed_event_animal_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY feed_event_animal_read ON public.feed_event_animal FOR SELECT TO authenticated USING (public.can_read());
+CREATE POLICY feed_event_animal_read ON public.feed_event_animal FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
 
 
 --
 -- Name: feed_event_animal feed_event_animal_update; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY feed_event_animal_update ON public.feed_event_animal FOR UPDATE TO authenticated USING (public.can_write()) WITH CHECK (public.can_write());
+CREATE POLICY feed_event_animal_update ON public.feed_event_animal FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: feed_event feed_event_delete; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY feed_event_delete ON public.feed_event FOR DELETE TO authenticated USING ((public.my_role() = 'owner'::public.farm_role_t));
+CREATE POLICY feed_event_delete ON public.feed_event FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
 
 
 --
 -- Name: feed_event feed_event_insert; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY feed_event_insert ON public.feed_event FOR INSERT TO authenticated WITH CHECK (public.can_write());
+CREATE POLICY feed_event_insert ON public.feed_event FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: feed_event feed_event_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY feed_event_read ON public.feed_event FOR SELECT TO authenticated USING (public.can_read());
+CREATE POLICY feed_event_read ON public.feed_event FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
 
 
 --
@@ -5379,35 +7085,35 @@ ALTER TABLE public.feed_event_ref ENABLE ROW LEVEL SECURITY;
 -- Name: feed_event_ref feed_event_ref_delete; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY feed_event_ref_delete ON public.feed_event_ref FOR DELETE TO authenticated USING ((public.my_role() = 'owner'::public.farm_role_t));
+CREATE POLICY feed_event_ref_delete ON public.feed_event_ref FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
 
 
 --
 -- Name: feed_event_ref feed_event_ref_insert; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY feed_event_ref_insert ON public.feed_event_ref FOR INSERT TO authenticated WITH CHECK (public.can_write());
+CREATE POLICY feed_event_ref_insert ON public.feed_event_ref FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: feed_event_ref feed_event_ref_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY feed_event_ref_read ON public.feed_event_ref FOR SELECT TO authenticated USING (public.can_read());
+CREATE POLICY feed_event_ref_read ON public.feed_event_ref FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
 
 
 --
 -- Name: feed_event_ref feed_event_ref_update; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY feed_event_ref_update ON public.feed_event_ref FOR UPDATE TO authenticated USING (public.can_write()) WITH CHECK (public.can_write());
+CREATE POLICY feed_event_ref_update ON public.feed_event_ref FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: feed_event feed_event_update; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY feed_event_update ON public.feed_event FOR UPDATE TO authenticated USING (public.can_write()) WITH CHECK (public.can_write());
+CREATE POLICY feed_event_update ON public.feed_event FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
@@ -5420,28 +7126,28 @@ ALTER TABLE public.feed_source ENABLE ROW LEVEL SECURITY;
 -- Name: feed_source feed_source_delete; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY feed_source_delete ON public.feed_source FOR DELETE TO authenticated USING ((public.my_role() = 'owner'::public.farm_role_t));
+CREATE POLICY feed_source_delete ON public.feed_source FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
 
 
 --
 -- Name: feed_source feed_source_insert; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY feed_source_insert ON public.feed_source FOR INSERT TO authenticated WITH CHECK (public.can_write());
+CREATE POLICY feed_source_insert ON public.feed_source FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: feed_source feed_source_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY feed_source_read ON public.feed_source FOR SELECT TO authenticated USING (public.can_read());
+CREATE POLICY feed_source_read ON public.feed_source FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
 
 
 --
 -- Name: feed_source feed_source_update; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY feed_source_update ON public.feed_source FOR UPDATE TO authenticated USING (public.can_write()) WITH CHECK (public.can_write());
+CREATE POLICY feed_source_update ON public.feed_source FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
@@ -5467,28 +7173,28 @@ ALTER TABLE public.heritage ENABLE ROW LEVEL SECURITY;
 -- Name: heritage heritage_delete; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY heritage_delete ON public.heritage FOR DELETE TO authenticated USING ((public.my_role() = 'owner'::public.farm_role_t));
+CREATE POLICY heritage_delete ON public.heritage FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
 
 
 --
 -- Name: heritage heritage_insert; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY heritage_insert ON public.heritage FOR INSERT TO authenticated WITH CHECK (public.can_write());
+CREATE POLICY heritage_insert ON public.heritage FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: heritage heritage_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY heritage_read ON public.heritage FOR SELECT TO authenticated USING (public.can_read());
+CREATE POLICY heritage_read ON public.heritage FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
 
 
 --
 -- Name: heritage heritage_update; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY heritage_update ON public.heritage FOR UPDATE TO authenticated USING (public.can_write()) WITH CHECK (public.can_write());
+CREATE POLICY heritage_update ON public.heritage FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
@@ -5501,28 +7207,28 @@ ALTER TABLE public.joining ENABLE ROW LEVEL SECURITY;
 -- Name: joining joining_delete; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY joining_delete ON public.joining FOR DELETE TO authenticated USING ((public.my_role() = 'owner'::public.farm_role_t));
+CREATE POLICY joining_delete ON public.joining FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
 
 
 --
 -- Name: joining joining_insert; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY joining_insert ON public.joining FOR INSERT TO authenticated WITH CHECK (public.can_write());
+CREATE POLICY joining_insert ON public.joining FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: joining joining_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY joining_read ON public.joining FOR SELECT TO authenticated USING (public.can_read());
+CREATE POLICY joining_read ON public.joining FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
 
 
 --
 -- Name: joining joining_update; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY joining_update ON public.joining FOR UPDATE TO authenticated USING (public.can_write()) WITH CHECK (public.can_write());
+CREATE POLICY joining_update ON public.joining FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
@@ -5535,7 +7241,7 @@ ALTER TABLE public.paddock ENABLE ROW LEVEL SECURITY;
 -- Name: paddock paddock_delete; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY paddock_delete ON public.paddock FOR DELETE TO authenticated USING ((public.my_role() = 'owner'::public.farm_role_t));
+CREATE POLICY paddock_delete ON public.paddock FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
 
 
 --
@@ -5548,28 +7254,30 @@ ALTER TABLE public.paddock_geometry_log ENABLE ROW LEVEL SECURITY;
 -- Name: paddock_geometry_log paddock_geometry_log_delete; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY paddock_geometry_log_delete ON public.paddock_geometry_log FOR DELETE TO authenticated USING ((public.my_role() = 'owner'::public.farm_role_t));
+CREATE POLICY paddock_geometry_log_delete ON public.paddock_geometry_log FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
 
 
 --
 -- Name: paddock_geometry_log paddock_geometry_log_insert; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY paddock_geometry_log_insert ON public.paddock_geometry_log FOR INSERT TO authenticated WITH CHECK (public.can_write());
+CREATE POLICY paddock_geometry_log_insert ON public.paddock_geometry_log FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: paddock_geometry_log paddock_geometry_log_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY paddock_geometry_log_read ON public.paddock_geometry_log FOR SELECT TO authenticated USING (public.can_read());
+CREATE POLICY paddock_geometry_log_read ON public.paddock_geometry_log FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
 
 
 --
 -- Name: paddock paddock_insert; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY paddock_insert ON public.paddock FOR INSERT TO authenticated WITH CHECK (public.can_write());
+CREATE POLICY paddock_insert ON public.paddock FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write) AND ((property_id IS NULL) OR (EXISTS ( SELECT 1
+   FROM public.property p
+  WHERE (p.id = paddock.property_id))))));
 
 
 --
@@ -5582,28 +7290,28 @@ ALTER TABLE public.paddock_lineage ENABLE ROW LEVEL SECURITY;
 -- Name: paddock_lineage paddock_lineage_delete; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY paddock_lineage_delete ON public.paddock_lineage FOR DELETE TO authenticated USING ((public.my_role() = 'owner'::public.farm_role_t));
+CREATE POLICY paddock_lineage_delete ON public.paddock_lineage FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
 
 
 --
 -- Name: paddock_lineage paddock_lineage_insert; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY paddock_lineage_insert ON public.paddock_lineage FOR INSERT TO authenticated WITH CHECK (public.can_write());
+CREATE POLICY paddock_lineage_insert ON public.paddock_lineage FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: paddock_lineage paddock_lineage_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY paddock_lineage_read ON public.paddock_lineage FOR SELECT TO authenticated USING (public.can_read());
+CREATE POLICY paddock_lineage_read ON public.paddock_lineage FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
 
 
 --
 -- Name: paddock paddock_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY paddock_read ON public.paddock FOR SELECT TO authenticated USING (public.can_read());
+CREATE POLICY paddock_read ON public.paddock FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
 
 
 --
@@ -5616,35 +7324,37 @@ ALTER TABLE public.paddock_stay ENABLE ROW LEVEL SECURITY;
 -- Name: paddock_stay paddock_stay_delete; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY paddock_stay_delete ON public.paddock_stay FOR DELETE TO authenticated USING ((public.my_role() = 'owner'::public.farm_role_t));
+CREATE POLICY paddock_stay_delete ON public.paddock_stay FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
 
 
 --
 -- Name: paddock_stay paddock_stay_insert; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY paddock_stay_insert ON public.paddock_stay FOR INSERT TO authenticated WITH CHECK (public.can_write());
+CREATE POLICY paddock_stay_insert ON public.paddock_stay FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: paddock_stay paddock_stay_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY paddock_stay_read ON public.paddock_stay FOR SELECT TO authenticated USING (public.can_read());
+CREATE POLICY paddock_stay_read ON public.paddock_stay FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
 
 
 --
 -- Name: paddock_stay paddock_stay_update; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY paddock_stay_update ON public.paddock_stay FOR UPDATE TO authenticated USING (public.can_write()) WITH CHECK (public.can_write());
+CREATE POLICY paddock_stay_update ON public.paddock_stay FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: paddock paddock_update; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY paddock_update ON public.paddock FOR UPDATE TO authenticated USING (public.can_write()) WITH CHECK (public.can_write());
+CREATE POLICY paddock_update ON public.paddock FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write) AND ((property_id IS NULL) OR (EXISTS ( SELECT 1
+   FROM public.property p
+  WHERE (p.id = paddock.property_id))))));
 
 
 --
@@ -5657,28 +7367,28 @@ ALTER TABLE public.planned_joining ENABLE ROW LEVEL SECURITY;
 -- Name: planned_joining planned_joining_delete; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY planned_joining_delete ON public.planned_joining FOR DELETE TO authenticated USING ((public.my_role() = 'owner'::public.farm_role_t));
+CREATE POLICY planned_joining_delete ON public.planned_joining FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
 
 
 --
 -- Name: planned_joining planned_joining_insert; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY planned_joining_insert ON public.planned_joining FOR INSERT TO authenticated WITH CHECK (public.can_write());
+CREATE POLICY planned_joining_insert ON public.planned_joining FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: planned_joining planned_joining_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY planned_joining_read ON public.planned_joining FOR SELECT TO authenticated USING (public.can_read());
+CREATE POLICY planned_joining_read ON public.planned_joining FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
 
 
 --
 -- Name: planned_joining planned_joining_update; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY planned_joining_update ON public.planned_joining FOR UPDATE TO authenticated USING (public.can_write()) WITH CHECK (public.can_write());
+CREATE POLICY planned_joining_update ON public.planned_joining FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
@@ -5691,28 +7401,28 @@ ALTER TABLE public.property ENABLE ROW LEVEL SECURITY;
 -- Name: property property_delete; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY property_delete ON public.property FOR DELETE TO authenticated USING ((public.my_role() = 'owner'::public.farm_role_t));
+CREATE POLICY property_delete ON public.property FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
 
 
 --
 -- Name: property property_insert; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY property_insert ON public.property FOR INSERT TO authenticated WITH CHECK (public.can_write());
+CREATE POLICY property_insert ON public.property FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: property property_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY property_read ON public.property FOR SELECT TO authenticated USING (public.can_read());
+CREATE POLICY property_read ON public.property FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
 
 
 --
 -- Name: property property_update; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY property_update ON public.property FOR UPDATE TO authenticated USING (public.can_write()) WITH CHECK (public.can_write());
+CREATE POLICY property_update ON public.property FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
@@ -5725,7 +7435,7 @@ ALTER TABLE public.record_change_log ENABLE ROW LEVEL SECURITY;
 -- Name: record_change_log record_change_log_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY record_change_log_read ON public.record_change_log FOR SELECT TO authenticated USING (public.can_read());
+CREATE POLICY record_change_log_read ON public.record_change_log FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
 
 
 --
@@ -5744,56 +7454,56 @@ ALTER TABLE public.shearing_animal ENABLE ROW LEVEL SECURITY;
 -- Name: shearing_animal shearing_animal_delete; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY shearing_animal_delete ON public.shearing_animal FOR DELETE TO authenticated USING ((public.my_role() = 'owner'::public.farm_role_t));
+CREATE POLICY shearing_animal_delete ON public.shearing_animal FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
 
 
 --
 -- Name: shearing_animal shearing_animal_insert; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY shearing_animal_insert ON public.shearing_animal FOR INSERT TO authenticated WITH CHECK (public.can_write());
+CREATE POLICY shearing_animal_insert ON public.shearing_animal FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: shearing_animal shearing_animal_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY shearing_animal_read ON public.shearing_animal FOR SELECT TO authenticated USING (public.can_read());
+CREATE POLICY shearing_animal_read ON public.shearing_animal FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
 
 
 --
 -- Name: shearing_animal shearing_animal_update; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY shearing_animal_update ON public.shearing_animal FOR UPDATE TO authenticated USING (public.can_write()) WITH CHECK (public.can_write());
+CREATE POLICY shearing_animal_update ON public.shearing_animal FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: shearing shearing_delete; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY shearing_delete ON public.shearing FOR DELETE TO authenticated USING ((public.my_role() = 'owner'::public.farm_role_t));
+CREATE POLICY shearing_delete ON public.shearing FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
 
 
 --
 -- Name: shearing shearing_insert; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY shearing_insert ON public.shearing FOR INSERT TO authenticated WITH CHECK (public.can_write());
+CREATE POLICY shearing_insert ON public.shearing FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: shearing shearing_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY shearing_read ON public.shearing FOR SELECT TO authenticated USING (public.can_read());
+CREATE POLICY shearing_read ON public.shearing FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
 
 
 --
 -- Name: shearing shearing_update; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY shearing_update ON public.shearing FOR UPDATE TO authenticated USING (public.can_write()) WITH CHECK (public.can_write());
+CREATE POLICY shearing_update ON public.shearing FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
@@ -5806,28 +7516,28 @@ ALTER TABLE public.spray_event ENABLE ROW LEVEL SECURITY;
 -- Name: spray_event spray_event_delete; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY spray_event_delete ON public.spray_event FOR DELETE TO authenticated USING ((public.my_role() = 'owner'::public.farm_role_t));
+CREATE POLICY spray_event_delete ON public.spray_event FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
 
 
 --
 -- Name: spray_event spray_event_insert; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY spray_event_insert ON public.spray_event FOR INSERT TO authenticated WITH CHECK (public.can_write());
+CREATE POLICY spray_event_insert ON public.spray_event FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: spray_event spray_event_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY spray_event_read ON public.spray_event FOR SELECT TO authenticated USING (public.can_read());
+CREATE POLICY spray_event_read ON public.spray_event FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
 
 
 --
 -- Name: spray_event spray_event_update; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY spray_event_update ON public.spray_event FOR UPDATE TO authenticated USING (public.can_write()) WITH CHECK (public.can_write());
+CREATE POLICY spray_event_update ON public.spray_event FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
@@ -5840,28 +7550,28 @@ ALTER TABLE public.spray_paddock ENABLE ROW LEVEL SECURITY;
 -- Name: spray_paddock spray_paddock_delete; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY spray_paddock_delete ON public.spray_paddock FOR DELETE TO authenticated USING (public.can_write());
+CREATE POLICY spray_paddock_delete ON public.spray_paddock FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: spray_paddock spray_paddock_insert; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY spray_paddock_insert ON public.spray_paddock FOR INSERT TO authenticated WITH CHECK (public.can_write());
+CREATE POLICY spray_paddock_insert ON public.spray_paddock FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: spray_paddock spray_paddock_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY spray_paddock_read ON public.spray_paddock FOR SELECT TO authenticated USING (public.can_read());
+CREATE POLICY spray_paddock_read ON public.spray_paddock FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
 
 
 --
 -- Name: spray_paddock spray_paddock_update; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY spray_paddock_update ON public.spray_paddock FOR UPDATE TO authenticated USING (public.can_write()) WITH CHECK (public.can_write());
+CREATE POLICY spray_paddock_update ON public.spray_paddock FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
@@ -5874,28 +7584,28 @@ ALTER TABLE public.spray_product ENABLE ROW LEVEL SECURITY;
 -- Name: spray_product spray_product_delete; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY spray_product_delete ON public.spray_product FOR DELETE TO authenticated USING ((public.my_role() = 'owner'::public.farm_role_t));
+CREATE POLICY spray_product_delete ON public.spray_product FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
 
 
 --
 -- Name: spray_product spray_product_insert; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY spray_product_insert ON public.spray_product FOR INSERT TO authenticated WITH CHECK (public.can_write());
+CREATE POLICY spray_product_insert ON public.spray_product FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: spray_product spray_product_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY spray_product_read ON public.spray_product FOR SELECT TO authenticated USING (public.can_read());
+CREATE POLICY spray_product_read ON public.spray_product FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
 
 
 --
 -- Name: spray_product spray_product_update; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY spray_product_update ON public.spray_product FOR UPDATE TO authenticated USING (public.can_write()) WITH CHECK (public.can_write());
+CREATE POLICY spray_product_update ON public.spray_product FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
@@ -5914,56 +7624,56 @@ ALTER TABLE public.treatment_animal ENABLE ROW LEVEL SECURITY;
 -- Name: treatment_animal treatment_animal_delete; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY treatment_animal_delete ON public.treatment_animal FOR DELETE TO authenticated USING ((public.my_role() = 'owner'::public.farm_role_t));
+CREATE POLICY treatment_animal_delete ON public.treatment_animal FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
 
 
 --
 -- Name: treatment_animal treatment_animal_insert; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY treatment_animal_insert ON public.treatment_animal FOR INSERT TO authenticated WITH CHECK (public.can_write());
+CREATE POLICY treatment_animal_insert ON public.treatment_animal FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: treatment_animal treatment_animal_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY treatment_animal_read ON public.treatment_animal FOR SELECT TO authenticated USING (public.can_read());
+CREATE POLICY treatment_animal_read ON public.treatment_animal FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
 
 
 --
 -- Name: treatment_animal treatment_animal_update; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY treatment_animal_update ON public.treatment_animal FOR UPDATE TO authenticated USING (public.can_write()) WITH CHECK (public.can_write());
+CREATE POLICY treatment_animal_update ON public.treatment_animal FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: treatment treatment_delete; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY treatment_delete ON public.treatment FOR DELETE TO authenticated USING ((public.my_role() = 'owner'::public.farm_role_t));
+CREATE POLICY treatment_delete ON public.treatment FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
 
 
 --
 -- Name: treatment treatment_insert; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY treatment_insert ON public.treatment FOR INSERT TO authenticated WITH CHECK (public.can_write());
+CREATE POLICY treatment_insert ON public.treatment FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: treatment treatment_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY treatment_read ON public.treatment FOR SELECT TO authenticated USING (public.can_read());
+CREATE POLICY treatment_read ON public.treatment FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
 
 
 --
 -- Name: treatment treatment_update; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY treatment_update ON public.treatment FOR UPDATE TO authenticated USING (public.can_write()) WITH CHECK (public.can_write());
+CREATE POLICY treatment_update ON public.treatment FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
@@ -5989,33 +7699,33 @@ ALTER TABLE public.weight_event ENABLE ROW LEVEL SECURITY;
 -- Name: weight_event weight_event_delete; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY weight_event_delete ON public.weight_event FOR DELETE TO authenticated USING ((public.my_role() = 'owner'::public.farm_role_t));
+CREATE POLICY weight_event_delete ON public.weight_event FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
 
 
 --
 -- Name: weight_event weight_event_insert; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY weight_event_insert ON public.weight_event FOR INSERT TO authenticated WITH CHECK (public.can_write());
+CREATE POLICY weight_event_insert ON public.weight_event FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- Name: weight_event weight_event_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY weight_event_read ON public.weight_event FOR SELECT TO authenticated USING (public.can_read());
+CREATE POLICY weight_event_read ON public.weight_event FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
 
 
 --
 -- Name: weight_event weight_event_update; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY weight_event_update ON public.weight_event FOR UPDATE TO authenticated USING (public.can_write()) WITH CHECK (public.can_write());
+CREATE POLICY weight_event_update ON public.weight_event FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
 -- PostgreSQL database dump complete
 --
 
-\unrestrict Qqwfq3B7RJ6PK1qJCGEsxUETcBhqRyguLYT3kzTe8PKFVmuVnivTpSwfSxihMKf
+\unrestrict y1PCvn1ss0MVALr0E8CoFQXFUF4lZBjnC3KgbNb42ISTCWwtf2dq6NnCuQGwQA8
 
