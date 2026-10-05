@@ -174,7 +174,8 @@ ul.rows li{border-bottom:1px solid var(--rule)}
 @media (min-width:760px){ .row .bvl{display:flex} .row .bvc:nth-child(-n+4){display:flex} }
 @media (min-width:960px){ .row .bvc:nth-child(-n+6){display:flex} }
 @media (min-width:1160px){ .row .bvc:nth-child(-n+8){display:flex} }
-@media (min-width:1360px){ .row .bvc{display:flex} }
+@media (min-width:1360px){ .row .bvc:nth-child(-n+10){display:flex} }
+@media (min-width:1560px){ .row .bvc{display:flex} }
 @media (min-width:640px){
   .row .meta.hasplan{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.4fr);
     column-gap:20px;align-items:start}
@@ -647,7 +648,9 @@ async function loadHerd(){
 // every animal, only on a farm that records. A page holds 1,000 rows,
 // so it comes a page at a time; it changes only when a file is loaded,
 // so the herd shows first and these fill in behind it.
-const BV_LIST = ["YCFW","YFD","YWT","YSL","YFDCV","YSS","YEMD","YFAT","EBWR","YWEC"];
+// The indexes first: they are what a stud ranks by.
+const BV_LIST = ["INDEX3","INDEX7","INDEX4","INDEX1",
+  "YCFW","YFD","YWT","YSL","YFDCV","YSS","YEMD","YFAT","EBWR","YWEC"];
 async function loadBv(){
   const bv = new Map();
   if(S.farm?.sg_flock_id)
@@ -667,7 +670,7 @@ function bvListHTML(a){
   const v = S.bv?.get(a.id);
   if(!v) return "";
   return `<span class="bvl">${BV_LIST.map(k => { const r = v[k];
-    return `<span class="bvc${r && r.accuracy != null && r.accuracy < 50 ? " low" : ""}"><i>${k}</i>${
+    return `<span class="bvc${r && r.accuracy != null && r.accuracy < 50 ? " low" : ""}"><i>${bvCode(k)}</i>${
       r ? bvNum(r.value, k) : "–"}</span>`; }).join("")}</span>`;
 }
 async function loadPending(){
@@ -1042,17 +1045,24 @@ const BV_BASE = {WT:"weight", EMD:"eye muscle depth", FAT:"fat depth", GFW:"grea
 const BV_NAME = {MWWT:"maternal weaning weight", CCFAT:"carcase fat (C-site)", DRESS:"dressing %",
   LMY:"lean meat yield", IMF:"intramuscular fat", SHRF5:"shear force", EBWR:"early breech wrinkle",
   EBCOV:"early breech cover", LDAG:"late dag", LFROT:"late fleece rot", CON:"conception",
-  LS:"litter size", ERA:"ewe rearing ability", LE_DIR:"lambing ease", GL_DIR:"gestation length"};
+  LS:"litter size", ERA:"ewe rearing ability", LE_DIR:"lambing ease", GL_DIR:"gestation length",
+  CS:"pre-joining condition score", LCHAR:"wool character", LCOL:"wool colour",
+  MBS:"maternal behaviour score", WR:"weaning rate", YCON:"yearling conception",
+  YLS:"yearling litter size"};
+// The file names its indexes by number. Which is which was read off a sale
+// catalogue against the same animal (601082-2025-251119, 21 Sep 2026 run).
+const BV_INDEX = {INDEX1:"ML", INDEX3:"WP", INDEX4:"SM", INDEX7:"FW"};
+const bvCode = k => BV_INDEX[k] || k;
 const BV_GROUP = [
   ["Weight and growth", /^(B|W|P|Y|H|A)WT$|^MWWT$/],
   ["Carcase",           /EMD$|FAT$|^CWT$|^DRESS$|^LMY$|^IMF$|^SHRF5$/],
-  ["Wool",              /GFW$|CFW$|FD$|FDCV$|CURV$|SL$|SS$/],
+  ["Wool",              /GFW$|CFW$|FD$|FDCV$|CURV$|SL$|SS$|^L(CHAR|COL)$/],
   ["Worms and welfare", /WEC$|^EB|^L(DAG|FROT)$/],
-  ["Reproduction",      /^(CON|LS|ERA|LE_DIR|GL_DIR)$|SC$/],
+  ["Reproduction",      /^(CON|YCON|LS|YLS|ERA|WR|MBS|CS|LE_DIR|GL_DIR)$|SC$/],
   ["Indexes",           /^INDEX/]];
 const bvName = k => BV_NAME[k]
   || (BV_BASE[k.slice(1)] && BV_AGE[k[0]] ? `${BV_AGE[k[0]]} ${BV_BASE[k.slice(1)]}` : "")
-  || (/^INDEX(\d+)$/.test(k) ? "index — name to confirm" : "");
+  || (BV_INDEX[k] ? `${BV_INDEX[k]} index` : /^INDEX\d+$/.test(k) ? "index — name to confirm" : "");
 // A trait is a difference, signed; an index is a score, around 100 to 200.
 const bvNum = (v, k) => { const n = Number(v);
   return /^INDEX/.test(k) ? n.toFixed(1) : (n > 0 ? "+" : "") + n.toFixed(2); };
@@ -1063,7 +1073,7 @@ function breedingValues(rows){
   const box = el(`<div></div>`);
   box.appendChild(el(`<h3 class="sec">Breeding values · ${fmt(on)} analysis</h3>`));
   const cell = r => `<div class="${r.accuracy != null && r.accuracy < 50 ? "low" : ""}" title="${esc(bvName(r.trait))}">
-      <dt>${esc(r.trait)}</dt><dd>${bvNum(r.value, r.trait)}<small>${r.accuracy != null ? r.accuracy + "% acc" : "&nbsp;"}</small></dd></div>`;
+      <dt>${esc(bvCode(r.trait))}</dt><dd>${bvNum(r.value, r.trait)}<small>${r.accuracy != null ? r.accuracy + "% acc" : "&nbsp;"}</small></dd></div>`;
   const head = [...BV_HEAD.map(k => by.get(k)), ...rows.filter(r => /^INDEX/.test(r.trait))
     .sort((x, y) => x.trait.localeCompare(y.trait, undefined, {numeric:true}))].filter(Boolean);
   if(head.length) box.appendChild(el(`<dl class="bv">${head.map(cell).join("")}</dl>`));
@@ -1078,7 +1088,7 @@ function breedingValues(rows){
     if(!g.length) continue;
     g.forEach(k => left.delete(k));
     table += `<tr><th colspan="3">${title}</th></tr>` + g.map(k => { const r = by.get(k);
-      return `<tr><td class="c">${esc(k)}</td><td>${esc(bvName(k))}</td>
+      return `<tr><td class="c">${esc(bvCode(k))}</td><td>${esc(bvName(k))}</td>
         <td class="n">${bvNum(r.value, k)} <small>${r.accuracy != null ? r.accuracy + "%" : ""}</small></td></tr>`; }).join("");
   }
   box.appendChild(el(`<details class="bvall"><summary>All ${rows.length} traits and indexes</summary>
