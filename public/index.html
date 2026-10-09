@@ -1905,6 +1905,52 @@ function recWeight(){
   });
 }
 
+// A course of treatment is the same product, batch and dose day after
+// day, so the last few are offered as one tap. The date stays today and
+// the animals stay as picked; everything else is copied, then edited —
+// the side of the neck changes, the batch doesn't.
+const TREAT_COPY = "treated_on,product_name,batch_number,product_expiry,dose_rate,withholding_days,esi_days,description,adverse_reaction,broken_needle,created_at";
+function treatmentRepeat(inner){
+  const box = el(`<div style="display:none"><label><span>Same as before</span></label>
+    <div class="chips wrap" style="padding:2px 0 0"></div>
+    <p class="hint" style="display:none"></p></div>`);
+  const row = box.querySelector(".chips"), hint = box.querySelector(".hint");
+  const fill = (t) => {
+    const set = (n, v) => { inner.querySelector(`[name="${n}"]`).value = v ?? ""; };
+    set("product", t.product_name); set("batch", t.batch_number);
+    set("expiry", t.product_expiry); set("dose", t.dose_rate);
+    set("whp", t.withholding_days); set("esi", t.esi_days);
+    set("desc", t.description); set("adverse", t.adverse_reaction);
+    inner.querySelector(`[name="needle"]`).checked = !!t.broken_needle;
+    hint.textContent = `Copied from ${fmt(t.treated_on)}. Check the dose and injection site before saving.`;
+    hint.style.display = "";
+  };
+  (async () => {
+    const [mine, recent] = await Promise.all([
+      S.sel ? db.from("treatment_animal").select(`treatment:treatment_id(${TREAT_COPY})`).eq("animal_id", S.sel)
+            : Promise.resolve({data:[]}),
+      db.from("treatment").select(TREAT_COPY).order("created_at", {ascending:false}).limit(40)
+    ]);
+    // This animal's last treatment first, then the farm's latest of each product.
+    const last = (mine.data||[]).map(r => r.treatment).filter(Boolean)
+      .sort((x,y) => y.created_at.localeCompare(x.created_at))[0];
+    const seen = new Set(), offer = [];
+    [last, ...(recent.data||[])].forEach(t => {
+      const k = t?.product_name?.trim().toLowerCase();
+      if(!k || seen.has(k) || offer.length >= 4) return;
+      seen.add(k); offer.push(t);
+    });
+    if(!offer.length) return;
+    offer.forEach(t => {
+      const b = el(`<button type="button" class="chip" aria-pressed="false">${esc(t.product_name)} · ${fmt(t.treated_on)}</button>`);
+      b.onclick = () => { row.querySelectorAll(".chip").forEach(c => c.setAttribute("aria-pressed", c===b)); fill(t); };
+      row.appendChild(b);
+    });
+    box.style.display = "";
+  })();
+  return box;
+}
+
 function recTreatment(){
   const inner = el(`<div>
     <label><span>Date</span><input type="date" name="on" value="${today()}" required></label>
@@ -1933,6 +1979,7 @@ function recTreatment(){
   pick.addEventListener("pick", e => count.textContent = e.detail===1 ? "1 head selected." : `${e.detail} head selected.`);
   if(S.sel) count.textContent = "1 head selected.";
   inner.appendChild(count);
+  inner.prepend(treatmentRepeat(inner));
 
   return formShell("Record a treatment", inner, async (f) => {
     const ids = [...pick.chosen];
