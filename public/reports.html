@@ -94,6 +94,29 @@ tr.ed:hover td{background:var(--accent-soft)}
 .hist li{font-size:12px;color:var(--ink2);margin-bottom:7px;list-style:none;line-height:1.5}
 .hist li b{color:var(--ink);font-weight:600}
 @media print{#veil,#drawer{display:none !important}}
+
+/* Section pills, roll-up, sort and search. */
+.pills{display:flex;gap:7px;flex-wrap:wrap;align-items:center;padding:12px 0 4px}
+.pill{border:1px solid var(--rule);background:var(--card);color:var(--ink);border-radius:99px;
+  padding:6px 13px;font-size:13px;font-weight:600}
+.pill[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
+.pill small{font-weight:400;opacity:.75;margin-left:3px}
+.pills .roll{margin-left:auto;background:none;color:var(--ink2);padding:6px 4px;font-size:12.5px;
+  font-weight:600;text-decoration:underline dotted}
+section[data-sec].off{display:none}
+.rollable section[data-sec] > h2{cursor:pointer;user-select:none}
+.rollable section[data-sec] > h2::before{content:"▾";display:inline-block;width:16px;color:var(--ink2)}
+.rollable section[data-sec].rolled > h2::before{content:"▸"}
+.rollable section[data-sec].rolled > :not(h2):not(p.lede){display:none}
+th.sortable{cursor:pointer;user-select:none;white-space:nowrap}
+th.sortable:hover{color:var(--ink)}
+th.sortable[data-dir]::after{content:" ▼";font-size:9px}
+th.sortable[data-dir="asc"]::after{content:" ▲"}
+.tsearch{display:flex;gap:10px;align-items:center;margin:0 0 8px}
+.tsearch input{flex:1;max-width:340px;border:1px solid var(--rule);border-radius:8px;
+  padding:7px 10px;font:inherit;font-size:13.5px;background:var(--card)}
+.tsearch span{font-size:12.5px;color:var(--ink2)}
+tr.miss{display:none}
 footer{margin-top:34px;padding-top:10px;border-top:1px solid var(--rule);
   font-size:11.5px;color:var(--ink2);display:flex;justify-content:space-between}
 
@@ -138,6 +161,7 @@ footer{margin-top:34px;padding-top:10px;border-top:1px solid var(--rule);
     <button class="ghost" id="addspray">+ Record spraying</button>
   </div>
 
+  <div class="pills noprint" id="pills"></div>
   <div id="out"></div>
 </div>
 <div id="veil"></div>
@@ -229,20 +253,20 @@ async function run(){
   const from = $("#from").value || "1900-01-01";
   const to   = $("#to").value   || "2999-12-31";
 
-  let tq = db.from("v_treatment_report").select("*").gte("treated_on",from).lte("treated_on",to).order("treated_on");
-  let fq = db.from("v_feed_event").select("*").gte("fed_on",from).lte("fed_on",to).order("fed_on");
-  let cq = db.from("v_consignment").select("*").gte("consigned_on",from).lte("consigned_on",to).order("consigned_on");
+  let tq = db.from("v_treatment_report").select("*").gte("treated_on",from).lte("treated_on",to).order("treated_on",{ascending:false});
+  let fq = db.from("v_feed_event").select("*").gte("fed_on",from).lte("fed_on",to).order("fed_on",{ascending:false});
+  let cq = db.from("v_consignment").select("*").gte("consigned_on",from).lte("consigned_on",to).order("consigned_on",{ascending:false});
   let sq = db.from("v_feed_store").select("*").order("received_on",{ascending:false, nullsFirst:false});
   // Spraying is not species-scoped — pasture is pasture — so the stock
   // filter does not apply to it.
   let spq = db.from("v_spray_report").select("*")
-              .gte("applied_on",from).lte("applied_on",to).order("applied_on");
+              .gte("applied_on",from).lte("applied_on",to).order("applied_on",{ascending:false});
   // What is under withhold RIGHT NOW, regardless of the report period.
   // A spray from before the "from" date can still be binding today.
   let wq  = db.from("v_paddock_withhold").select("*").order("safe_to_graze");
   // Joinings are dated by when the bull went in, or the straw went in.
   let shq = db.from("v_shearing").select("*")
-              .gte("shorn_on",from).lte("shorn_on",to).order("shorn_on");
+              .gte("shorn_on",from).lte("shorn_on",to).order("shorn_on",{ascending:false});
   let jq = db.from("v_joining_result").select("*")
              .gte("joined_on",from).lte("joined_on",to)
              .order("season",{ascending:false}).order("dam_code");
@@ -271,10 +295,143 @@ async function run(){
      <footer><span>${esc(HOME.trading_name||"Buloke Farm")} · PIC ${esc(HOME.pic)}</span>
      <span>Produced ${new Date().toLocaleString("en-AU")}</span></footer>`;
   wireJoinings();
+  sectionPills();
+  document.querySelectorAll("#out section[data-sec]:not(#joinsec) table").forEach(tidyTable);
+}
+
+// ── pills, roll-up, sort, search ────────────────────────────────
+// Seven sections is a long page. A pill shows one; on All, a section's
+// heading rolls it up to a line. Each table sorts by any header and
+// searches within itself. All of it survives a re-run (an edit saved in
+// the drawer re-draws the page), and the pill and roll-ups survive a
+// reload — they're this browser's preference, nothing more.
+const SECTIONS = [["treat","Treatments"],["spray","Spraying"],["feed","Feeding"],
+  ["store","Feed store"],["move","Movements"],["shed","Shed work"],["join","Joinings"]];
+const pref = (k, v) => { try{ if(v === undefined) return JSON.parse(localStorage.getItem(k));
+  localStorage.setItem(k, JSON.stringify(v)); }catch{ return null; } };
+let PILL = pref("rep.pill") || "all";
+const ROLLED = new Set(pref("rep.rolled") || []);
+const TBL = {};   // per section: { col, dir, q }
+
+function sectionPills(){
+  const secs = [...document.querySelectorAll("#out section[data-sec]")];
+  const count = s => s.dataset.sec === "join" ? JOININGS.length + PLANS.length
+                   : s.querySelectorAll("tbody tr").length;
+  if(!secs.some(s => s.dataset.sec === PILL)) PILL = "all";
+  const bar = $("#pills");
+  bar.innerHTML = `<button class="pill" data-p="all">All</button>` +
+    SECTIONS.filter(([k]) => secs.some(s => s.dataset.sec === k)).map(([k, label]) =>
+      `<button class="pill" data-p="${k}">${label}<small>${count(secs.find(s => s.dataset.sec === k))}</small></button>`).join("") +
+    `<button class="roll" id="rollall"></button>`;
+  const apply = () => {
+    const all = PILL === "all";
+    $("#out").classList.toggle("rollable", all);
+    bar.querySelectorAll(".pill").forEach(b => b.setAttribute("aria-pressed", b.dataset.p === PILL));
+    secs.forEach(s => {
+      s.classList.toggle("off", !all && s.dataset.sec !== PILL);
+      s.classList.toggle("rolled", all && ROLLED.has(s.dataset.sec));
+    });
+    const r = $("#rollall");
+    r.hidden = !all;
+    r.textContent = secs.every(s => ROLLED.has(s.dataset.sec)) ? "Open all sections" : "Roll up all sections";
+  };
+  bar.onclick = e => {
+    const b = e.target.closest("button"); if(!b) return;
+    if(b.id === "rollall"){
+      const open = secs.every(s => ROLLED.has(s.dataset.sec));
+      secs.forEach(s => open ? ROLLED.delete(s.dataset.sec) : ROLLED.add(s.dataset.sec));
+      pref("rep.rolled", [...ROLLED]);
+    } else { PILL = b.dataset.p; pref("rep.pill", PILL); window.scrollTo({top:0}); }
+    apply();
+  };
+  secs.forEach(s => s.querySelector(":scope > h2").onclick = () => {
+    if(PILL !== "all") return;
+    const k = s.dataset.sec;
+    ROLLED.has(k) ? ROLLED.delete(k) : ROLLED.add(k);
+    pref("rep.rolled", [...ROLLED]);
+    apply();
+  });
+  apply();
+}
+
+const MON = {Jan:"01",Feb:"02",Mar:"03",Apr:"04",May:"05",Jun:"06",
+             Jul:"07",Aug:"08",Sep:"09",Oct:"10",Nov:"11",Dec:"12"};
+// What a cell sorts by: a date as yyyy-mm-dd, a number as a number,
+// anything else as text. Blanks sort last whichever way round.
+function sortKey(td){
+  const t = (td?.textContent || "").trim();
+  if(!t || t === "—" || t === "?") return null;
+  const d = t.match(/^(\d{2}) (\w{3,4}) (\d{4})/);       // en-AU writes "Sept"
+  const mm = d && MON[d[2].slice(0,3)];
+  if(mm) return `${d[3]}-${mm}-${d[1]}`;
+  if(/^-?\d+(\.\d+)?(\s|%|$)/.test(t)) return parseFloat(t);
+  return t.toLowerCase();
+}
+
+function tidyTable(table){
+  const sec = table.closest("section[data-sec]"), k = sec.dataset.sec;
+  const st = TBL[k] ||= { col:null, dir:null, q:"" };
+  const ths = [...table.tHead.rows[0].cells];
+  const body = table.tBodies[0];
+
+  // Date-first tables arrive newest first; say so on the header.
+  if(st.col === null && /^(date|received)$/i.test(ths[0].textContent.trim())){ st.col = 0; st.dir = "desc"; }
+
+  const sort = () => {
+    ths.forEach((th, i) => i === st.col ? th.dataset.dir = st.dir : delete th.dataset.dir);
+    if(st.col === null) return;
+    const rows = [...body.rows], m = st.dir === "asc" ? 1 : -1;
+    const keyed = rows.map((r, i) => [sortKey(r.cells[st.col]), i, r]);
+    keyed.sort((a, b) => {
+      if(a[0] === b[0]) return a[1] - b[1];
+      if(a[0] === null) return 1;
+      if(b[0] === null) return -1;
+      return (typeof a[0] === "number" && typeof b[0] === "number"
+        ? a[0] - b[0] : String(a[0]).localeCompare(String(b[0]), "en-AU", {numeric:true})) * m;
+    });
+    keyed.forEach(([, , r]) => body.appendChild(r));
+  };
+  ths.forEach((th, i) => {
+    if(th.classList.contains("tick")) return;
+    th.classList.add("sortable");
+    th.title = "Sort by this column";
+    th.onclick = () => {
+      if(st.col === i) st.dir = st.dir === "asc" ? "desc" : "asc";
+      else { st.col = i; st.dir = /date|received|joined|due|tested|expiry|clear|from|to/i
+               .test(th.textContent) ? "desc" : "asc"; }
+      sort();
+    };
+  });
+
+  // One search box per section. The joining table is redrawn by its
+  // filter, so its box sits outside the part that gets replaced.
+  const host = table.closest("#joinout") || table;
+  let bar = sec.querySelector(".tsearch");
+  if(!bar){
+    bar = document.createElement("div");
+    bar.className = "tsearch noprint";
+    bar.innerHTML = `<input type="search" placeholder="Search this section — tag, product, batch, name…"><span></span>`;
+    host.before(bar);
+  }
+  const input = bar.querySelector("input"), note = bar.querySelector("span");
+  input.value = st.q;
+  const search = () => {
+    st.q = input.value;
+    const terms = st.q.toLowerCase().split(/\s+/).filter(Boolean);
+    let shown = 0;
+    for(const r of body.rows){
+      const hit = terms.every(w => r.textContent.toLowerCase().includes(w));
+      r.classList.toggle("miss", !hit); if(hit) shown++;
+    }
+    note.textContent = terms.length ? `${shown} of ${body.rows.length}` : "";
+    if(k === "join") updateCount();
+  };
+  input.oninput = search;
+  sort(); search();
 }
 
 function treatmentSection(rows, range){
-  let h = `<section><h2>Section 2 — Livestock treatments</h2>
+  let h = `<section data-sec="treat"><h2>Section 2 — Livestock treatments</h2>
     <p class="lede">${esc(range)} · ${rows.length} treatment${rows.length===1?"":"s"}</p>`;
   if(!rows.length) return h + `<p class="none">No treatments recorded in this period.</p></section>`;
 
@@ -315,7 +472,7 @@ function treatmentSection(rows, range){
 // pass and each carries its own batch number and withholding period.
 // The date cell opens the pass; the row opens the product.
 function spraySection(rows, withheld, range, error){
-  let h = `<section><h2>Section 3B — Crop, pasture and paddock treatment</h2>
+  let h = `<section data-sec="spray"><h2>Section 3B — Crop, pasture and paddock treatment</h2>
     <p class="lede">${esc(range)} · ${new Set(rows.map(r=>r.event_id)).size} application${
       new Set(rows.map(r=>r.event_id)).size===1?"":"s"}</p>`;
   if(error) return h + `<p class="gap">${esc(error.message)}</p></section>`;
@@ -402,7 +559,7 @@ function spraySection(rows, withheld, range, error){
 }
 
 function feedingSection(rows, range){
-  let h = `<section><h2>Section 3C — Livestock feeding</h2>
+  let h = `<section data-sec="feed"><h2>Section 3C — Livestock feeding</h2>
     <p class="lede">${esc(range)} · ${rows.length} feeding event${rows.length===1?"":"s"}</p>`;
   if(!rows.length) return h + `<p class="none">No feeding recorded in this period.</p></section>`;
 
@@ -437,7 +594,7 @@ function feedingSection(rows, range){
 }
 
 function consignSection(rows, range){
-  let h = `<section><h2>Sections 5A / 5B — Livestock movements</h2>
+  let h = `<section data-sec="move"><h2>Sections 5A / 5B — Livestock movements</h2>
     <p class="lede">${esc(range)} · ${rows.length} consignment${rows.length===1?"":"s"}</p>`;
   if(!rows.length) return h + `<p class="none">No stock moved on or off in this period.</p></section>`;
   h += `<table><thead><tr>
@@ -469,7 +626,7 @@ function consignSection(rows, range){
 }
 
 function sourceSection(rows){
-  let h = `<section><h2>Section 3D — Introduced stock feed</h2>
+  let h = `<section data-sec="store"><h2>Section 3D — Introduced stock feed</h2>
     <p class="lede">Feed in store — bought in or home grown — and what came with it</p>`;
   if(!rows.length) return h + `<p class="none">Nothing in the feed store yet.
     Use <b>+ Add feed to store</b> above.</p></section>`;
@@ -508,7 +665,7 @@ const SHED_LABEL = {shearing:"Shearing", crutching:"Crutching",
                     clip:"Summer clip", marking:"Marking"};
 
 function shedSection(rows, range, error){
-  let h = `<section><h2>Shed work</h2>
+  let h = `<section data-sec="shed"><h2>Shed work</h2>
     <p class="lede">${esc(range)} · shearing, crutching and marking</p>`;
   if(error) return h + `<p class="gap">${esc(error.message)}</p></section>`;
   if(!rows.length) return h + `<p class="none">No shed work recorded in this period.</p></section>`;
@@ -547,7 +704,7 @@ const OUTCOMES = {unknown:"Not tested", in_calf:"In calf", empty:"Empty",
 // result and has no drawer, because there is nothing to test yet.
 function joiningSection(rows, range, error, plans = []){
   JOININGS = rows; PLANS = plans;
-  let h = `<section class="noprint" id="joinsec"><h2>Joining register</h2>
+  let h = `<section class="noprint" id="joinsec" data-sec="join"><h2>Joining register</h2>
     <p class="lede">${esc(range)} · ${rows.length} joining${rows.length===1?"":"s"}${
       plans.length ? ` · ${plans.length} planned` : ""}
       · a breeding record, not part of the LPA declaration</p>`;
@@ -647,10 +804,11 @@ function renderJoinings(){
       <td>${esc(p.notes||"—")}</td></tr>`;
   }
   $("#joinout").innerHTML = h + `</tbody></table>`;
+  tidyTable($("#joinout table"));
   updateCount();
 }
 
-function ticked(){ return [...document.querySelectorAll("#joinout input.jck:checked")]; }
+function ticked(){ return [...document.querySelectorAll("#joinout tbody tr:not(.miss) input.jck:checked")]; }
 function updateCount(){
   const n = ticked().length, c = $("#jcount");
   if(c) c.textContent = n ? `${n} ticked` : "none ticked";
@@ -664,7 +822,9 @@ function wireJoinings(){
   // Tick handling is delegated so it survives re-rendering the table.
   $("#joinout").addEventListener("change", e => {
     if(e.target.id === "jall")
-      document.querySelectorAll("#joinout tbody input.jck")
+      // Only what the search is showing — ticking rows you cannot see
+      // would mark a result on cows nobody looked at.
+      document.querySelectorAll("#joinout tbody tr:not(.miss) input.jck")
         .forEach(c => c.checked = e.target.checked);
     if(e.target.classList.contains("jck")) updateCount();
   });

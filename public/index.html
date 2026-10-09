@@ -4900,8 +4900,59 @@ function viewLogin(msg){
   return wrap;
 }
 
+// ═══ back button ════════════════════════════════════════════════
+// The app is one page, so without this the phone's Back left it
+// altogether. Every render that lands on a different screen is a step
+// in the browser's history; Back walks the trail and puts the scroll
+// back where it was. Going to a screen already on the trail — Save on
+// a form returning to the card it came from, or a card's own back
+// button — steps back to it rather than stacking a second copy, so
+// Back afterwards doesn't land on the form just finished with.
+const NAV_KEYS = ["view","sel","selPk","selFeed","editJoin","editPlan","cryoLot","closeDue","herdMode"];
+const NAV = { trail: [], at: -1, quiet: 0, popping: false };
+const navSnap = () => Object.fromEntries(NAV_KEYS.map(k => [k, S[k] ?? null]));
+const navSame = (a, b) => !!a && !!b && JSON.stringify(a) === JSON.stringify(b);
+
+function navTrack(main, prevY){
+  const snap = navSnap();
+  if(NAV.at < 0){
+    // First screen, or a reload partway along the trail.
+    NAV.at = history.state?.at ?? 0;
+    NAV.trail[NAV.at] = { s:snap, y:0 };
+    history.replaceState({ at:NAV.at, s:snap }, "");
+    return;
+  }
+  if(NAV.popping){ NAV.popping = false; main.scrollTop = NAV.trail[NAV.at]?.y || 0; return; }
+  const cur = NAV.trail[NAV.at];
+  if(navSame(cur?.s, snap)) return;           // same screen re-drawn
+  if(cur) cur.y = prevY;
+  const back = NAV.trail.slice(0, NAV.at).findLastIndex(e => navSame(e?.s, snap));
+  if(back >= 0){
+    NAV.quiet++; history.go(back - NAV.at); NAV.at = back;
+    main.scrollTop = NAV.trail[back].y || 0;
+    return;
+  }
+  NAV.trail.length = NAV.at + 1;
+  NAV.trail.push({ s:snap, y:0 }); NAV.at++;
+  history.pushState({ at:NAV.at, s:snap }, "");
+}
+
+window.addEventListener("popstate", e => {
+  if(NAV.quiet){ NAV.quiet--; return; }       // our own step back, already drawn
+  const st = e.state;
+  if(!st?.s || !S.me) return;
+  const cur = NAV.trail[NAV.at];
+  if(cur) cur.y = document.querySelector("main")?.scrollTop || 0;
+  NAV.at = st.at;
+  if(!navSame(NAV.trail[st.at]?.s, st.s)) NAV.trail[st.at] = { s:st.s, y:0 };
+  Object.assign(S, st.s);
+  NAV.popping = true;
+  render();
+});
+
 // ═══ shell ══════════════════════════════════════════════════════
 async function render(){
+  const prevY = document.querySelector("main")?.scrollTop || 0;
   S.busy = false;
   if(S.view !== "rec:plan") S.editPlan = null;
   const app = document.getElementById("app");
@@ -4965,6 +5016,7 @@ async function render(){
   bR.onclick = () => { S.view="record"; render(); };
 
   app.replaceChildren(header, main, nav);
+  navTrack(main, prevY);
 }
 
 async function boot(loginErr){
