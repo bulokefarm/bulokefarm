@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict y1PCvn1ss0MVALr0E8CoFQXFUF4lZBjnC3KgbNb42ISTCWwtf2dq6NnCuQGwQA8
+\restrict ShnNRRr3h0C4byHpvqgZpUh9kIWalUPGItQTBY57zfx8xOSepAAVyA94rqJeChH
 
 -- Dumped from database version 17.6
 -- Dumped by pg_dump version 17.11 (Ubuntu 17.11-1.pgdg24.04+2)
@@ -7727,5 +7727,5 @@ CREATE POLICY weight_event_update ON public.weight_event FOR UPDATE TO authentic
 -- PostgreSQL database dump complete
 --
 
-\unrestrict y1PCvn1ss0MVALr0E8CoFQXFUF4lZBjnC3KgbNb42ISTCWwtf2dq6NnCuQGwQA8
+\unrestrict ShnNRRr3h0C4byHpvqgZpUh9kIWalUPGItQTBY57zfx8xOSepAAVyA94rqJeChH
 
