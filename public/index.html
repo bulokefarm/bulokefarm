@@ -475,6 +475,25 @@ const isActive = a => !a.life_state || a.life_state === "alive";
 // stock_code stays null until a tag is chosen in the yard. Wherever a
 // tag is shown, show the letter with a placeholder rather than "? ?".
 const codeOf = a => a.stock_code || (a.year_letter ? `${a.year_letter} ?` : "? ?");
+// Herd order: newest drop first, and within a drop the highest tag
+// first (the youngest, near enough). It reads the tag as printed — a
+// few carry a letter or number that differs from year_letter and
+// herd_number (Q 32, U 18), and the list should look sorted. Letters
+// cycle, so a drop's place comes from its youngest animal, not the
+// alphabet. Untagged calves lead their drop; stock with no letter falls
+// in by its own birth date.
+const byDrop = list => {
+  const tag = a => { const m = /^([A-Z])\s*(\d+)?/.exec(codeOf(a)) || [];
+    return { l: m[1] || "", n: m[2] ? Number(m[2]) : Infinity }; };
+  const newest = {};
+  for(const a of list){ const {l} = tag(a);
+    if(l && (a.dob||"") > (newest[l]||"")) newest[l] = a.dob; }
+  const key = new Map(list.map(a => { const t = tag(a);
+    return [a, {...t, drop: t.l ? newest[t.l] || "" : a.dob || ""}]; }));
+  return list.sort((x, y) => { const a = key.get(x), b = key.get(y);
+    return b.drop.localeCompare(a.drop) || b.l.localeCompare(a.l)
+      || (b.n - a.n || 0) || (y.dob||"").localeCompare(x.dob||""); });
+};
 // paddock.head counts every animal grazing there. With two mobs on the
 // same ground that is the wrong number the moment a species scope is
 // set, so anywhere a head count is shown it is counted from the herd.
@@ -842,10 +861,10 @@ function viewHerd(){
   if(S.herdMode==="paddock"){
     const groups = [];
     for(const p of S.paddocks){
-      const inIt = S.animals.filter(a => isActive(a) && a.paddock_id===p.id && match(a));
+      const inIt = byDrop(S.animals.filter(a => isActive(a) && a.paddock_id===p.id && match(a)));
       if(inIt.length) groups.push([p, inIt]);
     }
-    const loose = S.animals.filter(a => isActive(a) && !a.paddock_id && match(a));
+    const loose = byDrop(S.animals.filter(a => isActive(a) && !a.paddock_id && match(a)));
     if(loose.length) groups.push([null, loose]);
 
     if(!groups.length){
@@ -893,7 +912,7 @@ function viewHerd(){
     return wrap;
   }
 
-  const list = S.animals.filter(match);
+  const list = byDrop(S.animals.filter(match));
 
   if(!list.length){
     wrap.appendChild(el(`<div class="empty"><b>Nothing matches</b>Try a tag like N 84, or clear the search.</div>`));
