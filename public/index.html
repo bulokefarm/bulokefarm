@@ -828,16 +828,31 @@ function viewHerd(){
   const spBar = speciesBar();
   if(spBar) wrap.appendChild(spBar);
 
-  const live = S.animals.filter(a => isActive(a) && inSpecies(a));
-  const past = S.animals.filter(a => !isActive(a) && inSpecies(a));
+  // A sex nobody in this species has (after switching species) would
+  // leave an empty list and no chip to undo it.
+  if(S.sex && !S.animals.some(a => inSpecies(a) && sexOf(a)===S.sex)) S.sex = "";
+  // The two chip rows narrow each other: the class or paddock chips
+  // count within the chosen sex, and the sex chips within the chosen
+  // class or paddock.
+  const inSex = a => !S.sex || sexOf(a)===S.sex;
+  const inChip = a => inSpecies(a) && (
+      S.herdMode==="paddock" && S.filter==="all" ? isActive(a)
+    : S.filter==="past"      ? !isActive(a)
+    : S.filter==="planned"   ? isActive(a) && !!planFor(a)
+    : S.filter==="pk:none"   ? isActive(a) && !a.paddock_id
+    : S.filter.startsWith("pk:") ? isActive(a) && a.paddock_id===S.filter.slice(3)
+    : isActive(a) && (S.filter==="all" || a.class===S.filter));
+
+  const live = S.animals.filter(a => isActive(a) && inSpecies(a) && inSex(a));
+  const past = S.animals.filter(a => !isActive(a) && inSpecies(a) && inSex(a));
   const counts = { all: live.length, past: past.length };
   for(const a of live) counts[a.class] = (counts[a.class]||0)+1;
   const cats = [["all","On hand"],
     ...classesFor(S.species).map(k => [k, classLabel(k, S.species)])]
-    .filter(([k]) => k==="all" || counts[k]);
+    .filter(([k]) => k==="all" || counts[k] || S.filter===k);
   counts.planned = live.filter(a => planFor(a)).length;
-  if(counts.planned) cats.push(["planned","Planned"]);
-  if(counts.past) cats.push(["past","Sold & died"]);
+  if(counts.planned || S.filter==="planned") cats.push(["planned","Planned"]);
+  if(counts.past || S.filter==="past") cats.push(["past","Sold & died"]);
 
   // In Paddocks mode the filters are paddocks — and only the ones with
   // something in them. An empty paddock is not a useful filter.
@@ -846,10 +861,10 @@ function viewHerd(){
     cats.push(["all","Everywhere"]);
     for(const p of S.paddocks){
       const n = live.filter(a => a.paddock_id===p.id).length;
-      if(n){ counts["pk:"+p.id] = n; cats.push(["pk:"+p.id, p.name]); }
+      if(n || S.filter==="pk:"+p.id){ counts["pk:"+p.id] = n; cats.push(["pk:"+p.id, p.name]); }
     }
     const noPk = live.filter(a => !a.paddock_id).length;
-    if(noPk){ counts["pk:none"] = noPk; cats.push(["pk:none","No paddock"]); }
+    if(noPk || S.filter==="pk:none"){ counts["pk:none"] = noPk; cats.push(["pk:none","No paddock"]); }
   }
   const chips = el(`<div class="chips"></div>`);
   for(const [k,label] of cats){
@@ -862,11 +877,11 @@ function viewHerd(){
   wrap.appendChild(chips);
 
   // Sex cuts across every class chip (heifers and bull calves are both
-  // calves), so it is its own row and stays set as the chips change.
-  const sexPool = S.filter==="past" ? past : live;
-  const sexes = SEXES.filter(([k]) => sexPool.some(a => sexOf(a)===k));
-  // Switching species can leave a sex with nothing in it and no chip to undo it.
-  if(!sexes.some(([k]) => k===S.sex)) S.sex = "";
+  // calves), so it is its own row and stays set as the chips change. Its
+  // counts are within whatever chip is chosen: Bottom Paddock 25 splits
+  // into its own ewes and wethers, not the whole flock's.
+  const sexPool = S.animals.filter(inChip);
+  const sexes = SEXES.filter(([k]) => k===S.sex || sexPool.some(a => sexOf(a)===k));
   if(sexes.length > 1){
     const row = el(`<div class="chips" style="padding-top:5px"></div>`);
     for(const [k,t] of [["","All"], ...sexes]){
@@ -880,13 +895,7 @@ function viewHerd(){
   }
 
   const q = S.q.trim().toLowerCase();
-  const inScope = a => inSpecies(a) && (!S.sex || sexOf(a)===S.sex) && (
-      S.herdMode==="paddock" && S.filter==="all" ? isActive(a)
-    : S.filter==="past"      ? !isActive(a)
-    : S.filter==="planned"   ? isActive(a) && !!planFor(a)
-    : S.filter==="pk:none"   ? isActive(a) && !a.paddock_id
-    : S.filter.startsWith("pk:") ? isActive(a) && a.paddock_id===S.filter.slice(3)
-    : isActive(a) && (S.filter==="all" || a.class===S.filter));
+  const inScope = a => inChip(a) && inSex(a);
   const match = a => inScope(a) &&
     (!q || [codeOf(a),a.name,a.breed,a.nlis_tag].some(v => (v||"").toLowerCase().includes(q)));
 
@@ -913,7 +922,7 @@ function viewHerd(){
       for(const a of list){
         const li = el(`<li><button class="row">${tagHTML(codeOf(a), "sm", speciesOf(a))}
           <span class="meta${planFor(a)?" hasplan":""}"><span class="nm">${esc(a.name||"Unnamed")}</span>
-          <span class="sub">${esc(a.class||"")}${
+          <span class="sub">${[sheepSex(a), a.class].filter(Boolean).map(esc).join(" · ")}${
             a.in_paddock_since?" · in since "+fmt(a.in_paddock_since):""}</span>
           ${planBlockHTML(a)}${feedBlockHTML(a)}</span>
           <span class="rt">${age(a.age_years)}${
@@ -955,7 +964,7 @@ function viewHerd(){
         ${tagHTML(codeOf(a), "sm", speciesOf(a))}
         <span class="meta${planFor(a)?" hasplan":""}">
           <span class="nm">${esc(a.name||"Unnamed")}</span>
-          <span class="sub">${[!isActive(a)
+          <span class="sub">${[esc(sheepSex(a)), !isActive(a)
               ? `<span style="opacity:.75">${esc(a.life_state)}${
                   a.exit_on ? " " + fmt(a.exit_on) : ""}</span>`
               : (a.paddock_name
@@ -1831,6 +1840,9 @@ function viewRecord(){
 // wethers. "unknown" only shows under All.
 const SEXES = [["female","Female"],["male","Male"],["castrate",""]];
 const sexOf = a => a.sex==="steer" || a.sex==="wether" ? "castrate" : a.sex;
+// A row of sheep tags says nothing about sex the way bull, cow and
+// steer do for cattle, so sheep rows say it.
+const sheepSex = a => speciesOf(a)==="sheep" ? ({female:"Ewe", male:"Ram", wether:"Wether"})[a.sex] || "" : "";
 const castrateLabel = list => {
   const sp = new Set(list.filter(a => sexOf(a)==="castrate").map(speciesOf));
   return sp.size > 1 ? "Steer / wether" : sp.has("sheep") ? "Wether" : "Steer";
