@@ -246,6 +246,16 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-
 .pick{border:1px solid var(--rule);background:var(--card);border-radius:9px;padding:0;cursor:pointer}
 .pick[aria-pressed="true"]{outline:2.5px solid var(--accent);outline-offset:1px}
 .pick:disabled{opacity:.3;filter:grayscale(1);cursor:default}
+.pfbar{flex-basis:100%;display:grid;gap:7px;padding:9px;margin-bottom:3px;
+  border:1px solid var(--rule);border-radius:10px;background:var(--card)}
+.pfbar input[type=search]{width:100%;min-height:40px;border:1px solid var(--rule);border-radius:9px;
+  padding:0 11px;background:var(--paper);font-size:16px}
+.pfsel{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:7px}
+.pfsel:empty{display:none}
+.pfbar select{min-height:40px;padding:7px 10px;font-size:16px;background:var(--paper)}
+.pfbar .chips{padding:0}
+.pfacts{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
+.pfacts .hint{margin:0;font-size:13px}
 .hint{font-size:12.5px;color:var(--ink2);margin:6px 0 0}
 .note{background:var(--accent-soft);border-radius:10px;padding:11px 13px;font-size:13.5px;margin:14px 0 0}
 label.chk{display:flex;align-items:center;gap:10px;min-height:var(--tap)}
@@ -475,20 +485,24 @@ const isActive = a => !a.life_state || a.life_state === "alive";
 // stock_code stays null until a tag is chosen in the yard. Wherever a
 // tag is shown, show the letter with a placeholder rather than "? ?".
 const codeOf = a => a.stock_code || (a.year_letter ? `${a.year_letter} ?` : "? ?");
+// Letter and number as printed on the tag: one letter for cattle, up
+// to two for a sheep colour (BK, BU). A few carry a letter or number
+// that differs from year_letter and herd_number (Q 32, U 18), and lists
+// should look sorted by what's in the ear. Anything that doesn't read
+// as letter-number (TOL 25-W1271, an untagged calf) keeps year_letter.
+const tagParts = a => {
+  const m = /^([A-Z]{1,2})\s+(\d+)/.exec(a.stock_code || "");
+  return m ? { l: m[1], n: Number(m[2]) } : { l: a.year_letter || "", n: Infinity };
+};
 // Herd order: newest drop first, and within a drop the highest tag
-// first (the youngest, near enough). It reads the tag as printed — a
-// few carry a letter or number that differs from year_letter and
-// herd_number (Q 32, U 18), and the list should look sorted. Letters
-// cycle, so a drop's place comes from its youngest animal, not the
-// alphabet. Untagged calves lead their drop; stock with no letter falls
-// in by its own birth date.
+// first (the youngest, near enough). Letters cycle, so a drop's place
+// comes from its youngest animal, not the alphabet. Untagged calves
+// lead their drop; stock with no letter falls in by its own birth date.
 const byDrop = list => {
-  const tag = a => { const m = /^([A-Z])\s*(\d+)?/.exec(codeOf(a)) || [];
-    return { l: m[1] || "", n: m[2] ? Number(m[2]) : Infinity }; };
   const newest = {};
-  for(const a of list){ const {l} = tag(a);
+  for(const a of list){ const {l} = tagParts(a);
     if(l && (a.dob||"") > (newest[l]||"")) newest[l] = a.dob; }
-  const key = new Map(list.map(a => { const t = tag(a);
+  const key = new Map(list.map(a => { const t = tagParts(a);
     return [a, {...t, drop: t.l ? newest[t.l] || "" : a.dob || ""}]; }));
   return list.sort((x, y) => { const a = key.get(x), b = key.get(y);
     return b.drop.localeCompare(a.drop) || b.l.localeCompare(a.l)
@@ -655,7 +669,7 @@ const dofHTML = a =>a.days_on_feed == null ? ""
       a.days_on_feed} d fed</span>`;
 
 // ─── state ──────────────────────────────────────────────────────
-const S = { me:null, farm:null, farms:[], editJoin:null, farmPublic:undefined, members:[], animals:[], herdMode:"list", species:"all", pic:"all", treeLink:null, cryoLot:null, joinMode:"natural", pending:[], plans:[], editPlan:null, treeFam:undefined, treePend:false, paddocks:[], feeds:[], feedsDone:[], refs:{}, prefs:null, selFeed:null, closeDue:null, view:"herd", filter:"all", q:"", sel:null, selPk:null, busy:false };
+const S = { me:null, farm:null, farms:[], editJoin:null, farmPublic:undefined, members:[], animals:[], herdMode:"list", species:"all", pic:"all", treeLink:null, cryoLot:null, joinMode:"natural", pending:[], plans:[], editPlan:null, treeFam:undefined, treePend:false, paddocks:[], feeds:[], feedsDone:[], refs:{}, prefs:null, selFeed:null, closeDue:null, view:"herd", filter:"all", sex:"", q:"", sel:null, selPk:null, busy:false };
 
 // ═══ data ═══════════════════════════════════════════════════════
 async function loadHerd(){
@@ -847,8 +861,26 @@ function viewHerd(){
   }
   wrap.appendChild(chips);
 
+  // Sex cuts across every class chip (heifers and bull calves are both
+  // calves), so it is its own row and stays set as the chips change.
+  const sexPool = S.filter==="past" ? past : live;
+  const sexes = SEXES.filter(([k]) => sexPool.some(a => sexOf(a)===k));
+  // Switching species can leave a sex with nothing in it and no chip to undo it.
+  if(!sexes.some(([k]) => k===S.sex)) S.sex = "";
+  if(sexes.length > 1){
+    const row = el(`<div class="chips" style="padding-top:5px"></div>`);
+    for(const [k,t] of [["","All"], ...sexes]){
+      const n = k ? sexPool.filter(a => sexOf(a)===k).length : sexPool.length;
+      const b = el(`<button class="chip" aria-pressed="${S.sex===k}">${
+        esc(t || castrateLabel(sexPool))} ${n}</button>`);
+      b.onclick = () => { S.sex=k; render(); };
+      row.appendChild(b);
+    }
+    wrap.appendChild(row);
+  }
+
   const q = S.q.trim().toLowerCase();
-  const inScope = a => inSpecies(a) && (
+  const inScope = a => inSpecies(a) && (!S.sex || sexOf(a)===S.sex) && (
       S.herdMode==="paddock" && S.filter==="all" ? isActive(a)
     : S.filter==="past"      ? !isActive(a)
     : S.filter==="planned"   ? isActive(a) && !!planFor(a)
@@ -1795,13 +1827,27 @@ function viewRecord(){
   return wrap;
 }
 
+// Sex as the yard sorts them: entire males apart from steers and
+// wethers. "unknown" only shows under All.
+const SEXES = [["female","Female"],["male","Male"],["castrate",""]];
+const sexOf = a => a.sex==="steer" || a.sex==="wether" ? "castrate" : a.sex;
+const castrateLabel = list => {
+  const sp = new Set(list.filter(a => sexOf(a)==="castrate").map(speciesOf));
+  return sp.size > 1 ? "Steer / wether" : sp.has("sheep") ? "Wether" : "Steer";
+};
+
 function animalPicker(multi=true, preset=[]){
   const chosen = new Set(preset);
   const box = el(`<div class="picker"></div>`);
   // Recording against the wrong species is a whole class of mistake
   // that simply can't be made if it isn't on the screen.
-  const list = S.animals.filter(a => isActive(a) && inSpecies(a));
+  const list = byDrop(S.animals.filter(a => isActive(a) && inSpecies(a)));
   box.list = list;
+  // Shed work on 250 ewes is a filter job, not a scroll: narrow by
+  // paddock, sex, class or drop, then take everything showing. Filters
+  // only hide — anything already chosen stays chosen.
+  const bar = multi || list.length > 12 ? pickerFilters(box, list, multi) : null;
+  if(bar) box.appendChild(bar);
   for(const a of list){
     const b = el(`<button type="button" class="pick" aria-pressed="${chosen.has(a.id)}"
       title="${esc(a.name||"")}">${tagHTML(codeOf(a), "sm", speciesOf(a))}</button>`);
@@ -1814,7 +1860,75 @@ function animalPicker(multi=true, preset=[]){
     box.appendChild(b);
   }
   box.chosen = chosen;
+  bar?.apply();
   return box;
+}
+
+function pickerFilters(box, list, multi){
+  const f = { pk:"", sex:"", cls:"", drop:"", q:"" };
+  const letter = a => tagParts(a).l;
+  const uniq = xs => [...new Set(xs)];
+  const pks = S.paddocks.filter(p => list.some(a => a.paddock_id === p.id));
+  const pkOpts = [...pks.map(p => [p.id, p.name]),
+    ...(list.some(a => !a.paddock_id) ? [["none","No paddock"]] : [])];
+  const clsOpts = uniq(list.map(a => a.class).filter(Boolean)).map(k => [k, classLabel(k, S.species)]);
+  const dropOpts = uniq(list.map(letter).filter(Boolean)).map(l => [l, `${l} drop`]);
+  const sexOpts = SEXES.filter(([k]) => list.some(a => sexOf(a) === k))
+    .map(([k, t]) => [k, t || castrateLabel(list)]);
+  const sel = (name, all, opts) => opts.length < 2 ? "" :
+    `<select data-f="${name}"><option value="">${all}</option>${
+      opts.map(([v, t]) => `<option value="${esc(v)}">${esc(t)}</option>`).join("")}</select>`;
+
+  const bar = el(`<div class="pfbar">
+    ${list.length > 20 ? `<input type="search" placeholder="Find a tag or name" autocomplete="off">` : ""}
+    <div class="pfsel">${sel("pk", "Any paddock", pkOpts)}${sel("cls", "Any class", clsOpts)}${
+      sel("drop", "Any drop", dropOpts)}</div>
+    ${sexOpts.length > 1 ? `<div class="chips wrap pfsex">${[["","All"], ...sexOpts].map(([k, t]) =>
+      `<button type="button" class="chip" data-sex="${k}" aria-pressed="${k===""}">${esc(t)}</button>`).join("")}</div>` : ""}
+    <div class="pfacts">${multi ? `<button type="button" class="chip" data-act="all"></button>
+      <button type="button" class="chip" data-act="clear">Clear</button>` : ""}<span class="hint"></span></div>
+  </div>`);
+
+  const shows = a => (!f.pk || (f.pk === "none" ? !a.paddock_id : a.paddock_id === f.pk))
+    && (!f.sex || sexOf(a) === f.sex) && (!f.cls || a.class === f.cls)
+    && (!f.drop || letter(a) === f.drop)
+    && (!f.q || [codeOf(a), a.name, a.nlis_tag].some(v => (v||"").toLowerCase().includes(f.q)));
+  const buttons = () => [...box.querySelectorAll(".pick")];
+  // A choice made under one filter is easy to forget under the next,
+  // so say how many are chosen out of sight.
+  const hint = () => {
+    const bs = buttons(), n = bs.filter(b => !b.hidden).length;
+    const away = list.filter((a, i) => bs[i].hidden && box.chosen?.has(a.id)).length;
+    bar.querySelector(".hint").textContent = [n === list.length ? "" : `${n} of ${list.length} showing`,
+      away ? `${away} chosen not shown` : ""].filter(Boolean).join(" · ");
+  };
+  box.addEventListener("pick", hint);
+  bar.apply = () => {
+    let n = 0;
+    buttons().forEach((b, i) => { const on = shows(list[i]); b.hidden = !on; n += on; });
+    const all = bar.querySelector('[data-act="all"]');
+    if(all) all.textContent = n === list.length ? `Select all ${n}` : `Select these ${n}`;
+    hint();
+  };
+  bar.querySelectorAll("select").forEach(s => s.onchange = () => { f[s.dataset.f] = s.value; bar.apply(); });
+  bar.querySelectorAll("[data-sex]").forEach(b => b.onclick = () => {
+    f.sex = b.dataset.sex;
+    bar.querySelectorAll("[data-sex]").forEach(x => x.setAttribute("aria-pressed", x === b));
+    bar.apply();
+  });
+  const q = bar.querySelector("input");
+  if(q) q.oninput = () => { f.q = q.value.trim().toLowerCase(); bar.apply(); };
+  const pick = on => {
+    buttons().forEach((b, i) => {
+      if(on && (b.hidden || b.disabled)) return;
+      on ? box.chosen.add(list[i].id) : box.chosen.delete(list[i].id);
+      b.setAttribute("aria-pressed", box.chosen.has(list[i].id));
+    });
+    box.dispatchEvent(new CustomEvent("pick", {detail:box.chosen.size}));
+  };
+  bar.querySelector('[data-act="all"]')?.addEventListener("click", () => pick(true));
+  bar.querySelector('[data-act="clear"]')?.addEventListener("click", () => pick(false));
+  return bar;
 }
 
 function say(node, kind, text){
@@ -2743,20 +2857,6 @@ function recShearing(){
   pick.addEventListener("pick", e => count.textContent =
     !e.detail ? "No sheep selected." : e.detail===1 ? "1 head selected." : `${e.detail} head selected.`);
 
-  const chips = el(`<div class="chips" style="padding:8px 0 0"></div>`);
-  const setAll = fn => pick.querySelectorAll(".pick").forEach((b,i) => {
-    const want = fn(pick.list[i]);
-    if(want !== pick.chosen.has(pick.list[i].id)) b.click();
-  });
-  for(const [label, fn] of [["Everything", () => true],
-                            ["Ewes only", a => a.class==="breeder"],
-                            ["Lambs only", a => a.class==="lamb"],
-                            ["None", () => false]]){
-    const b = el(`<button type="button" class="chip">${esc(label)}</button>`);
-    b.onclick = () => setAll(fn);
-    chips.appendChild(b);
-  }
-  inner.appendChild(chips);
   inner.appendChild(count);
 
   // Wool figures belong to a clip. Dimmed rather than removed, so it is
@@ -4723,26 +4823,6 @@ function bulkEdit(){
     <h3 class="sec" style="padding-left:0">Which animals</h3>`));
 
   const pick = animalPicker(true, []);
-  const setAll = (ids,on) => {
-    pick.querySelectorAll(".pick").forEach((b,i) => {
-      const a = pick.list[i]; if(!ids.includes(a.id)) return;
-      on ? pick.chosen.add(a.id) : pick.chosen.delete(a.id);
-      b.setAttribute("aria-pressed", on);
-    });
-    pick.dispatchEvent(new CustomEvent("pick",{detail:pick.chosen.size}));
-  };
-  const quick = el(`<div class="chips" style="padding:8px 0 2px"></div>`);
-  const groups = [["Everything", () => S.animals.filter(isActive).map(a=>a.id)],["None", () => []]];
-  for(const c of [...new Set(S.animals.filter(isActive).map(a=>a.class).filter(Boolean))])
-    groups.splice(1,0,[c, () => S.animals.filter(a=>isActive(a)&&a.class===c).map(a=>a.id)]);
-  for(const l of [...new Set(S.animals.filter(isActive).map(a=>a.year_letter).filter(Boolean))].sort())
-    groups.splice(groups.length-1,0,[`${l} drop`, () => S.animals.filter(a=>isActive(a)&&a.year_letter===l).map(a=>a.id)]);
-  for(const [label,fn] of groups){
-    const b = el(`<button type="button" class="chip">${esc(label)}</button>`);
-    b.onclick = () => { setAll(S.animals.map(a=>a.id), false); if(label!=="None") setAll(fn(), true); };
-    quick.appendChild(b);
-  }
-  inner.appendChild(quick);
   inner.appendChild(pick);
   const count = el(`<p class="hint">No animals selected.</p>`);
   pick.addEventListener("pick", e => count.textContent =
