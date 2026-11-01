@@ -278,6 +278,34 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-
 .sumtab .drop{display:inline-block;min-width:26px;padding:2px 4px;margin-right:6px;border-radius:5px;
   color:#fff;font-family:var(--mono);font-size:12px;font-weight:700;text-align:center}
 .sumtab .yr{color:var(--ink2)}
+.qbar{display:flex;align-items:center;gap:10px;padding:2px 14px 10px}
+.qbar .hint{margin:0}
+.qhead{padding:4px 14px 8px}
+.qtop{display:flex;align-items:center;gap:10px;margin-top:8px}
+.qtop .hint{flex:1;margin:0}
+.qtop .btn{width:auto;margin:0;min-height:38px;padding:0 18px}
+.qmore{width:auto;min-height:0;padding:7px 10px;border-radius:999px;font-size:14px}
+.qmore.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.qall{display:flex;align-items:center;gap:8px;padding:8px 14px;border-top:1px solid var(--rule);font-size:14px;color:var(--ink2)}
+.qall select,.qall input{width:auto;flex:1;min-height:36px;padding:6px 8px}
+.qrows{list-style:none;margin:0;padding:0;border-top:1px solid var(--rule)}
+.qrows li{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;padding:8px 14px;border-bottom:1px solid var(--rule);background:var(--card)}
+.qrows li.ok{background:var(--accent-soft)}
+.qrows li.bad{background:#F7E4E2}
+.qrows li.busy{opacity:.6}
+.qwho{flex:1;min-width:80px;font-size:13px;line-height:1.25}
+.qwho b{font-weight:500;display:block}
+.qwho small{color:var(--ink2)}
+.qed{display:flex;flex-wrap:wrap;gap:5px;align-items:center}
+.qed .chip{min-height:38px;padding:0 12px}
+.qed input{width:110px;min-height:38px;padding:6px 8px}
+.qed input.short{width:78px}
+.qed input[type=text]{width:170px}
+.qst{flex-basis:100%;font-size:12px;color:var(--danger);text-align:right}
+.qrows li:not(.bad) .qst{display:none}
+.qrows li.ok small{color:var(--accent)}
+.qfoot{padding:12px 14px}
+.qfoot .hint{margin:6px 0 0}
 .sumcls{display:flex;flex-wrap:wrap;gap:6px 14px;padding:4px 13px 12px;font-size:14px;color:var(--ink2)}
 .sumcls b{font-family:var(--mono);color:var(--ink)}
 .hint{font-size:12.5px;color:var(--ink2);margin:6px 0 0}
@@ -693,7 +721,7 @@ const dofHTML = a =>a.days_on_feed == null ? ""
       a.days_on_feed} d fed</span>`;
 
 // ─── state ──────────────────────────────────────────────────────
-const S = { me:null, farm:null, farms:[], editJoin:null, farmPublic:undefined, members:[], animals:[], herdMode:"list", species:"all", pic:"all", treeLink:null, cryoLot:null, joinMode:"natural", pending:[], plans:[], editPlan:null, treeFam:undefined, treePend:false, paddocks:[], feeds:[], feedsDone:[], refs:{}, prefs:null, selFeed:null, closeDue:null, view:"herd", filter:"all", sex:"", grade:null, q:"", sel:null, selPk:null, busy:false };
+const S = { me:null, farm:null, farms:[], editJoin:null, farmPublic:undefined, members:[], animals:[], herdMode:"list", species:"all", pic:"all", treeLink:null, cryoLot:null, joinMode:"natural", pending:[], plans:[], editPlan:null, treeFam:undefined, treePend:false, paddocks:[], feeds:[], feedsDone:[], refs:{}, prefs:null, selFeed:null, closeDue:null, view:"herd", filter:"all", sex:"", grade:null, quick:null, q:"", sel:null, selPk:null, busy:false };
 
 // ═══ data ═══════════════════════════════════════════════════════
 async function loadHerd(){
@@ -942,7 +970,29 @@ function viewHerd(){
   const match = a => inScope(a) &&
     (!q || [codeOf(a),a.name,a.breed,a.nlis_tag].some(v => (v||"").toLowerCase().includes(q)));
 
-  if(S.herdMode!=="tree") wrap.appendChild(herdSummary(S.animals.filter(match)));
+  let sum = null;
+  if(S.herdMode!=="tree") wrap.appendChild(sum = herdSummary(S.animals.filter(match)));
+
+  // Quick edit takes the place of the list, on the same filters.
+  if(S.herdMode!=="tree" && canWrite()){
+    const qlist = byDrop(S.animals.filter(a => isActive(a) && match(a)));
+    if(S.quick){
+      wrap.appendChild(quickEdit(qlist, () => {
+        const n = herdSummary(S.animals.filter(match)); sum.replaceWith(n); sum = n; }));
+      wrap.querySelector("input").oninput = e => {
+        S.q = e.target.value; const at = e.target.selectionStart;
+        render();
+        const n = document.querySelector(".search input"); n.focus(); n.setSelectionRange(at,at);
+      };
+      return wrap;
+    }
+    if(qlist.length){
+      const qb = el(`<div class="qbar"><button type="button" class="chip">✎ Quick edit ${qlist.length} showing</button>
+        <span class="hint">grade, weigh, mark lambs…</span></div>`);
+      qb.querySelector("button").onclick = () => { S.quick = "grade"; render(); };
+      wrap.appendChild(qb);
+    }
+  }
 
   if(S.herdMode==="paddock"){
     const groups = [];
@@ -1995,6 +2045,236 @@ function herdSummary(list){
   if(classes.length)
     box.appendChild(el(`<div class="sumcls">${classes.map(([k, c]) =>
       `<span><b>${c}</b> ${esc(k ? classLabel(k, sp) : "No class")}</span>`).join("")}</div>`));
+  return box;
+}
+
+// ─── quick edit ─────────────────────────────────────────────────
+// Grading 250 ewes one edit screen at a time is an afternoon. Here the
+// Herd filters choose the mob, one field is picked, and every animal
+// showing gets that field on its own row: tap a grade as she comes up
+// the race, or type a weight and Enter to the next. Each change saves
+// as it is made. Rows never drop out mid-job, even when a change takes
+// an animal outside the filter; they go when you're done.
+const QUICK = [
+  ["grade","Grade"], ["weight","Weight"], ["marking","Lamb marking"], ["sex","Sex"],
+  ["class","Class"], ["tag","Tag number"], ["notes","Notes"], ["marking_code","Marking code"],
+  ["born_as","Born as"], ["weaned_on","Weaned"], ["horn","Horn"], ["breed","Breed"]
+];
+const sexChoices = a => speciesOf(a) === "sheep"
+  ? [["female","Ewe"],["male","Ram"],["wether","Wether"]]
+  : [["female","Female"],["male","Male"],["steer","Steer"]];
+const tagLetter = a => a.year_letter || tagParts(a).l;
+// "Ewe · Yearlings", but just "Ewes", not "Ewe · Ewes".
+const whoLine = a => { const sx = sheepSex(a), c = a.class ? classLabel(a.class, speciesOf(a)) : "";
+  return (sx && c.startsWith(sx) ? c : [sx, c].filter(Boolean).join(" · ")) || a.name || ""; };
+
+function quickEdit(list, onSaved){
+  const box = el(`<div class="qe"></div>`);
+  const k = S.quick;
+  const head = el(`<div class="qhead">
+    <div class="chips wrap">${QUICK.slice(0, 5).map(([q, t]) =>
+      `<button type="button" class="chip" data-q="${q}" aria-pressed="${q===k}">${esc(t)}</button>`).join("")}
+      <select class="qmore" aria-label="More fields"><option value="">More…</option>${QUICK.slice(5).map(([q, t]) =>
+        `<option value="${q}"${q===k ? " selected" : ""}>${esc(t)}</option>`).join("")}</select></div>
+    <div class="qtop"><span class="hint">${list.length} head · each change saves as you make it</span>
+      <button type="button" class="btn ghost">Done</button></div>
+  </div>`);
+  head.querySelectorAll("[data-q]").forEach(b => b.onclick = () => { S.quick = b.dataset.q; render(); });
+  const more = head.querySelector(".qmore");
+  if(more.value) more.classList.add("on");
+  more.onchange = () => { if(more.value){ S.quick = more.value; render(); } };
+  head.querySelector(".btn").onclick = () => { S.quick = null; render(); };
+  box.appendChild(head);
+  if(!list.length){ box.appendChild(el(`<div class="empty"><b>Nothing showing</b>Change the filters above.</div>`)); return box; }
+
+  const af = AF.find(f => f[0] === k);
+  const grades = () => { const g = gradesIn(S.animals.filter(inSpecies)).filter(Boolean);
+    return g.length ? g : ["1","2","3"]; };
+  // The choices a row offers as chips, or null for a typed value.
+  const chipsFor = a =>
+      k === "grade" ? grades().map(g => [g, g])
+    : k === "sex" || k === "marking" ? sexChoices(a)
+    : k === "class" ? classesFor(speciesOf(a)).map(c => [c, classLabel(c, speciesOf(a))])
+    : af?.[2].startsWith("pick:") ? pickOptions(af[2])
+    : null;
+  const valueOf = a =>
+      k === "grade" ? gradeOf(a) : k === "marking" ? a.sex : k === "weight" ? "" : k === "tag" ? "" : String(a[k] ?? "");
+  const shown = a =>
+      k === "weight" ? (a.last_weight_kg ? `last ${Math.round(a.last_weight_kg)} kg` : "not weighed")
+    : k === "tag" || k === "marking" ? (a.stock_code ? "" : "no number yet")
+    : k === "grade" ? (gradeOf(a) ? "" : "ungraded")
+    : "";
+
+  // Saving. Each returns nothing or throws; the row says which.
+  const saveField = async (a, v) => {
+    if(k === "class"){
+      const { error } = await db.rpc("set_animal_status", { p_animal_ids:[a.id], p_life_state:null,
+        p_class:v, p_on:today(), p_reason:"Quick edit" });
+      if(error) throw error;
+      a.class = v; return;
+    }
+    if(k === "weight"){
+      const kg = Number(v);
+      if(!(kg > 0)) throw new Error("not a weight");
+      const { error } = await db.from("weight_event").upsert({ animal_id:a.id, weighed_on:today(),
+        weight_kg:kg, method:"scale" }, { onConflict:"animal_id,weighed_on" });
+      if(error) throw error;
+      a.last_weight_kg = kg; return;
+    }
+    if(k === "tag" || (k === "marking" && /^\d+$/.test(v))){
+      const L = tagLetter(a);
+      if(!L) throw new Error("no drop letter to put it under");
+      const code = `${L} ${String(v).padStart(2, "0")}`;
+      if(S.animals.some(x => x !== a && x.stock_code === code && speciesOf(x) === speciesOf(a) && x.origin !== "reference"))
+        throw new Error(`${code} is already on another animal`);
+      const { error } = await db.from("animal").update({ stock_code:code }).eq("id", a.id);
+      if(error) throw new Error(error.code === "23505" ? `${code} is already on another animal` : error.message);
+      a.stock_code = code; return;
+    }
+    const col = k === "marking" ? "sex" : k;
+    const val = v === "" ? null : af?.[2] === "number" || (af?.[2].startsWith("pick:") &&
+      pickOptions(af[2]).every(([x]) => /^\d+$/.test(x))) ? Number(v) : v;
+    const { error } = await db.from("animal").update({ [col]: val }).eq("id", a.id);
+    if(error) throw error;
+    a[col] = val;
+  };
+
+  const touched = new Set();
+  const rows = [];
+  const done = r => {
+    touched.add(r.a.id);
+    r.li.className = "ok"; r.st.textContent = "";
+    r.tag.innerHTML = tagHTML(codeOf(r.a), "sm", speciesOf(r.a));
+    r.who.textContent = whoLine(r.a);
+    r.note.textContent = [shown(r.a), "✓ saved"].filter(Boolean).join(" · ");
+  };
+  const run = async (r, v, after) => {
+    r.li.className = "busy";
+    try{
+      await saveField(r.a, v);
+      done(r); after?.(); onSaved(); mark?.refresh();
+    }catch(err){
+      r.li.className = "bad"; r.st.textContent = err.message || "Not saved";
+    }
+  };
+  // Set all is one write for the lot, not one per row: 250 ewes
+  // shouldn't take a minute.
+  const runAll = async v => {
+    rows.forEach(r => r.li.className = "busy");
+    const ids = rows.map(r => r.a.id);
+    try{
+      let col = k, val = v;
+      if(k === "class"){
+        const { error } = await db.rpc("set_animal_status", { p_animal_ids:ids, p_life_state:null,
+          p_class:v, p_on:today(), p_reason:"Quick edit" });
+        if(error) throw error;
+      } else {
+        if(af?.[2].startsWith("pick:") && pickOptions(af[2]).every(([x]) => /^\d+$/.test(x))) val = Number(v);
+        const { error } = await db.from("animal").update({ [col]: val }).in("id", ids);
+        if(error) throw error;
+      }
+      for(const r of rows){ r.a[col] = val; done(r); r.paint?.(String(v)); if(r.input) r.input.value = v; }
+      onSaved();
+    }catch(err){
+      rows.forEach(r => r.li.className = "");
+      say(box, "err", err.message || "Not saved.");
+    }
+  };
+
+  // Set all: the same value on every row showing, for the jobs where most
+  // of the mob is the same and only a few differ.
+  const sample = list[0];
+  if(k !== "weight" && k !== "tag" && k !== "marking" && k !== "notes"){
+    const opts = chipsFor(sample);
+    const all = el(`<div class="qall"><span>Set all ${list.length} to</span>${opts
+      ? `<select><option value="">…</option>${opts.map(([v, t]) => `<option value="${esc(v)}">${esc(t)}</option>`).join("")}</select>`
+      : `<input type="${af?.[2]==="date" ? "date" : "text"}"><button type="button" class="chip">Set</button>`}</div>`);
+    const go = async v => {
+      if(v === "" || !confirm(`Set ${QUICK.find(q => q[0]===k)[1].toLowerCase()} to "${v}" on all ${list.length}?`)) return;
+      await runAll(v);
+    };
+    const s = all.querySelector("select");
+    if(s) s.onchange = () => { go(s.value); s.value = ""; };
+    else all.querySelector("button").onclick = () => go(all.querySelector("input").value.trim());
+    box.appendChild(all);
+  }
+
+  const ul = el(`<ul class="qrows"></ul>`);
+  for(const a of list){
+    const li = el(`<li><span class="qtag"></span>
+      <span class="qwho"><b>${esc(whoLine(a))}</b>
+        <small></small></span>
+      <span class="qed"></span><span class="qst"></span></li>`);
+    const r = { a, li, tag: li.querySelector(".qtag"), note: li.querySelector("small"), who: li.querySelector(".qwho b"),
+                ed: li.querySelector(".qed"), st: li.querySelector(".qst") };
+    r.tag.innerHTML = tagHTML(codeOf(a), "sm", speciesOf(a));
+    r.note.textContent = shown(a);
+    const typed = k === "weight" || k === "tag" || (k === "marking" && !a.stock_code) || !chipsFor(a);
+    if(typed){
+      const t = k === "weight" || k === "tag" || k === "marking" ? "number" : af?.[2] === "date" ? "date" : "text";
+      const inp = el(`<input type="${t}" ${t==="number" ? `inputmode="${k==="weight" ? "decimal" : "numeric"}" step="any"` : ""}
+        placeholder="${k==="weight" ? "kg" : k==="tag" || k==="marking" ? esc(tagLetter(a) || "") + " no." : ""}"
+        value="${esc(k === "marking" ? "" : valueOf(a))}">`);
+      if(k === "marking") inp.classList.add("short");
+      // Enter goes to the next row, the way you'd work down a sheet.
+      const next = () => { const i = rows.indexOf(r); rows.slice(i + 1).find(x => x.input)?.input.focus(); };
+      inp.onkeydown = e => { if(e.key === "Enter"){ e.preventDefault(); next(); } };
+      inp.onchange = () => {
+        const v = inp.value.trim();
+        if(v === valueOf(a) || (v === "" && (k === "weight" || k === "tag" || k === "marking"))) return;
+        run(r, v);
+      };
+      r.input = inp; r.ed.appendChild(inp);
+    }
+    const opts = chipsFor(a);
+    if(opts){
+      r.paint = v => r.ed.querySelectorAll("[data-v]").forEach(c => c.setAttribute("aria-pressed", c.dataset.v === v));
+      for(const [v, t] of opts){
+        const c = el(`<button type="button" class="chip" data-v="${esc(v)}">${esc(t)}</button>`);
+        // Tapping the one already chosen takes it off (an ungraded ewe
+        // is better than a wrong grade), except where blank isn't a value.
+        c.onclick = () => {
+          const now = valueOf(a) === v && k !== "class" && k !== "marking" && k !== "sex" ? "" : v;
+          if(now === valueOf(a)) return;
+          run(r, now, () => r.paint(now));
+        };
+        r.ed.appendChild(c);
+      }
+      r.paint(valueOf(a));
+    }
+    rows.push(r);
+    ul.appendChild(li);
+  }
+  box.appendChild(ul);
+
+  // Marking day is a job as well as a set of changes: once the numbers
+  // and sexes are on, it goes in the shed-work record against the lambs
+  // that went through, the same as recording it from Record.
+  let mark = null;
+  if(k === "marking"){
+    mark = el(`<div class="qfoot"><button type="button" class="btn"></button>
+      <p class="hint">Records marking (tails, rings, ear marks) today against every animal changed here.</p></div>`);
+    const b = mark.querySelector("button");
+    mark.refresh = () => { b.disabled = !touched.size;
+      b.textContent = touched.size ? `Record marking for ${touched.size} head` : "Record marking"; };
+    b.onclick = async () => {
+      if(!touched.size || S.busy) return;
+      S.busy = true; b.disabled = true; b.textContent = "Saving…";
+      try{
+        const { data, error } = await db.from("shearing").insert({ shorn_on:today(), kind:"marking",
+          description:"Lamb marking" }).select("id").single();
+        if(error) throw error;
+        const { error:e2 } = await db.from("shearing_animal")
+          .insert([...touched].map(id => ({ shearing_id:data.id, animal_id:id })));
+        if(e2) throw e2;
+        say(mark, "ok", `Marking recorded for ${touched.size} head.`);
+        touched.clear();
+      }catch(err){ say(mark, "err", err.message || "Could not save."); }
+      S.busy = false; mark.refresh();
+    };
+    mark.refresh();
+    box.appendChild(mark);
+  }
   return box;
 }
 
