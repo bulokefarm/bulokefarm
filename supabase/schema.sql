@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict 4vgSIsqyTKrvyhqykaGwsnqi7TL2NPR6ilCoM1gLFuSevBC5Zeem3LDP5cWkpbE
+\restrict nHXqHjq0BVdnAKWdk2KdausJJU68vwJ4AUu3SjQKkZ1GSIY5GotMqE5bKir0PWS
 
 -- Dumped from database version 17.6
 -- Dumped by pg_dump version 17.11 (Ubuntu 17.11-1.pgdg24.04+2)
@@ -1076,6 +1076,46 @@ begin
   end if;
   return new;
 end $$;
+
+
+--
+-- Name: promote_lambs_turned_one(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.promote_lambs_turned_one() RETURNS integer
+    LANGUAGE plpgsql
+    SET search_path TO 'public'
+    AS $$
+declare n int;
+begin
+  insert into animal_status (animal_id, effective_on, life_state, class, reason)
+  select a.id,
+         greatest((a.dob + interval '1 year')::date, cur.effective_on + 1),
+         'alive',
+         case when a.sex in ('male','wether') then 'harvest' else 'yearling' end::animal_class_t,
+         'Turned one'
+    from animal a
+    join lateral (
+      select effective_on, life_state, class from animal_status
+       where animal_id = a.id and effective_on <= current_date
+       order by effective_on desc limit 1) cur on true
+   where a.species = 'sheep'
+     and a.dob is not null
+     and (a.dob + interval '1 year')::date <= current_date
+     and cur.life_state = 'alive'
+     and cur.class = 'lamb'
+  on conflict (animal_id, effective_on) do nothing;
+
+  get diagnostics n = row_count;
+  return n;
+end $$;
+
+
+--
+-- Name: FUNCTION promote_lambs_turned_one(); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.promote_lambs_turned_one() IS 'Nightly (pg_cron): a sheep still classed lamb on its first birthday becomes yearling, or harvest if male or wether. Returns rows written.';
 
 
 --
@@ -7727,5 +7767,5 @@ CREATE POLICY weight_event_update ON public.weight_event FOR UPDATE TO authentic
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 4vgSIsqyTKrvyhqykaGwsnqi7TL2NPR6ilCoM1gLFuSevBC5Zeem3LDP5cWkpbE
+\unrestrict nHXqHjq0BVdnAKWdk2KdausJJU68vwJ4AUu3SjQKkZ1GSIY5GotMqE5bKir0PWS
 
