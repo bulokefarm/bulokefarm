@@ -693,7 +693,7 @@ const dofHTML = a =>a.days_on_feed == null ? ""
       a.days_on_feed} d fed</span>`;
 
 // ─── state ──────────────────────────────────────────────────────
-const S = { me:null, farm:null, farms:[], editJoin:null, farmPublic:undefined, members:[], animals:[], herdMode:"list", species:"all", pic:"all", treeLink:null, cryoLot:null, joinMode:"natural", pending:[], plans:[], editPlan:null, treeFam:undefined, treePend:false, paddocks:[], feeds:[], feedsDone:[], refs:{}, prefs:null, selFeed:null, closeDue:null, view:"herd", filter:"all", sex:"", q:"", sel:null, selPk:null, busy:false };
+const S = { me:null, farm:null, farms:[], editJoin:null, farmPublic:undefined, members:[], animals:[], herdMode:"list", species:"all", pic:"all", treeLink:null, cryoLot:null, joinMode:"natural", pending:[], plans:[], editPlan:null, treeFam:undefined, treePend:false, paddocks:[], feeds:[], feedsDone:[], refs:{}, prefs:null, selFeed:null, closeDue:null, view:"herd", filter:"all", sex:"", grade:null, q:"", sel:null, selPk:null, busy:false };
 
 // ═══ data ═══════════════════════════════════════════════════════
 async function loadHerd(){
@@ -855,10 +855,12 @@ function viewHerd(){
   // A sex nobody in this species has (after switching species) would
   // leave an empty list and no chip to undo it.
   if(S.sex && !S.animals.some(a => inSpecies(a) && sexOf(a)===S.sex)) S.sex = "";
-  // The two chip rows narrow each other: the class or paddock chips
-  // count within the chosen sex, and the sex chips within the chosen
-  // class or paddock.
-  const inSex = a => !S.sex || sexOf(a)===S.sex;
+  if(S.grade != null && !S.animals.some(a => inSpecies(a) && gradeOf(a)===S.grade)) S.grade = null;
+  // The chip rows narrow each other: the class or paddock chips count
+  // within the chosen sex and grade, the sex chips within the chosen
+  // class or paddock and grade, and the grade chips within the rest.
+  const inGrade = a => S.grade == null || gradeOf(a)===S.grade;
+  const inSex = a => (!S.sex || sexOf(a)===S.sex) && inGrade(a);
   const inChip = a => inSpecies(a) && (
       S.herdMode==="paddock" && S.filter==="all" ? isActive(a)
     : S.filter==="past"      ? !isActive(a)
@@ -904,7 +906,7 @@ function viewHerd(){
   // calves), so it is its own row and stays set as the chips change. Its
   // counts are within whatever chip is chosen: Bottom Paddock 25 splits
   // into its own ewes and wethers, not the whole flock's.
-  const sexPool = S.animals.filter(inChip);
+  const sexPool = S.animals.filter(a => inChip(a) && inGrade(a));
   const sexes = SEXES.filter(([k]) => k===S.sex || sexPool.some(a => sexOf(a)===k));
   if(sexes.length > 1){
     const row = el(`<div class="chips" style="padding-top:5px"></div>`);
@@ -913,6 +915,23 @@ function viewHerd(){
       const b = el(`<button class="chip" aria-pressed="${S.sex===k}">${
         esc(t || castrateLabel(sexPool))} ${n}</button>`);
       b.onclick = () => { S.sex=k; render(); };
+      row.appendChild(b);
+    }
+    wrap.appendChild(row);
+  }
+
+  // Grade only shows once something in view has been graded: 4 of 25
+  // ewes graded still wants "Ungraded 21" to find the rest.
+  const gradePool = S.animals.filter(a => inChip(a) && (!S.sex || sexOf(a)===S.sex));
+  const grades = gradesIn(gradePool);
+  if(S.grade != null && !grades.includes(S.grade)) grades.push(S.grade);
+  if(grades.some(g => g)){
+    const row = el(`<div class="chips" style="padding-top:5px"></div>`);
+    for(const g of [null, ...grades]){
+      const n = g == null ? gradePool.length : gradePool.filter(a => gradeOf(a)===g).length;
+      const b = el(`<button class="chip" aria-pressed="${S.grade===g}">${
+        esc(g == null ? "Any grade" : gradeLabel(g))} ${n}</button>`);
+      b.onclick = () => { S.grade=g; render(); };
       row.appendChild(b);
     }
     wrap.appendChild(row);
@@ -1873,6 +1892,13 @@ const castrateLabel = list => {
   const sp = new Set(list.filter(a => sexOf(a)==="castrate").map(speciesOf));
   return sp.size > 1 ? "Steer / wether" : sp.has("sheep") ? "Wether" : "Steer";
 };
+// Grade is free text (1, 2, 3, Good, Maybe for ewes; F1, P for cattle),
+// so the grades on offer are whatever is written. "" is ungraded and
+// sorts last; numbers come before words.
+const gradeOf = a => (a.grade || "").trim();
+const gradesIn = list => [...new Set(list.map(gradeOf))].sort((x, y) =>
+  !x - !y || isNaN(x) - isNaN(y) || x.localeCompare(y, undefined, {numeric:true}));
+const gradeLabel = g => !g ? "Ungraded" : isNaN(g) ? g : `Grade ${g}`;
 
 // What's showing on Herd, added up: drops by sex, then class, plus the
 // few numbers that want acting on. Built from the filtered list, so a
@@ -1944,6 +1970,24 @@ function herdSummary(list){
       other ? cell(unsexed(list)) : ""}</tr></tfoot>` : ""}
   </table></div>`));
 
+  // Grade, once any of these have one: how many of each, and how old
+  // and heavy they run, which is what a cull or a keep turns on.
+  const grades = gradesIn(list);
+  if(grades.some(g => g)){
+    const kg = g => { const w = g.map(a => Number(a.last_weight_kg)).filter(x => x > 0);
+      return w.length ? `${Math.round(avg(w))} kg` : ""; };
+    const by = grades.map(g => [g, list.filter(a => gradeOf(a) === g)]);
+    box.appendChild(el(`<div class="sumtab"><table>
+      <thead><tr><th>Grade</th><th>Head</th><th>Share</th><th>Age</th>${kgs.length ? "<th>Weight</th>" : ""}</tr></thead>
+      <tbody>${by.map(([g, xs]) => `<tr>
+        <th>${esc(g || "Ungraded")}</th>
+        <td><b>${xs.length}</b></td>
+        <td>${Math.round(100 * xs.length / n)}%</td>
+        <td class="tx">${age(avg(yrs(xs)))}</td>
+        ${kgs.length ? cell(kg(xs)) : ""}</tr>`).join("")}</tbody>
+    </table></div>`));
+  }
+
   // Class, in the order the class chips use.
   const sp = S.species;
   const classes = [...new Set([...classesFor(sp), ...list.map(a => a.class)])]
@@ -1983,7 +2027,7 @@ function animalPicker(multi=true, preset=[]){
 }
 
 function pickerFilters(box, list, multi){
-  const f = { pk:"", sex:"", cls:"", drop:"", q:"" };
+  const f = { pk:"", sex:"", cls:"", drop:"", grade:"", q:"" };
   const letter = a => tagParts(a).l;
   const uniq = xs => [...new Set(xs)];
   const pks = S.paddocks.filter(p => list.some(a => a.paddock_id === p.id));
@@ -1991,6 +2035,8 @@ function pickerFilters(box, list, multi){
     ...(list.some(a => !a.paddock_id) ? [["none","No paddock"]] : [])];
   const clsOpts = uniq(list.map(a => a.class).filter(Boolean)).map(k => [k, classLabel(k, S.species)]);
   const dropOpts = uniq(list.map(letter).filter(Boolean)).map(l => [l, `${l} drop`]);
+  const gradeOpts = gradesIn(list).some(g => g)
+    ? gradesIn(list).map(g => [g || "-", gradeLabel(g)]) : [];
   const sexOpts = SEXES.filter(([k]) => list.some(a => sexOf(a) === k))
     .map(([k, t]) => [k, t || castrateLabel(list)]);
   const sel = (name, all, opts) => opts.length < 2 ? "" :
@@ -2000,7 +2046,7 @@ function pickerFilters(box, list, multi){
   const bar = el(`<div class="pfbar">
     ${list.length > 20 ? `<input type="search" placeholder="Find a tag or name" autocomplete="off">` : ""}
     <div class="pfsel">${sel("pk", "Any paddock", pkOpts)}${sel("cls", "Any class", clsOpts)}${
-      sel("drop", "Any drop", dropOpts)}</div>
+      sel("drop", "Any drop", dropOpts)}${sel("grade", "Any grade", gradeOpts)}</div>
     ${sexOpts.length > 1 ? `<div class="chips wrap pfsex">${[["","All"], ...sexOpts].map(([k, t]) =>
       `<button type="button" class="chip" data-sex="${k}" aria-pressed="${k===""}">${esc(t)}</button>`).join("")}</div>` : ""}
     <div class="pfacts">${multi ? `<button type="button" class="chip" data-act="all"></button>
@@ -2010,6 +2056,7 @@ function pickerFilters(box, list, multi){
   const shows = a => (!f.pk || (f.pk === "none" ? !a.paddock_id : a.paddock_id === f.pk))
     && (!f.sex || sexOf(a) === f.sex) && (!f.cls || a.class === f.cls)
     && (!f.drop || letter(a) === f.drop)
+    && (!f.grade || (gradeOf(a) || "-") === f.grade)
     && (!f.q || [codeOf(a), a.name, a.nlis_tag].some(v => (v||"").toLowerCase().includes(f.q)));
   const buttons = () => [...box.querySelectorAll(".pick")];
   // A choice made under one filter is easy to forget under the next,
