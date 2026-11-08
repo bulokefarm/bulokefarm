@@ -2,10 +2,10 @@
 -- PostgreSQL database dump
 --
 
-\restrict nHXqHjq0BVdnAKWdk2KdausJJU68vwJ4AUu3SjQKkZ1GSIY5GotMqE5bKir0PWS
+\restrict pr4DPwnQ4p7kO7GGK94Eg5c3BTGQ7bRALtzgcihYQMAEPw04XR1QCJ75wN3hixM
 
 -- Dumped from database version 17.6
--- Dumped by pg_dump version 17.11 (Ubuntu 17.11-1.pgdg24.04+2)
+-- Dumped by pg_dump version 17.11 (Ubuntu 17.11-1.pgdg26.04+2)
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -7767,5 +7767,5 @@ CREATE POLICY weight_event_update ON public.weight_event FOR UPDATE TO authentic
 -- PostgreSQL database dump complete
 --
 
-\unrestrict nHXqHjq0BVdnAKWdk2KdausJJU68vwJ4AUu3SjQKkZ1GSIY5GotMqE5bKir0PWS
+\unrestrict pr4DPwnQ4p7kO7GGK94Eg5c3BTGQ7bRALtzgcihYQMAEPw04XR1QCJ75wN3hixM
 
