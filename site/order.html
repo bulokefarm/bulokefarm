@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Place Your Order — Buloke Farm</title>
+<meta name="description" content="Order Buloke Farm beef and lamb packs online. No payment now — we email an invoice for the deposit, and the balance is invoiced once your order is packed.">
+<meta name="theme-color" content="#101814">
+<link rel="canonical" href="https://www.bulokefarm.com.au/order">
+<meta property="og:site_name" content="Buloke Farm">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Place Your Order — Buloke Farm">
+<meta property="og:description" content="Order beef and lamb packs direct from the farm. No payment now.">
+<meta property="og:image" content="https://www.bulokefarm.com.au/img/beef-pack.jpg">
+<link rel="icon" type="image/png" href="/favicon.png">
+<link rel="stylesheet" href="/site.css">
+</head>
+<body data-page="order">
+
+<header class="site-header" id="site-header"></header>
+<noscript>
+  <nav class="noscript-nav wrap" aria-label="Main">
+    <a href="/">Beef &amp; Lamb Orders</a> <a href="/buloke-farm">Buloke Farm</a> <a href="/aboutus">About Us</a>
+    <a href="/why-buloke-meat">Why Buloke Meat</a> <a href="/our-difference">Our Difference</a>
+    <a href="/how-to-cook-it">How To Cook It</a> <a href="/recipes">Recipes</a> <a href="/dog-walking">Dog Walking</a>
+    <a href="/order">Order Now</a>
+  </nav>
+</noscript>
+
+<main id="main">
+  <div class="wrap narrow page" id="order-root">
+
+    <header class="page-head">
+      <p class="eyebrow">Order</p>
+      <h1>Place your order</h1>
+      <p class="lede">Choose your packs, tell us how you’d like to get them, and leave us your details. There is nothing to pay today.</p>
+    </header>
+
+    <noscript>
+      <div class="unavailable"><strong>Ordering needs JavaScript.</strong>Turn it on and reload, or email your order to <a href="mailto:bulokefarm@gmail.com">bulokefarm@gmail.com</a>.</div>
+    </noscript>
+
+    <p class="muted" id="order-loading">Loading what’s available…</p>
+
+    <form class="order-form" id="order-form" novalidate hidden>
+
+      <section class="order-step" aria-labelledby="step-order">
+        <h2 id="step-order"><span class="n" aria-hidden="true">01</span> Your order</h2>
+        <p class="callout" id="cart-notice" role="status" hidden></p>
+        <ul class="cart-lines" id="cart-lines"></ul>
+        <div class="cart-add">
+          <label class="label" for="add-option">Add to your order</label>
+          <div class="cart-add-row">
+            <select id="add-option"><option value="">Choose a pack…</option></select>
+            <button type="button" class="btn btn-ghost" id="add-btn">Add</button>
+          </div>
+        </div>
+        <div id="cart-totals" aria-live="polite"></div>
+      </section>
+
+      <section class="order-step" aria-labelledby="step-how">
+        <h2 id="step-how"><span class="n" aria-hidden="true">02</span> Pick-up or delivery</h2>
+        <fieldset>
+          <legend class="sr-only">How would you like to get your order?</legend>
+          <div class="choices">
+            <label class="choice">
+              <input type="radio" name="fulfilment" value="pickup_butcher" checked>
+              <span class="choice-text">
+                <span class="choice-title">Pick up from Cherry Tree Organics</span>
+                <span class="choice-sub">Shop 1, 22-24 Old Princes Highway, Beaconsfield (Mon–Fri 8am–5pm, Sat 9am–1pm)</span>
+              </span>
+            </label>
+            <label class="choice">
+              <input type="radio" name="fulfilment" value="pickup_farm">
+              <span class="choice-text">
+                <span class="choice-title">Pick up from us by arrangement</span>
+                <span class="choice-sub">Trafalgar</span>
+              </span>
+            </label>
+            <label class="choice">
+              <input type="radio" name="fulfilment" value="delivery">
+              <span class="choice-text">
+                <span class="choice-title">Delivery to my door</span>
+                <span class="choice-sub">Melbourne and up the East Coast</span>
+              </span>
+            </label>
+          </div>
+        </fieldset>
+
+        <p class="callout" id="local-note" role="status" hidden></p>
+
+        <div class="delivery-fields" id="delivery-fields" hidden>
+          <div class="field">
+            <label for="f-street">Street address</label>
+            <input type="text" id="f-street" name="street" autocomplete="address-line1" maxlength="200">
+          </div>
+          <div class="field-row three">
+            <div class="field">
+              <label for="f-suburb">Suburb</label>
+              <input type="text" id="f-suburb" name="suburb" autocomplete="address-level2" maxlength="100">
+            </div>
+            <div class="field">
+              <label for="f-state">State</label>
+              <select id="f-state" name="state" autocomplete="address-level1">
+                <option value="">Choose…</option>
+                <option value="VIC">VIC</option>
+                <option value="NSW">NSW</option>
+                <option value="ACT">ACT</option>
+                <option value="QLD">QLD</option>
+                <option value="SA">SA</option>
+                <option value="TAS">TAS</option>
+                <option value="WA">WA</option>
+                <option value="NT">NT</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="f-postcode">Postcode</label>
+              <input type="text" id="f-postcode" name="postcode" inputmode="numeric" autocomplete="postal-code" pattern="[0-9]{4}" maxlength="4" aria-describedby="postcode-lookup">
+            </div>
+          </div>
+          <p class="lookup" id="postcode-lookup" role="status"></p>
+          <div class="field">
+            <label for="f-instructions">Delivery instructions <span class="hint">(optional)</span></label>
+            <textarea id="f-instructions" name="instructions" rows="2" maxlength="500"></textarea>
+          </div>
+          <p class="fine">The delivery fee depends on where you are and is confirmed on your invoice.</p>
+        </div>
+      </section>
+
+      <section class="order-step" aria-labelledby="step-you">
+        <h2 id="step-you"><span class="n" aria-hidden="true">03</span> Your details</h2>
+        <div class="field">
+          <label for="f-name">Name</label>
+          <input type="text" id="f-name" name="name" autocomplete="name" required minlength="2" maxlength="120">
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="f-email">Email</label>
+            <input type="email" id="f-email" name="email" autocomplete="email" inputmode="email" required maxlength="200">
+          </div>
+          <div class="field">
+            <label for="f-phone">Phone</label>
+            <input type="tel" id="f-phone" name="phone" autocomplete="tel" inputmode="tel" required minlength="6" maxlength="40">
+          </div>
+        </div>
+        <div class="field">
+          <label for="f-company">Company <span class="hint">(optional)</span></label>
+          <input type="text" id="f-company" name="company" autocomplete="organization" maxlength="120">
+        </div>
+        <div class="field">
+          <label for="f-note">Notes <span class="hint">(optional)</span></label>
+          <textarea id="f-note" name="note" rows="3" maxlength="2000"></textarea>
+        </div>
+        <!-- Not for people. A script that fills this in is thanked and ignored. -->
+        <div class="hp" aria-hidden="true">
+          <label for="f-website">Website</label>
+          <input type="text" id="f-website" name="website" tabindex="-1" autocomplete="off" aria-hidden="true">
+        </div>
+      </section>
+
+      <div class="order-submit">
+        <p class="order-summary" id="order-summary">No payment now. We’ll email an invoice for the deposit with payment details; the balance is invoiced once your order is packed.</p>
+        <p class="form-error" id="order-error" role="alert" hidden></p>
+        <button class="btn" type="submit" id="order-submit">Place order</button>
+      </div>
+
+    </form>
+  </div>
+</main>
+
+<footer class="site-footer" id="site-footer"></footer>
+<script src="/config.js"></script>
+<script src="/site.js"></script>
+</body>
+</html>

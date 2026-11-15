@@ -1,0 +1,13 @@
+# Old Squarespace addresses, so links and search results keep working.
+#
+# Nothing here maps /foo to /foo.html: Pages already serves clean URLs,
+# and a rule like that loops.
+
+/order/p/beef                                   /beef          301
+/order/p/z1ulbmftvr2863rnpeodl6ojgzuaix         /lamb          301
+/order/p/gourmet-wagu-cross-beef-mince-pie      /pies          301
+/order/p/gourmet-wagu-cross-beef-mince-pie-yx662 /pies         301
+/home                                           /buloke-farm   301
+/beef-recipes-                                  /beef-recipes  301
+/lamb-recipes-1                                 /lamb-recipes  301
+/cart                                           /order         301

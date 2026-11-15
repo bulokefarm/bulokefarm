@@ -5332,7 +5332,7 @@ function viewUsers(){
       <span class="meta"><span class="nm">${esc(m.farm_user?.display_name || "—")}${me ? " (you)" : ""}</span>
         <span class="sub">${esc(m.farm_user?.phone || "")}</span></span>
       <span class="rt" style="display:flex;gap:6px;align-items:center">
-        <select name="role" style="min-height:36px">${["viewer","manager","owner"].map(r =>
+        <select name="role" style="min-height:36px">${["viewer","manager","owner","butcher"].map(r =>
           `<option${m.role===r?" selected":""}>${r}</option>`).join("")}</select>
         <button class="chip" aria-pressed="${m.active}" title="${m.active?"Switched on":"Switched off"}"
           style="font-size:20px">${m.active?"●":"○"}</button>
@@ -5363,7 +5363,8 @@ function viewUsers(){
     <label><span>What they can do</span><select name="role">
       <option value="viewer">Viewer — look, not touch</option>
       <option value="manager">Manager — record and edit</option>
-      <option value="owner">Owner — everything, including people</option></select></label>
+      <option value="owner">Owner — everything, including people</option>
+      <option value="butcher">Butcher — the cut sheets at /butcher, nothing else</option></select></label>
     <button type="submit" class="btn">Add to ${esc(farmName())}</button>
     <div class="msg" hidden></div></form>`);
   form.onsubmit = async (e) => {
@@ -5569,6 +5570,9 @@ async function boot(loginErr){
     const { data:{ session } } = await db.auth.getSession();
     if(!session){ await loadFarmPublic(); app.replaceChildren(viewLogin(loginErr)); return; }
     await loadMe();
+    // A butcher is on the farm but reads none of this (migration 69):
+    // the herd would load empty. Their page is the cut sheets.
+    if(S.me?.role === "butcher"){ location.replace("/butcher"); return; }
     if(!S.me?.active){
       app.replaceChildren(el(`<div class="login"><div class="mark">${esc(farmName())}</div>
         <div class="msg err" style="margin:20px 0">${S.farm

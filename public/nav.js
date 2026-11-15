@@ -1,4 +1,4 @@
-// Shared menu for all four pages. Loaded as a plain script, not a
+// Shared menu for every page. Loaded as a plain script, not a
 // module, so it can attach before the page's own code runs.
 //
 // Pages opt in with two things:
@@ -11,7 +11,9 @@
     ["/",        "Herd & recording", "Animals, map, family tree, everything you record"],
     ["/reports", "Records & reports", "LPA treatments, feed, movements — printable"],
     ["/stock",   "Stock account",     "Trading account by financial year, for tax"],
-    ["/map",     "Paddock editor",    "Trace fence lines on satellite imagery"]
+    ["/map",     "Paddock editor",    "Trace fence lines on satellite imagery"],
+    ["/sales",   "Sales & orders",    "Customers, orders, invoices, the carrier's manifest"],
+    ["/butcher", "Butcher sheets",    "What the butcher sees: summary, customers, cut sheets"]
   ];
 
   var here = location.pathname.replace(/index\.html$/, "").replace(/\/$/, "") || "/";

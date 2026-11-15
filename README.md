@@ -4,9 +4,10 @@ Livestock records for 267 North Canal Rd, Trafalgar, Victoria.
 PIC 3BWWY089.
 
 Cattle and sheep on one property, with a second PIC to come. Replaces a
-55-column spreadsheet and several others besides. Four static HTML pages
-talking to a Supabase Postgres database. No build step, no server, no
-framework — the phone app is about 41 KB over the wire.
+55-column spreadsheet and several others besides. Six static HTML pages
+talking to a Supabase Postgres database, and a public website beside
+them that takes orders into the same database. No build step, no
+server, no framework — the phone app is about 41 KB over the wire.
 
 Since migration 55 the one database holds more than one farm. Each
 farm's people see only that farm's records; the pages, the migrations
@@ -25,6 +26,9 @@ Live at **https://admin.bulokefarm.com.au**
 | `public/reports.html` | `/reports` | Laptop. LPA records, shed work, joining register. Printable, editable, with change history. |
 | `public/stock.html` | `/stock` | Laptop. Livestock trading account by financial year, for tax. |
 | `public/map.html` | `/map` | Laptop. Tracing paddock boundaries on satellite imagery, and spraying. |
+| `public/sales.html` | `/sales` | Laptop. Customers, orders, payments, invoices, harvests, the carrier's manifest, products. |
+| `public/butcher.html` | `/butcher` | The butcher's login. Summary, customer list and a cut sheet per box, for printing. |
+| `site/` | `www.bulokefarm.com.au` | The public website: what we sell, the farm, and the order form. A second Pages project. |
 
 The phone app links to the others under **Record → Manage → On a
 laptop**. `public/nav.js` is the shared menu.
@@ -285,6 +289,51 @@ tags get dark ink.
 never on the property (`origin = 'reference'`). Pedigree stays a single
 self-join instead of nullable text columns.
 
+**An order is written down once.** It used to be typed four times: into
+the sales spreadsheet, into the butcher's workbook, into the carrier's
+manifest, into the invoice. `customer_order` and `order_line` are the
+one record; the butcher's sheets (`butcher_sheet()`), the Blackbird
+manifest (**Sales → Delivery**) and the invoice (`issue_invoice()`) are
+read off it. Totals, what is owing, and how many kilos of a harvest are
+sold are computed (`v_order`, `v_harvest`), never stored; what has been
+paid is the sum of `order_payment` rows, deposit and balance and refund
+alike. Money is integer cents, ex GST: meat is GST-free and freight
+carries 10%, so the invoice's BAS summary is two sums.
+
+**An invoice keeps what it said.** `issue_invoice()` copies the order as
+it stands — who, where, each line, the freight — into `invoice` and
+`invoice_line`, and from then on the invoice is its own record. A
+customer who moves, or a price that changes, must not rewrite an invoice
+already sent. Numbers are handed out per farm by trigger, starting from
+`farm_business.first_invoice_no`; a void invoice keeps its number.
+
+**A harvest is what orders are placed against.** One kill: its dates,
+its butcher, what it should yield. *Open* shows its dates on the website
+and takes web orders; *planned* shows the month. The butcher sees a
+harvest only once it is released to them (`butcher_released_at`), so a
+half-entered order book is not mistaken for the job.
+
+**The butcher is on the farm but not in the herd.** A fourth role.
+`can_read()` now names the roles that read (owner, manager, viewer); a
+butcher is a member and not a reader, so every policy written before
+the role existed refuses them without being touched. They read through
+two functions that hand back exactly what goes on the printed sheets —
+who the box is for, a phone number, where it is going if it is being
+sent, what to cut. No prices, no payments, no emails.
+
+**The shop front is three functions.** Someone with no login can ask
+what is for sale and when the next harvest is (`shop_front`), whether
+the carrier goes to a postcode (`delivery_lookup`), and place an order
+(`place_order`) — and nothing else; anon reads no table. A web order is
+a request: status `new`, nothing paid, priced from the product and not
+from what the browser sent. `place_order` never changes a customer it
+already knows — anyone can type anyone's email — so what was typed is
+kept on the order and **Sales** shows the two side by side. Five orders
+an hour from one email, forty in all, then it asks people to write.
+
+**Bank details are not in the repo.** They are typed into **Sales →
+Settings**, live in `farm_business`, and only an owner can change them.
+
 ---
 
 ## 3. Data model
@@ -311,6 +360,14 @@ feed_source ─┬─ feed_event ──┬─ paddock         LPA 3C / 3D
              │               ├─ feed_event_animal
              │               └─ feed_event_ref   tags as written on paper
              └─ feed_adjustment                  recounts, spoilage
+
+product ── product_option                      what is sold, in what sizes, with its cut sheet
+harvest                                        one kill: dates, butcher, yield, costs
+customer ── customer_order ─┬─ order_line      what they ordered; actual kg once packed
+                            ├─ order_payment   deposit, balance, refund: paid is their sum
+                            └─ invoice ── invoice_line   a copy, numbered, kept as sent
+delivery_zone                                  postcode -> carrier zone and days
+farm_business                                  ABN, bank details: the invoice letterhead
 
 farm                who runs the app on this land: name, address, mark, hostname
  └─ farm_member     who belongs to it, and as what: viewer / manager / owner
@@ -354,6 +411,11 @@ Every table but `heartbeat`, `user_pref` and `farm_user` carries
 | `v_record_history` | Change log in plain language |
 | `v_me` | The signed-in login on its farm: role, active, and the farm's name and mark |
 | `v_farm_public` | Farm names and marks by hostname, for the login screen. Readable by anon, by design |
+| `v_order` | An order with its sums: goods, GST, total, paid, owing, kilos, cartons, who it goes to |
+| `v_harvest` | A harvest with what is sold out of it, what is left, and what it cost |
+| `v_customer` | Customers with order count, last order, spent and owing |
+| `v_invoice` | An invoice with subtotal, shipping, GST, paid, due, and the BAS split |
+| `v_delivery_postcode` | One row per postcode: the carrier's zone and the days they run |
 
 ### Deliberately not used
 
@@ -388,7 +450,9 @@ Build instructions are in `public/vendor/readme.md`.
 ## 4. Repository
 
 ```
-public/                 served as-is by Cloudflare Pages
+public/                 served as-is by Cloudflare Pages: admin.bulokefarm.com.au
+site/                   the public website, served as-is by a second Pages project
+  config.js             which Supabase project and farm the shop talks to
   vendor/supabase.js    the client, self-hosted, not a CDN (see its readme)
   _headers              cache and security headers, per clean URL
 supabase/
@@ -456,6 +520,10 @@ rebuild, so anything depending on imported records has to be a seed.
 | 62 | A tag can have six digits: `BU 230040` is a Toland ewe, colour then her stud number |
 | 63 | Back-up plans: `planned_joining.attempt`, one open plan per dam, season and attempt; the joining closes the plan it answers, and in calf drops the back-ups |
 | 64 | A season is the July–June financial year the birth is due in: `season_of()`; a joining's season follows its due date and a plan's its forecast, by trigger, and a dam's gestation correction moves her plans' seasons. The April 2026 ewe joining moved from 2025-2026 to 2026-2027 |
+| 69 | The butcher: a fourth role. `can_read()` names the roles that read; members and profiles of the farm are for readers |
+| 70 | Selling: `product`, `product_option`, `harvest`, `customer`, `customer_order`, `order_line`, `order_payment`, `invoice`, `invoice_line`, `delivery_zone`, `farm_business`; per-farm order and invoice numbers; `save_order()`, `issue_invoice()`; `v_order`, `v_harvest`, `v_customer`, `v_invoice` |
+| 71 | What the butcher sees: `butcher_harvests()`, `butcher_sheet()`, and `butcher_pack()` to tick a pack off and weigh it |
+| 72 | The shop front, callable with no login: `shop_front()`, `delivery_lookup()`, `place_order()` |
 
 ### Seeds
 
@@ -472,6 +540,8 @@ of anything you run by hand in the SQL editor that inserts records.
 | 30 | 50 historical animals, 29 consignments, back to 2011 |
 | 40 | 90 sheep, joinings, drenches, shed work, sales |
 | 50 | 50 semen lots, 20 embryo lots, 372 movements back to 2008 |
+| 60 | What is sold: beef, lamb and pies with their sizes, prices and the butcher's standard cut sheets; the invoice letterhead, less the bank details |
+| 61 | Blackbird Logistics' delivery schedule: 2,322 suburbs with zone and days. Generated by `seed/tools/migrate_blackbird_schedule.py`; re-run both when a new schedule is issued |
 | 90 | Joining outcome backfill — must run last |
 
 ---
@@ -606,6 +676,15 @@ is no build step — it serves `public/` as-is.
 Pages settings: framework preset **None**, build command **empty**,
 output directory **public**.
 
+The public website is a second Pages project on the same repository,
+identical but for output directory **site** and the domain
+`www.bulokefarm.com.au`. It has its own `_headers` and a `_redirects`
+that only forwards the old Squarespace addresses. To look at either
+locally as Pages would serve it: `python .claude/serve.py public 8788`
+or `python .claude/serve.py site 8789`. On localhost only, a JSON
+`{url, key}` in localStorage under `bf.api` points a page at a local
+Supabase stack instead of production.
+
 **`_headers` must name the clean URLs.** Pages serves `/` and `/reports`,
 not `/index.html`, so a `/*.html` rule matches the filename nobody
 requests and applies to nothing — `X-Frame-Options` was missing from
@@ -625,7 +704,8 @@ serves clean URLs and the rule causes a redirect loop.
 | Thing | Where |
 |---|---|
 | Domain | VentraIP (`ns1-3.nameserver.net.au`), one CNAME: `admin` → `bulokefarm.pages.dev` |
-| Main website | Squarespace, untouched — shares only the registrar |
+| Main website | `site/`, a second Cloudflare Pages project, once `www` is pointed at it. Until then Squarespace is still what the public sees |
+| Carrier | Blackbird Logistics, booked through their Detrack account: the manifest is downloaded from **Sales → Delivery** and imported under Jobs |
 | Hosting | Cloudflare Pages, project `bulokefarm` |
 | Database | Supabase project `production`, region **Oceania (Sydney)** |
 | Repo | `github.com/bulokefarm/bulokefarm` |
@@ -700,6 +780,8 @@ Supabase → Advisors → Security. Three warnings are expected and stay:
 - `beat()` callable by anon — the keepalive's write (migration 47).
 - `my_role()` callable by signed-in users — every policy needs it.
 - Leaked password protection disabled — a Pro-plan toggle.
+- `shop_front()`, `delivery_lookup()` and `place_order()` callable by
+  anon — the public website (migration 72).
 
 Anything else is new. User sign-ups are off in Authentication → Sign In /
 Providers; users are added by hand, below.
@@ -714,7 +796,8 @@ Providers; users are added by hand, below.
     where id = (select id from auth.users where email = 'them@example.com');
    ```
 
-Roles: `viewer` reads, `manager` records, `owner` also deletes. New
+Roles: `viewer` reads, `manager` records, `owner` also deletes, and
+`butcher` sees the cut sheets at `/butcher` and nothing else. New
 accounts land inactive and see nothing until switched on. `display_name`
 and `phone` fill the LPA "treated by" field automatically.
 
@@ -776,6 +859,16 @@ migration 39; the stored values are listed by
 `select * from v_due_date_check`. A `drift` of exactly 1 is the bug,
 anything else was a deliberate adjustment, so they are not rewritten
 automatically. The one-line accept is in the migration's comments.
+
+**Selling, the parts not built.** A web order does not email anyone:
+it shows as *new* on **Sales** and the customer sees a reference on the
+page. Invoices are printed to PDF and emailed by hand. Deliveries are
+booked by downloading the manifest and importing it into Detrack; the
+Detrack number and tracking link are pasted back. All three want a
+server-side piece — an edge function holding a mail key and a Detrack
+API key — and none has one yet. There is no card payment. A harvest is
+not yet linked to the animals that went on it (`consignment`), and
+whether pies carry GST is the accountant's call: they are set GST-free.
 
 **Smaller things.** The masthead head count ignores the species scope.
 `n/B/R` (`marking_code`) meaning still unknown. `TOL 20-P1065`'s EID is

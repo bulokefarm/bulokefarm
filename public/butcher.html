@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="/favicon-32.png" sizes="32x32">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<title>Butcher sheets — Buloke Farm</title>
+<style>
+:root{
+  --paper:#F2F2EE;--card:#FFF;--ink:#16150F;--ink2:#5A574E;--rule:#D9D6CC;
+  --accent:#12564F;--accent-soft:#E2EDEA;--danger:#8C2F2A;--warn:#8F5A0C;--warn-soft:#FCF3E3;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:15px}
+.sheet{max-width:900px;margin:0 auto;padding:22px 20px 60px}
+.masthead{display:flex;align-items:center;gap:12px;border-bottom:2px solid var(--ink);padding-bottom:10px}
+.masthead h1{font-size:15px;letter-spacing:.14em;text-transform:uppercase;margin:0;flex:1}
+.masthead .pic{font-size:11.5px;color:var(--ink2);text-align:right;line-height:1.5}
+.controls{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;padding:14px 0}
+.controls label{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ink2)}
+.controls .grow{flex:1}
+input,select{display:block;width:100%;margin-top:4px;border:1px solid var(--rule);border-radius:8px;padding:8px 10px;
+  font:inherit;font-size:14px;background:var(--card);color:var(--ink)}
+input[type=checkbox]{display:inline-block;width:22px;height:22px;margin:0;vertical-align:middle}
+input:focus,select:focus,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+button{border:0;border-radius:8px;padding:9px 15px;font:inherit;font-weight:700;font-size:14px;background:var(--accent);color:#fff;cursor:pointer}
+button.ghost{background:var(--card);color:var(--ink);border:1px solid var(--rule)}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:5px}
+.chip{background:var(--card);color:var(--ink);border:1px solid var(--rule);border-radius:99px;padding:6px 13px;font-size:13px;font-weight:600}
+.chip[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
+.gap{background:var(--warn-soft);border-left:3px solid var(--warn);padding:11px 13px;font-size:13px;margin:0 0 14px}
+.none,.loading{color:var(--ink2);font-style:italic;padding:14px 8px}
+.err{color:var(--danger);font-size:13px;min-height:1.2em}
+.login{max-width:340px;margin:60px auto;background:var(--card);border:1px solid var(--rule);border-radius:14px;padding:24px}
+.login label{display:block;margin-bottom:12px;font-size:12px;font-weight:700;color:var(--ink2)}
+.login button{width:100%}
+
+/* One .page is one sheet of paper. */
+.page{background:var(--card);border:1px solid var(--rule);border-radius:10px;padding:26px 28px;margin:0 0 18px}
+.page header{display:flex;gap:14px;align-items:flex-start;border-bottom:2px solid var(--ink);padding-bottom:10px;margin-bottom:14px}
+.page header .who{flex:1}
+.page header .who b{font-size:17px;letter-spacing:.06em;text-transform:uppercase}
+.page header .who span{display:block;font-size:12.5px;color:var(--ink2);margin-top:2px}
+.page header .what{text-align:right;font-size:12.5px;color:var(--ink2);line-height:1.5}
+.page header .what b{display:block;font-size:15px;color:var(--ink)}
+.page h2{font-size:13px;letter-spacing:.1em;text-transform:uppercase;margin:18px 0 6px}
+.cust{display:flex;gap:12px;align-items:baseline;margin:0 0 12px;flex-wrap:wrap}
+.cust b{font-size:20px}
+.cust .pack{font-size:15px;font-weight:700;background:var(--accent-soft);color:var(--accent);border-radius:6px;padding:3px 10px}
+.cust .mult{font-size:15px;font-weight:700;background:var(--warn-soft);color:var(--warn);border-radius:6px;padding:3px 10px}
+.dates{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px 14px;margin:0 0 6px}
+.dates div span{display:block;font-size:10.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--ink2)}
+.dates div b{font-size:14.5px}
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th{text-align:left;font-size:10.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--ink2);border-bottom:1px solid var(--ink);padding:6px 8px;font-weight:700}
+td{border-bottom:1px solid var(--rule);padding:7px 8px;vertical-align:top}
+td.num,th.num{text-align:right}
+td.m{font-family:var(--mono);font-size:12.5px;white-space:nowrap}
+td.box{width:54px;font-weight:700;font-size:15px}
+td.tick{width:62px;text-align:center}
+td.tick i{display:inline-block;width:20px;height:20px;border:1.5px solid var(--ink);border-radius:3px}
+td small{color:var(--ink2)}
+tfoot td{font-weight:700;border-top:2px solid var(--ink);border-bottom:0}
+.notes{margin-top:14px;font-size:12.5px}
+.notes div{display:flex;gap:10px;padding:4px 0;border-bottom:1px solid var(--rule)}
+.notes div b{flex:0 0 130px}
+.tag{display:inline-block;border-radius:4px;padding:1px 7px;font-size:11.5px;font-weight:700;background:var(--paper);color:var(--ink2);white-space:nowrap}
+.tag.delivery{background:var(--warn-soft);color:var(--warn)}
+.kgin{width:86px;text-align:right;font-family:var(--mono);padding:6px 8px;margin:0}
+
+@page{margin:12mm;size:A4 portrait}
+@media print{
+  body{background:#fff;font-size:12px}
+  .sheet{max-width:none;padding:0}
+  .masthead,.controls,.noprint{display:none !important}
+  .page{border:0;border-radius:0;padding:0;margin:0;break-after:page}
+  .page:last-child{break-after:auto}
+  .page[hidden]{display:none}
+  .kgin{border:0;border-bottom:1px solid var(--ink);border-radius:0}
+  thead{display:table-header-group}
+  tr{break-inside:avoid}
+}
+</style>
+<script src="/nav.js" defer></script>
+</head>
+<body>
+<div class="sheet">
+  <div class="masthead">
+    <img src="/mark.png" alt="" width="28" height="28" style="flex:none"><h1 id="tradingname">Buloke Farm</h1>
+    <div class="pic" id="letterhead">Butcher sheets</div>
+    <button id="navbtn" class="noprint ghost" aria-label="Menu" hidden>&#8801;</button>
+    <button id="outbtn" class="noprint ghost" hidden>Sign out</button>
+  </div>
+  <div id="bar" class="noprint"></div>
+  <div id="out"><p class="loading">Loading…</p></div>
+</div>
+
+<script type="module">
+// Local testing only: on localhost, a JSON {url,key} in localStorage
+// "bf.api" points the page at a local Supabase stack instead.
+const LOCAL = (() => { try {
+  return ["localhost","127.0.0.1"].includes(location.hostname) && JSON.parse(localStorage.getItem("bf.api") || "null");
+} catch(e){ return null; } })();
+const SUPABASE_URL  = LOCAL?.url || "https://hgnzignikbpdbbyubahu.supabase.co";
+const SUPABASE_ANON = LOCAL?.key || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhnbnppZ25pa2JwZGJieXViYWh1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU1NTgzNTcsImV4cCI6MjEwMTEzNDM1N30.U5vvmmZfSP0SOXsvLaxpjJ6LjWjOvaOYwTZ9VKyfFs0";
+
+let createClient;
+try      { ({ createClient } = await import("/vendor/supabase.js")); }
+catch(e) { console.warn("vendor/supabase.js failed — falling back to esm.sh", e);
+           ({ createClient } = await import("https://esm.sh/@supabase/supabase-js@2")); }
+const timedFetch = (url, opts = {}) => {
+  const c = new AbortController();
+  const t = setTimeout(() => c.abort(), 20000);
+  return fetch(url, { ...opts, signal: c.signal }).finally(() => clearTimeout(t));
+};
+const db = createClient(SUPABASE_URL, SUPABASE_ANON, { global: { fetch: timedFetch } });
+
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const fmtDay = d => d ? new Date(d + "T00:00:00").toLocaleDateString("en-AU", {weekday:"short", day:"numeric", month:"short", year:"numeric"}) : "—";
+const kg = v => v == null || v === "" ? "" : String(+(+v).toFixed(2));
+const FUL = { pickup_butcher: "Pick-up from the shop", pickup_farm: "Pick-up — farm collects", delivery: "Delivery" };
+
+let ME = null, LIST = [], DOC = null, SHOW = "all", CAN_PACK = false;
+
+// ── the three parts of the workbook ─────────────────────────────
+const head = (title, sub) => { const f = DOC.farm, h = DOC.harvest; return `<header>
+  <div class="who"><b>${esc(f.name)}</b><span>${esc([f.phone, f.email].filter(Boolean).join(" · "))}</span></div>
+  <div class="what"><b>${esc(title)}</b>${esc(h.code)}${h.title ? " · " + esc(h.title) : ""}${sub ? "<br>" + esc(sub) : ""}</div></header>`; };
+
+function pageSummary(){
+  const h = DOC.harvest, boxes = DOC.boxes;
+  const bySize = new Map(); boxes.forEach(b => bySize.set(b.pack, (bySize.get(b.pack) || 0) + 1));
+  const totalKg = boxes.reduce((a, b) => a + (+b.size_kg || 0), 0), cartons = boxes.reduce((a, b) => a + (b.cartons || 0), 0);
+  return `<section class="page" data-part="summary">${head("Summary", h.kind === "lamb" ? "Lamb" : "Beef")}
+    <div class="dates">
+      <div><span>Harvest</span><b>${fmtDay(h.harvest_on)}</b></div>
+      <div><span>Butchering</span><b>${fmtDay(h.butcher_on)}</b></div>
+      <div><span>Pick-up</span><b>${fmtDay(h.pickup_on)}</b></div>
+      ${h.delivery_on ? `<div><span>Local delivery</span><b>${fmtDay(h.delivery_on)}</b></div>` : ""}
+      ${h.interstate_on ? `<div><span>Interstate${h.interstate_note ? " — " + esc(h.interstate_note) : ""}</span><b>${fmtDay(h.interstate_on)}</b></div>` : ""}
+      ${h.head ? `<div><span>Head</span><b>${h.head}</b></div>` : ""}
+      ${h.carcass_kg ? `<div><span>Cold carcass</span><b>${kg(h.carcass_kg)} kg</b></div>` : ""}
+    </div>
+    ${h.butcher_note ? `<p class="gap" style="margin-top:12px">${esc(h.butcher_note)}</p>` : ""}
+    <h2>Packs</h2>
+    <table><thead><tr><th>Pack</th><th class="num">How many</th></tr></thead><tbody>
+      ${[...bySize].map(([p, n]) => `<tr><td>${esc(p)}</td><td class="num">${n}</td></tr>`).join("")}</tbody>
+      <tfoot><tr><td>${boxes.length} pack${boxes.length === 1 ? "" : "s"} · ${kg(totalKg)} kg · ${cartons} carton${cartons === 1 ? "" : "s"}</td><td></td></tr></tfoot></table>
+    <h2>Boxes</h2>
+    <table><thead><tr><th>Box</th><th>Customer</th><th>Pack</th><th>How it leaves</th><th>Of</th></tr></thead><tbody>
+      ${boxes.map(b => `<tr><td class="box">${b.box_no}</td><td>${esc(b.customer)}</td><td>${esc(b.pack)}</td>
+        <td><span class="tag ${b.fulfilment}">${esc(FUL[b.fulfilment])}</span></td><td class="m">${b.idx} of ${b.of}</td></tr>`).join("")}
+      ${DOC.remaining_sheet ? `<tr><td class="box">+</td><td>Remaining</td><td colspan="3">Everything left over — see the last sheet</td></tr>` : ""}</tbody></table>
+  </section>`;
+}
+
+function pageCustomers(){
+  const boxes = DOC.boxes;
+  const firstOfLine = new Map(); boxes.forEach(b => { if(!firstOfLine.has(b.line_id)) firstOfLine.set(b.line_id, b.box_no); });
+  return `<section class="page" data-part="customers">${head("Customers", `${boxes.length} box${boxes.length === 1 ? "" : "es"}`)}
+    <table><thead><tr><th>Box</th><th>Customer</th><th>Phone</th><th>How it leaves</th><th>Pack</th><th>Of</th><th class="num">Packed kg</th><th>Packed</th></tr></thead><tbody>
+      ${boxes.map(b => { const first = firstOfLine.get(b.line_id) === b.box_no, s = b.ship;
+        return `<tr><td class="box">${b.box_no}</td>
+        <td>${esc(b.customer)}${b.to_name && b.to_name !== b.customer ? `<br><small>for ${esc(b.to_name)}</small>` : ""}<br><small>${esc(b.order_ref)}</small></td>
+        <td class="m">${esc(b.to_phone || "")}</td>
+        <td><span class="tag ${b.fulfilment}">${esc(FUL[b.fulfilment])}</span>${s ? `<br><small>${esc([s.street, s.suburb, s.state, s.postcode].filter(Boolean).join(", "))}
+          ${s.deliver_on ? "<br>" + fmtDay(s.deliver_on) : ""}${s.carrier_ref ? " · label " + esc(s.carrier_ref) : ""}${s.instructions ? "<br>" + esc(s.instructions) : ""}</small>` : ""}</td>
+        <td>${esc(b.pack)}${b.cartons > 1 ? `<br><small>${b.cartons} cartons</small>` : ""}</td><td class="m">${b.idx} of ${b.of}</td>
+        ${first ? `<td class="num"><input class="kgin" type="number" step="any" min="0" inputmode="decimal" data-line="${b.line_id}" value="${esc(b.actual_kg ?? "")}" ${CAN_PACK ? "" : "disabled"}
+              aria-label="Packed weight for box ${b.box_no}"></td>
+            <td class="tick"><input type="checkbox" data-line="${b.line_id}" ${b.packed ? "checked" : ""} ${CAN_PACK ? "" : "disabled"} aria-label="Box ${b.box_no} packed"></td>`
+          : `<td class="num" colspan="2"><small>with box ${firstOfLine.get(b.line_id)}</small></td>`}</tr>`; }).join("")}</tbody></table>
+    ${boxes.some(b => b.line_qty > 1) ? `<p style="font-size:12.5px;color:var(--ink2)">Where one order has several packs of the same kind, weigh them together and write the total against the first box.</p>` : ""}
+  </section>`;
+}
+
+// A sheet's last column is a size in grams when its heading says so;
+// then it can be totalled, and doubled for a pack that is the sheet twice.
+function sheetTable(sh, mult){
+  const cols = sh.columns || [], gi = cols.findIndex(c => /\(g\)/i.test(c));
+  let grams = 0;
+  const body = (sh.rows || []).map(r => `<tr>${cols.map((c, j) => {
+    let v = r[j] ?? "";
+    if(j === gi && /^\d+(\.\d+)?$/.test(String(v).trim())){ const g = Number(v) * mult; grams += g; v = String(+g.toFixed(0)); return `<td class="num">${esc(v)}</td>`; }
+    return `<td>${j === 0 ? "<b>" + esc(v) + "</b>" : esc(v)}</td>`; }).join("")}<td class="tick"><i></i></td></tr>`).join("");
+  return `<table><thead><tr>${cols.map((c, j) => `<th class="${j === gi ? "num" : ""}">${esc(c)}</th>`).join("")}<th>Packed</th></tr></thead><tbody>${body}</tbody>
+    ${gi >= 0 && grams ? `<tfoot><tr><td colspan="${Math.max(gi, 1)}">Total</td><td class="num">${kg(grams / 1000)} kg</td>${cols.slice(gi + 1).map(() => "<td></td>").join("")}<td></td></tr></tfoot>` : ""}</table>
+    ${(sh.notes || []).length ? `<div class="notes">${sh.notes.map(n => `<div><b>${esc(n[0])}</b><span>${esc(n[1])}</span></div>`).join("")}</div>` : ""}`;
+}
+function pageBox(b){
+  const mult = +b.sheet_multiple || 1, s = b.ship;
+  return `<section class="page" data-part="sheets">${head("Box " + b.box_no, b.order_ref)}
+    <div class="cust"><b>${esc(b.customer)}</b><span class="pack">${esc(b.pack)}</span>
+      ${mult !== 1 ? `<span class="mult">× ${kg(mult)} — every line on this sheet, ${kg(mult)} times over</span>` : ""}
+      <span class="tag ${b.fulfilment}">${esc(FUL[b.fulfilment])}</span><span class="tag">Box ${b.idx} of ${b.of}</span>${b.cartons > 1 ? `<span class="tag">${b.cartons} cartons</span>` : ""}</div>
+    ${b.butcher_note ? `<p class="gap">${esc(b.butcher_note)}</p>` : ""}
+    ${b.cut_sheet ? sheetTable(b.cut_sheet, mult) : `<p class="none">No cut sheet for this pack.</p>`}
+    ${s ? `<h2>Going by carrier</h2><p style="margin:0;font-size:13.5px">${esc(b.to_name)} · ${esc(b.to_phone || "")}<br>${esc([s.street, s.suburb, s.state, s.postcode].filter(Boolean).join(", "))}
+      ${s.deliver_on ? "<br>Delivery " + fmtDay(s.deliver_on) : ""}${s.carrier_ref ? " · shipping label " + esc(s.carrier_ref) : ""}${s.instructions ? "<br>" + esc(s.instructions) : ""}</p>` : ""}
+  </section>`;
+}
+function pageRemaining(){
+  return `<section class="page" data-part="sheets">${head("Remaining", "what is left over")}
+    <div class="cust"><b>Remaining</b><span class="pack">All remaining</span></div>${sheetTable(DOC.remaining_sheet, 1)}</section>`;
+}
+
+function paint(){
+  const h = DOC.harvest;
+  $("#bar").innerHTML = `<div class="controls">
+      <label class="grow">Harvest<select id="hsel">${LIST.map(x => `<option value="${x.id}" ${x.id === h.id ? "selected" : ""}>${esc(x.code)} · ${esc(x.kind)} · ${fmtDay(x.harvest_on)} · ${x.packs} pack${x.packs === 1 ? "" : "s"}${x.released ? "" : " · not released"}</option>`).join("")}</select></label>
+      <label>Show<div class="chips" id="show">${[["all", "Everything"], ["summary", "Summary"], ["customers", "Customers"], ["sheets", "Cut sheets"]].map(([k, l]) =>
+        `<button class="chip" data-show="${k}" aria-pressed="${SHOW === k}">${l}</button>`).join("")}</div></label>
+      <button id="print">Print</button></div>
+    ${ME.role !== "butcher" && !h.released ? `<p class="gap"><b>Not released.</b> This is what the butcher will see. They can't see it until you tick “The butcher can see this harvest's sheets” on the harvest.</p>` : ""}`;
+  $("#out").innerHTML = DOC.boxes.length || DOC.remaining_sheet
+    ? pageSummary() + pageCustomers() + DOC.boxes.map(pageBox).join("") + (DOC.remaining_sheet ? pageRemaining() : "")
+    : `<p class="none">No packs on this harvest yet.</p>`;
+  applyShow();
+}
+function applyShow(){
+  document.querySelectorAll("#out .page").forEach(p => p.hidden = SHOW !== "all" && p.dataset.part !== SHOW);
+  document.querySelectorAll("#show .chip").forEach(c => c.setAttribute("aria-pressed", String(c.dataset.show === SHOW)));
+}
+
+async function open(id){
+  $("#out").innerHTML = `<p class="loading">Fetching the sheets…</p>`;
+  const { data, error } = await db.rpc("butcher_sheet", { p_harvest: id });
+  if(error){ $("#out").innerHTML = `<p class="gap">${esc(error.message)}</p>`; return; }
+  DOC = data; history.replaceState(null, "", "#" + id); paint();
+}
+
+$("#bar").addEventListener("change", e => { if(e.target.id === "hsel") open(e.target.value); });
+$("#bar").addEventListener("click", e => {
+  const c = e.target.closest("[data-show]");
+  if(c){ SHOW = c.dataset.show; applyShow(); }
+  if(e.target.id === "print") window.print();
+});
+// A tick or a weight saves as it is made.
+$("#out").addEventListener("change", async e => {
+  const t = e.target; if(!t.dataset.line) return;
+  const row = t.closest("tr"), tick = row.querySelector('input[type=checkbox]'), w = row.querySelector(".kgin");
+  const weight = w.value.trim() === "" ? 0 : Number(w.value);
+  const { error } = await db.rpc("butcher_pack", { p_line: t.dataset.line, p_packed: tick.checked, p_actual_kg: weight });
+  if(error){ alert(error.message); return; }
+  DOC.boxes.filter(b => b.line_id === t.dataset.line).forEach(b => { b.packed = tick.checked; b.actual_kg = weight || null; });
+});
+
+function signIn(){
+  return new Promise(resolve => {
+    $("#out").innerHTML = `<form class="login" id="login"><label>Email<input name="email" type="email" autocomplete="username" required></label>
+      <label>Password<input name="pw" type="password" autocomplete="current-password" required></label>
+      <p class="err" id="lerr"></p><button>Sign in</button></form>`;
+    $("#login").onsubmit = async e => {
+      e.preventDefault();
+      const f = new FormData(e.target);
+      const { error } = await db.auth.signInWithPassword({ email: f.get("email"), password: f.get("pw") });
+      if(error){ $("#lerr").textContent = error.message; return; }
+      resolve();
+    };
+  });
+}
+window.__signOut = () => db.auth.signOut();
+$("#outbtn").onclick = async () => { if(confirm("Sign out?")){ await db.auth.signOut(); location.reload(); } };
+
+(async () => {
+  const { data: { session } } = await db.auth.getSession();
+  if(!session) await signIn();
+  $("#out").innerHTML = `<p class="loading">Loading…</p>`;
+  const { data } = await db.from("v_me").select("role,farm_name,logo_url").maybeSingle();
+  ME = data;
+  if(!ME){ $("#out").innerHTML = `<p class="gap">This login is not on a farm yet. Ask the farm to add you.</p>`; $("#outbtn").hidden = false; return; }
+  CAN_PACK = ["butcher", "owner", "manager"].includes(ME.role);
+  document.title = document.title.replace("Buloke Farm", ME.farm_name);
+  $("#tradingname").textContent = ME.farm_name;
+  if(ME.logo_url) document.querySelector(".masthead img").src = ME.logo_url;
+  // The butcher has nowhere else to go, so no menu: just a way out.
+  if(ME.role === "butcher") $("#outbtn").hidden = false;
+  else { $("#navbtn").hidden = false; window.__setFarm?.({ name: ME.farm_name, logo_url: ME.logo_url }); }
+  const res = await db.rpc("butcher_harvests");
+  if(res.error){ $("#out").innerHTML = `<p class="gap"><b>Not available yet.</b> ${esc(res.error.message)}</p>`; return; }
+  LIST = res.data || [];
+  if(!LIST.length){ $("#out").innerHTML = `<p class="none">Nothing has been released to you yet.</p>`; return; }
+  const want = location.hash.slice(1);
+  open((LIST.find(x => x.id === want) || LIST[0]).id);
+})();
+</script>
+</body>
+</html>

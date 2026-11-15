@@ -1,0 +1,71 @@
+# Every response.
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Frame-Options: DENY
+
+# The pages, the stylesheet and the scripts must never be served stale:
+# a price or a date fixed this morning has to be what people see this
+# afternoon.
+#
+# Pages serves clean URLs, so the browser asks for `/beef`, not
+# `/beef.html`. A `/*.html` rule alone matches the file name nobody
+# requests. Both forms are listed so the rule holds however the page is
+# reached. Add a line here for every new page.
+/
+  Cache-Control: no-cache, must-revalidate
+
+/beef
+  Cache-Control: no-cache, must-revalidate
+
+/lamb
+  Cache-Control: no-cache, must-revalidate
+
+/pies
+  Cache-Control: no-cache, must-revalidate
+
+/order
+  Cache-Control: no-cache, must-revalidate
+
+/buloke-farm
+  Cache-Control: no-cache, must-revalidate
+
+/aboutus
+  Cache-Control: no-cache, must-revalidate
+
+/why-buloke-meat
+  Cache-Control: no-cache, must-revalidate
+
+/our-difference
+  Cache-Control: no-cache, must-revalidate
+
+/how-to-cook-it
+  Cache-Control: no-cache, must-revalidate
+
+/recipes
+  Cache-Control: no-cache, must-revalidate
+
+/beef-recipes
+  Cache-Control: no-cache, must-revalidate
+
+/lamb-recipes
+  Cache-Control: no-cache, must-revalidate
+
+/dog-walking
+  Cache-Control: no-cache, must-revalidate
+
+/*.html
+  Cache-Control: no-cache, must-revalidate
+
+/site.css
+  Cache-Control: no-cache, must-revalidate
+
+/site.js
+  Cache-Control: no-cache, must-revalidate
+
+/config.js
+  Cache-Control: no-cache, must-revalidate
+
+# Photographs are named for what they show and replaced under a new name.
+/img/*
+  Cache-Control: public, max-age=2592000

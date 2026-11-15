@@ -1,0 +1,7 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "admin", "runtimeExecutable": "python", "runtimeArgs": [".claude/serve.py", "public", "8788"], "port": 8788 },
+    { "name": "website", "runtimeExecutable": "python", "runtimeArgs": [".claude/serve.py", "site", "8789"], "port": 8789 }
+  ]
+}
