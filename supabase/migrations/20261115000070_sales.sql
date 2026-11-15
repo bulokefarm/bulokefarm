@@ -488,10 +488,13 @@ grant select, insert, update, delete on
 
 -- An order with its sums. GST on a line is the line's rate; freight
 -- always carries 10%.
-drop view if exists v_harvest;
-drop view if exists v_customer;
-drop view if exists v_order;
-create view v_order with (security_invoker = on) as
+--
+-- create or replace, never drop: v_harvest and v_customer read
+-- v_order, and v_subscriber (73) reads v_customer. A drop here fails
+-- the moment anything depends on these — which is what a re-run of
+-- this file did once 73 existed. To change their columns, append; to
+-- reshape them, drop the dependents first and re-run what built them.
+create or replace view v_order with (security_invoker = on) as
 select o.id, o.farm_id, o.order_no,
        order_ref(fb.order_prefix, o.order_no)                    as ref,
        o.customer_id, c.name as customer_name, c.company as customer_company,
@@ -551,7 +554,7 @@ select o.id, o.farm_id, o.order_no,
 
 -- A harvest with what has been sold out of it. Cancelled orders are
 -- not sold.
-create view v_harvest with (security_invoker = on) as
+create or replace view v_harvest with (security_invoker = on) as
 select h.id, h.farm_id, h.code, h.kind, h.title, h.harvest_on, h.butcher_on, h.pickup_on,
        h.delivery_on, h.interstate_on, h.interstate_note, h.butcher_name, h.pickup_place,
        h.pickup_hours, h.status, h.butcher_released_at, h.head, h.live_kg, h.carcass_kg,
@@ -584,7 +587,7 @@ select h.id, h.farm_id, h.code, h.kind, h.title, h.harvest_on, h.butcher_on, h.p
       from v_order o
      where o.harvest_id = h.id and o.status <> 'cancelled') s on true;
 
-create view v_customer with (security_invoker = on) as
+create or replace view v_customer with (security_invoker = on) as
 select c.id, c.farm_id, c.name, c.company, c.email, c.phone, c.alt_phone, c.street, c.suburb,
        c.state, c.postcode, c.country, c.abn, c.note, c.source, c.created_at,
        coalesce(s.orders, 0)::int      as orders,
@@ -600,8 +603,7 @@ select c.id, c.farm_id, c.name, c.company, c.email, c.phone, c.alt_phone, c.stre
 
 -- An invoice with its sums, and the two lines of a BAS summary.
 -- What has been paid is what has been paid on the order.
-drop view if exists v_invoice;
-create view v_invoice with (security_invoker = on) as
+create or replace view v_invoice with (security_invoker = on) as
 select i.id, i.farm_id, i.invoice_no, i.order_id, i.customer_id, i.issued_on, i.due_on,
        i.bill_to, i.ship_to, i.ship_on, i.ship_via, i.tracking, i.note, i.sent_on, i.void,
        i.created_at,
@@ -632,8 +634,7 @@ select i.id, i.farm_id, i.invoice_no, i.order_id, i.customer_id, i.issued_on, i.
     select sum(amount_cents) as paid_cents from order_payment p where p.order_id = i.order_id) p on true;
 
 -- One row per postcode: the zone and the days the carrier is there.
-drop view if exists v_delivery_postcode;
-create view v_delivery_postcode with (security_invoker = on) as
+create or replace view v_delivery_postcode with (security_invoker = on) as
 select farm_id, carrier, postcode,
        min(region)                               as region,
        string_agg(distinct zone, ' / ')          as zone,

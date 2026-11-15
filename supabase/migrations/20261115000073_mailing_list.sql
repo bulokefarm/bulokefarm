@@ -77,8 +77,7 @@ create policy subscriber_delete on subscriber
 grant select, insert, update, delete on subscriber to authenticated;
 
 -- A subscriber, and whether they have ever ordered.
-drop view if exists v_subscriber;
-create view v_subscriber with (security_invoker = on) as
+create or replace view v_subscriber with (security_invoker = on) as
 select s.id, s.farm_id, s.email, s.first_name, s.last_name, s.state, s.status, s.status_on,
        s.status_note, s.opted_in_on, s.source, s.created_at,
        c.id                     as customer_id,

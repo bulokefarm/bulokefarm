@@ -70,6 +70,8 @@ tfoot td{font-weight:700;border-top:2px solid var(--ink);border-bottom:0}
 .tag{display:inline-block;border-radius:4px;padding:1px 7px;font-size:11.5px;font-weight:700;background:var(--paper);color:var(--ink2);white-space:nowrap}
 .tag.delivery{background:var(--warn-soft);color:var(--warn)}
 .kgin{width:86px;text-align:right;font-family:var(--mono);padding:6px 8px;margin:0}
+/* What the customer chose (soup bones or none): it changes what goes in the box, so it is loud. */
+.ans{display:inline-block;border:2px solid var(--ink);border-radius:6px;padding:4px 12px;font-size:15px;font-weight:700;margin:0 8px 12px 0}
 
 @page{margin:12mm;size:A4 portrait}
 @media print{
@@ -123,6 +125,7 @@ const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;
 const fmtDay = d => d ? new Date(d + "T00:00:00").toLocaleDateString("en-AU", {weekday:"short", day:"numeric", month:"short", year:"numeric"}) : "—";
 const kg = v => v == null || v === "" ? "" : String(+(+v).toFixed(2));
 const FUL = { pickup_butcher: "Pick-up from the shop", pickup_farm: "Pick-up — farm collects", delivery: "Delivery" };
+const answers = b => Object.entries(b.answers || {});
 
 let ME = null, LIST = [], DOC = null, SHOW = "all", CAN_PACK = false;
 
@@ -152,7 +155,7 @@ function pageSummary(){
       <tfoot><tr><td>${boxes.length} pack${boxes.length === 1 ? "" : "s"} · ${kg(totalKg)} kg · ${cartons} carton${cartons === 1 ? "" : "s"}</td><td></td></tr></tfoot></table>
     <h2>Boxes</h2>
     <table><thead><tr><th>Box</th><th>Customer</th><th>Pack</th><th>How it leaves</th><th>Of</th></tr></thead><tbody>
-      ${boxes.map(b => `<tr><td class="box">${b.box_no}</td><td>${esc(b.customer)}</td><td>${esc(b.pack)}</td>
+      ${boxes.map(b => `<tr><td class="box">${b.box_no}</td><td>${esc(b.customer)}</td><td>${esc(b.pack)}${answers(b).map(([k, v]) => `<br><small>${esc(k)}: ${esc(v)}</small>`).join("")}</td>
         <td><span class="tag ${b.fulfilment}">${esc(FUL[b.fulfilment])}</span></td><td class="m">${b.idx} of ${b.of}</td></tr>`).join("")}
       ${DOC.remaining_sheet ? `<tr><td class="box">+</td><td>Remaining</td><td colspan="3">Everything left over — see the last sheet</td></tr>` : ""}</tbody></table>
   </section>`;
@@ -169,7 +172,7 @@ function pageCustomers(){
         <td class="m">${esc(b.to_phone || "")}</td>
         <td><span class="tag ${b.fulfilment}">${esc(FUL[b.fulfilment])}</span>${s ? `<br><small>${esc([s.street, s.suburb, s.state, s.postcode].filter(Boolean).join(", "))}
           ${s.deliver_on ? "<br>" + fmtDay(s.deliver_on) : ""}${s.carrier_ref ? " · label " + esc(s.carrier_ref) : ""}${s.instructions ? "<br>" + esc(s.instructions) : ""}</small>` : ""}</td>
-        <td>${esc(b.pack)}${b.cartons > 1 ? `<br><small>${b.cartons} cartons</small>` : ""}</td><td class="m">${b.idx} of ${b.of}</td>
+        <td>${esc(b.pack)}${b.cartons > 1 ? `<br><small>${b.cartons} cartons</small>` : ""}${answers(b).map(([k, v]) => `<br><small><b>${esc(k)}: ${esc(v)}</b></small>`).join("")}</td><td class="m">${b.idx} of ${b.of}</td>
         ${first ? `<td class="num"><input class="kgin" type="number" step="any" min="0" inputmode="decimal" data-line="${b.line_id}" value="${esc(b.actual_kg ?? "")}" ${CAN_PACK ? "" : "disabled"}
               aria-label="Packed weight for box ${b.box_no}"></td>
             <td class="tick"><input type="checkbox" data-line="${b.line_id}" ${b.packed ? "checked" : ""} ${CAN_PACK ? "" : "disabled"} aria-label="Box ${b.box_no} packed"></td>`
@@ -197,6 +200,7 @@ function pageBox(b){
     <div class="cust"><b>${esc(b.customer)}</b><span class="pack">${esc(b.pack)}</span>
       ${mult !== 1 ? `<span class="mult">× ${kg(mult)} — every line on this sheet, ${kg(mult)} times over</span>` : ""}
       <span class="tag ${b.fulfilment}">${esc(FUL[b.fulfilment])}</span><span class="tag">Box ${b.idx} of ${b.of}</span>${b.cartons > 1 ? `<span class="tag">${b.cartons} cartons</span>` : ""}</div>
+    ${answers(b).length ? `<div>${answers(b).map(([k, v]) => `<span class="ans">${esc(k)}: ${esc(v)}</span>`).join("")}</div>` : ""}
     ${b.butcher_note ? `<p class="gap">${esc(b.butcher_note)}</p>` : ""}
     ${b.cut_sheet ? sheetTable(b.cut_sheet, mult) : `<p class="none">No cut sheet for this pack.</p>`}
     ${s ? `<h2>Going by carrier</h2><p style="margin:0;font-size:13.5px">${esc(b.to_name)} · ${esc(b.to_phone || "")}<br>${esc([s.street, s.suburb, s.state, s.postcode].filter(Boolean).join(", "))}

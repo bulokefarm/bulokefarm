@@ -73,6 +73,12 @@ select p.id, v.sku, v.name, v.label, v.size_kg, v.price_cents, v.cartons, v.mult
  where p.farm_id = current_farm() and p.slug = 'beef'
    and not exists (select 1 from product_option o where o.product_id = p.id and o.sku = v.sku);
 
+-- The one thing beef asks (migration 74): a choice, never a box to type in.
+-- Null means never set; a product cleared on purpose holds [] and is left alone.
+update product
+   set questions = '[{"label": "Soup bones", "choices": ["Yes please", "None"]}]'::jsonb
+ where farm_id = current_farm() and slug = 'beef' and questions is null;
+
 -- ------------------------------------------------------------
 -- Lamb
 -- ------------------------------------------------------------

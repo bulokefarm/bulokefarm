@@ -331,6 +331,17 @@ already knows — anyone can type anyone's email — so what was typed is
 kept on the order and **Sales** shows the two side by side. Five orders
 an hour from one email, forty in all, then it asks people to write.
 
+**A pack is what the cut sheet says it is.** The old shop's beef form
+had a free-text box for every cut. In five years they were filled in
+a handful of times, each a small promise the butcher then had to keep
+for one pack among a dozen; they did not come across. What a customer
+may choose is a question with a short list of answers
+(`product.questions`), never a box to type in. Beef asks one — soup
+bones, yes or none — and the answer (`order_line.answers`) prints on
+the box's cut sheet. The first choice is the standard: it is what an
+order gets if nothing is said. `place_order()` keeps only answers to
+questions the product really asks, from the choices it really offers.
+
 **Bank details are not in the repo.** They are typed into **Sales →
 Settings**, live in `farm_business`, and only an owner can change them.
 
@@ -547,6 +558,7 @@ rebuild, so anything depending on imported records has to be a seed.
 | 71 | What the butcher sees: `butcher_harvests()`, `butcher_sheet()`, and `butcher_pack()` to tick a pack off and weigh it |
 | 72 | The shop front, callable with no login: `shop_front()`, `delivery_lookup()`, `place_order()` |
 | 73 | The mailing list: `subscriber` with subscribed, unsubscribed and bounced; `import_subscribers()`, where the later change wins and an opt-out is never undone by an older yes; `v_subscriber` |
+| 74 | What a product asks on the order form: `product.questions`, `order_line.answers`, `answers_for()`. Choices only. Beef asks about soup bones. `shop_front()`, `place_order()`, `save_order()` and `butcher_sheet()` replaced whole to carry them |
 
 ### Seeds
 
@@ -658,7 +670,11 @@ done
   them gone. Current chains: `v_animal_current` ← `v_animal_clearance`;
   `v_cryo_location` ← `v_ai_semen`, `v_embryo`; `v_stock_year` and
   `v_stock_year_class` ← `v_stock_year_animal` ← `v_stock_entry`,
-  `v_stock_exit`.
+  `v_stock_exit`; `v_harvest` and `v_customer` ← `v_order`;
+  `v_subscriber` ← `v_customer`. The sales views are built with
+  `create or replace` and never dropped for exactly this reason: 70
+  dropped `v_customer` on every run, and stopped being re-runnable the
+  day 73 built a view on it.
 - **Adding an argument to a function creates a second function.**
   `create or replace` only replaces a matching argument list, so the old
   form survives and a call with the original arity then matches both —

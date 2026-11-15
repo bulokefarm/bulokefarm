@@ -447,7 +447,15 @@ const ORDER_F = ["id", "customer_id", "harvest_id", "placed_on", "source", "stat
   "ship_street", "ship_suburb", "ship_state", "ship_postcode", "ship_type", "ship_instructions", "deliver_on", "delivery_fee_cents",
   "carrier", "carrier_ref", "carrier_no", "tracking_url", "customer_note", "note"];
 const LINE_F = ["id", "product_option_id", "description", "qty", "size_kg", "actual_kg", "unit_cents", "discount_cents", "gst_rate",
-  "cartons", "for_butcher", "cut_sheet", "butcher_note", "packed"];
+  "cartons", "for_butcher", "cut_sheet", "answers", "butcher_note", "packed"];
+// What a product asks on the order form (migration 74): choices only,
+// the first one standard. A line's answers are every question its
+// product asks, each with a choice it offers.
+const questionsOf = l => productOf(l.product_option_id)?.questions || [];
+const answersOf = l => { const qs = questionsOf(l); if(!qs.length) return null;
+  return Object.fromEntries(qs.map(k => [k.label, k.choices.includes(l.answers?.[k.label]) ? l.answers[k.label] : k.choices[0]])); };
+const lineQuestions = (l, i) => questionsOf(l).map(k => `<label style="display:flex;gap:6px;align-items:center;font-size:12.5px;font-weight:700;white-space:nowrap">${esc(k.label)}
+  <select data-l="${i}" data-q="${esc(k.label)}" style="width:auto">${k.choices.map(c => `<option ${answersOf(l)[k.label] === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select></label>`).join("");
 const pick = (o, keys) => Object.fromEntries(keys.map(k => [k, o[k] ?? null]));
 const newLine = () => ({ description: "", qty: 1, unit_cents: 0, discount_cents: 0, gst_rate: 0, cartons: 1, for_butcher: true, packed: false });
 let ED = null;
@@ -580,7 +588,8 @@ function paintLines(){
       <td style="white-space:nowrap"><input type="checkbox" data-l="${i}" data-f="for_butcher" ${l.for_butcher ? "checked" : ""}>
         ${l.for_butcher ? `<button type="button" class="ghost small" data-act="sheet" data-i="${i}" title="Cut sheet for this line">${l.cut_sheet ? "Own sheet" : "Sheet"}</button>` : ""}</td>
       <td><button type="button" class="ghost small" data-act="delline" data-i="${i}" title="Remove line">×</button></td></tr>
-      ${l.for_butcher ? `<tr><td></td><td colspan="10"><input data-l="${i}" data-f="butcher_note" value="${esc(l.butcher_note || "")}" placeholder="Note to the butcher for this line (optional)"></td></tr>` : ""}`).join("") + `</tbody>`;
+      ${l.for_butcher ? `<tr><td></td><td colspan="10"><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">${lineQuestions(l, i)}
+        <input style="flex:1;min-width:220px" data-l="${i}" data-f="butcher_note" value="${esc(l.butcher_note || "")}" placeholder="Note to the butcher for this line (optional)"></div></td></tr>` : ""}`).join("") + `</tbody>`;
 }
 
 function orderSums(){
@@ -632,6 +641,7 @@ function onOrderInput(e){
     if(t.dataset.o === "ship_postcode" || t.dataset.o === "deliver_on") zoneHint(ED.o.ship_street ? ED.o.ship_postcode : (S.customers.find(x => x.id === ED.o.customer_id) || {}).postcode);
     paintTotals(); return;
   }
+  if(t.dataset.q !== undefined){ const l = ED.lines[+t.dataset.l]; l.answers = { ...answersOf(l), [t.dataset.q]: t.value }; return; }
   if(t.dataset.l !== undefined && t.type !== "checkbox" && t.dataset.f !== "product_option_id"){
     const l = ED.lines[+t.dataset.l], f = t.dataset.f;
     l[f] = t.dataset.money !== undefined ? cents(t.value)
@@ -648,7 +658,7 @@ async function onOrderChange(e){
     const l = ED.lines[+t.dataset.l], x = S.options.find(o => o.id === t.value), p = x && S.products.find(pp => pp.id === x.product_id);
     l.product_option_id = t.value || null;
     if(x) Object.assign(l, { description: x.name, size_kg: x.size_kg, unit_cents: x.price_cents, gst_rate: +p.gst_rate, cartons: x.cartons,
-                             for_butcher: p.from_harvest, cut_sheet: null });
+                             for_butcher: p.from_harvest, cut_sheet: null, answers: null });
     paintLines(); paintTotals();
   }
   if(t.dataset.l !== undefined && t.type === "checkbox"){ ED.lines[+t.dataset.l][t.dataset.f] = t.checked; paintLines(); }
@@ -725,7 +735,7 @@ async function saveOrder(){
   const real = lines.filter(l => (l.description || "").trim());
   if(!real.length){ alert("Add at least one line."); return false; }
   if(o.fulfilment !== "delivery") o.delivery_fee_cents = 0;
-  const id = await q(db.rpc("save_order", { p: { ...pick(o, ORDER_F), lines: real.map(l => pick(l, LINE_F)) } }));
+  const id = await q(db.rpc("save_order", { p: { ...pick(o, ORDER_F), lines: real.map(l => ({ ...pick(l, LINE_F), answers: answersOf(l) })) } }));
   o.id = id;
   await reload("orders", "harvests", "customers");
   return true;
@@ -1241,7 +1251,9 @@ function editProduct(id){
   const p = id ? { ...S.products.find(x => x.id === id) } : { kind: "other", active: true, from_harvest: true, deposit_cents: 0, gst_rate: 0, sort: 100 };
   let sheet = p.cut_sheet || null;
   let opts = id ? S.options.filter(o => o.product_id === id).map(o => ({ ...o })) : [{ name: "", price_cents: 0, cartons: 1, sheet_multiple: 1, active: true }];
-  const d = dialog(`<form method="dialog"><div class="dhead"><h2>${id ? esc(p.name) : "New product"}</h2></div><div class="dbody"><div class="grid">${formHtml(PROD_SPEC, p)}</div>
+  const d = dialog(`<form method="dialog"><div class="dhead"><h2>${id ? esc(p.name) : "New product"}</h2></div><div class="dbody"><div class="grid">${formHtml(PROD_SPEC, p)}
+      <label class="wide">Asked on the order form — one question per line, as “Question: standard choice | other choice”. Choices only; customers never type a request
+        <textarea name="questions_text" rows="2" placeholder="Soup bones: Yes please | None">${esc((p.questions || []).map(k => `${k.label}: ${k.choices.join(" | ")}`).join("\n"))}</textarea></label></div>
     <p style="margin:10px 0 0"><button type="button" class="ghost small" data-act="sheet">Standard cut sheet…</button> <span id="shs" style="font-size:12.5px;color:var(--ink2)"></span></p>
     <h3>Sizes</h3><div style="overflow-x:auto"><table class="lines" id="po"></table></div><p style="margin:8px 0"><button type="button" class="ghost small" data-act="add">+ Size</button></p></div>
     <div class="dfoot"><button type="button" class="ghost" data-act="close">Cancel</button>${CAN_WRITE ? `<button type="button" data-act="save">Save</button>` : ""}</div></form>`, true);
@@ -1269,6 +1281,9 @@ function editProduct(id){
     if(a.act === "osheet"){ const o = opts[+a.i]; editSheet(o.cut_sheet || sheet, "Cut sheet — " + (o.name || "this size"), sh => { o.cut_sheet = sh; paint(); }, true); }
     if(a.act === "save"){
       const v = formRead(PROD_SPEC, d.querySelector("form")); v.gst_rate = Number(v.gst_rate || 0); v.cut_sheet = sheet;
+      // [] and not null when there are none: null means "never set" to migration 74's one-time fill.
+      v.questions = d.querySelector("[name=questions_text]").value.split("\n").map(line => { const at = line.indexOf(":"); if(at < 1) return null;
+        const choices = line.slice(at + 1).split("|").map(c => c.trim()).filter(Boolean); return choices.length > 1 ? { label: line.slice(0, at).trim(), choices } : null; }).filter(Boolean);
       if(!v.name || !/^[a-z0-9-]{2,60}$/.test(v.slug || "")){ alert("A product needs a name and a web address of lower-case letters, digits and hyphens."); return; }
       const pid = id || (await q(db.from("product").insert(v).select("id")))[0].id;
       if(id) await q(db.from("product").update(v).eq("id", id));
@@ -1291,7 +1306,8 @@ function viewProducts(){
         <td class="m">${esc(o.sku || "")}</td><td class="num">${kg(o.size_kg)}</td><td class="num">${money(o.price_cents)}</td>
         <td class="num">${o.size_kg ? money(Math.round(o.price_cents / o.size_kg)) : "—"}</td><td class="num">${o.cartons}</td>
         <td>${o.cut_sheet ? "its own" : p.cut_sheet ? `standard${+o.sheet_multiple !== 1 ? " × " + kg(o.sheet_multiple) : ""}` : "—"}</td><td></td></tr>`).join("") +
-      `</tbody></table><p class="lede" style="margin-top:6px">${p.deposit_cents ? "Deposit " + money(p.deposit_cents) + " per pack · " : ""}${+p.gst_rate ? "GST 10%" : "GST free"}${p.local_only ? " · local only" : ""}
+      `</tbody></table><p class="lede" style="margin-top:6px">${p.deposit_cents ? "Deposit " + money(p.deposit_cents) + " per pack · " : ""}${+p.gst_rate ? "GST 10%" : "GST free"}${p.local_only ? " · local only" : ""}${
+        (p.questions || []).map(k => ` · asks ${esc(k.label)} (${esc(k.choices.join(" / "))})`).join("")}
         ${CAN_WRITE ? ` · <a href="#" data-act="product" data-id="${p.id}">Edit</a>` : ""}</p>`).join("");
 }
 
