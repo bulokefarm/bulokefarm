@@ -469,6 +469,13 @@ h1 + .lede, h2 + .lede { margin-top: var(--s5); }
 .choice-sub { display: block; color: var(--muted); font-size: .9375rem; line-height: 1.45; }
 .choice-price { flex: none; font-weight: 700; white-space: nowrap; }
 
+/* a product's question (beef: soup bones): its few choices side by side */
+.choices-row { display: flex; flex-wrap: wrap; }
+.choices-row .choice { flex: 1 1 132px; align-items: center; gap: var(--s2); padding-inline: var(--s3); }
+.choices-row .choice-title { font-size: 1rem; }
+.choices-row .choice input { margin-top: 0; }
+.ask-help { margin: var(--s2) 0 0; }
+
 .qty {
   display: inline-flex; align-items: stretch;
   border: 1px solid var(--field); border-radius: var(--radius-sm); background: var(--surface-2);
@@ -534,6 +541,10 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline-offs
 .cart-sub { display: block; color: var(--muted); font-size: .9375rem; }
 .cart-amount { font-weight: 700; white-space: nowrap; text-align: right; }
 .cart-controls { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: var(--s4); }
+/* the same question on a line of the order: said quietly, changed in place */
+.cart-asks { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: var(--s2) var(--s4); }
+.cart-ask { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2); max-width: 100%; color: var(--muted); font-size: .9375rem; }
+.cart-ask select { width: auto; min-height: 44px; padding: var(--s2) var(--s3); background: var(--bg-2); }
 .cart-empty { padding: var(--s4); border: 1px dashed var(--field); border-radius: var(--radius-sm); color: var(--muted); }
 
 .cart-add { margin-bottom: var(--s5); }

@@ -4,9 +4,11 @@
  *
  *   1. Paints the header and footer, so there is one copy of each.
  *   2. Keeps the order (the "cart") in localStorage under bf.cart as
- *      [{option_id, qty}] — ids and quantities only. Names and prices are
- *      always read fresh from the shop, and the server ignores any price
- *      a browser sends anyway.
+ *      [{option_id, qty, answers}] — ids, quantities, and the choice made
+ *      for anything the product asks (beef asks about soup bones). Names
+ *      and prices are always read fresh from the shop, and the server
+ *      ignores any price a browser sends anyway. Customers choose from what
+ *      is offered; there is deliberately no free-text request anywhere.
  *   3. Talks to the shop: three functions, and nothing else on the network.
  *        shop_front       what is for sale and when the next harvest is
  *        delivery_lookup  whether the carrier goes to a postcode, and when
@@ -127,7 +129,14 @@
         if (!d || !Array.isArray(d.products)) throw new Error(UNREACHABLE);
         d.harvests = Array.isArray(d.harvests) ? d.harvests : [];
         d.farm = d.farm || {};
-        d.products.forEach((p) => { p.options = Array.isArray(p.options) ? p.options : []; });
+        d.products.forEach((p) => {
+          p.options = Array.isArray(p.options) ? p.options : [];
+          // What the product asks the customer: [{label, choices}], first choice standard.
+          // An older shop sends none.
+          p.questions = (Array.isArray(p.questions) ? p.questions : [])
+            .filter((q) => q && typeof q.label === "string" && q.label && Array.isArray(q.choices) && q.choices.length)
+            .map((q) => ({ label: q.label, choices: q.choices.map(String) }));
+        });
         return d;
       });
     }
@@ -164,6 +173,12 @@
     const lo = Math.min.apply(null, prices), hi = Math.max.apply(null, prices);
     return (lo === hi ? "" : "from ") + priceText(p, lo);
   }
+
+  // The shop sends a question's label and choices and nothing more. Where the
+  // butcher's notes say what a question means, one line of it goes by the control.
+  const QUESTION_HELP = {
+    "Soup bones": "A small bag of marrow bones for soup, on top of the pack weight."
+  };
 
   // Only these have a page of their own; anything new in the shop goes to the order form.
   const PRODUCT_PAGES = { beef: 1, lamb: 1, pies: 1 };
@@ -216,9 +231,41 @@
 
   /* ---------------------------------------------------------- the order, kept in the browser */
 
+  // Lines are {option_id, qty, answers}. `answers` is what the customer chose
+  // for the product's questions ({"Soup bones": "None"}); a cart saved before
+  // there were questions has none, and that reads as the standard choices.
+
   const CART_KEY = "bf.cart";
   let memCart = null;          // stands in when localStorage is unavailable
   let onCartChange = null;     // the order page listens
+
+  // The answers a product actually asks for: each question, in its order,
+  // with the customer's choice if it is still on offer and otherwise the
+  // first (standard) one. Anything the product no longer asks is dropped.
+  function answersFor(p, given) {
+    const out = {};
+    p.questions.forEach((q) => {
+      const a = given ? given[q.label] : undefined;
+      out[q.label] = q.choices.indexOf(a) >= 0 ? a : q.choices[0];
+    });
+    return out;
+  }
+
+  // "Soup bones: None", for a line of text
+  const answersText = (answers) => Object.keys(answers).map((k) => k + ": " + answers[k]).join(", ");
+
+  // Two packs of the same size are one line only if they were answered alike.
+  function lineKey(it) {
+    const a = it.answers || {};
+    return it.option_id + "|" + JSON.stringify(Object.keys(a).sort().map((k) => [k, a[k]]));
+  }
+
+  // Add a line, or its quantity to the line it matches.
+  function mergeLine(cart, line) {
+    const same = cart.find((x) => lineKey(x) === lineKey(line));
+    if (same) same.qty = clampQty(same.qty + line.qty);
+    else if (cart.length < MAX_LINES) cart.push(line);
+  }
 
   function readCart() {
     let raw = memCart;
@@ -229,9 +276,11 @@
     if (!Array.isArray(raw)) return out;
     raw.forEach((it) => {
       if (!it || typeof it.option_id !== "string" || !it.option_id) return;
-      const same = out.find((x) => x.option_id === it.option_id);
-      if (same) same.qty = clampQty(same.qty + clampQty(it.qty));
-      else if (out.length < MAX_LINES) out.push({ option_id: it.option_id, qty: clampQty(it.qty) });
+      const answers = {};
+      if (it.answers && typeof it.answers === "object" && !Array.isArray(it.answers)) {
+        Object.keys(it.answers).forEach((k) => { if (typeof it.answers[k] === "string") answers[k] = it.answers[k]; });
+      }
+      mergeLine(out, { option_id: it.option_id, qty: clampQty(it.qty), answers: answers });
     });
     return out;
   }
@@ -246,11 +295,21 @@
     paintCartCount();
   }
 
-  function addToCart(optionId, qty) {
+  // Bring every line whose product we know into step with what that product
+  // asks today, and fold together lines that have become the same.
+  function tidyCart(index) {
+    const before = readCart(), after = [];
+    before.forEach((it) => {
+      const hit = index[it.option_id];
+      mergeLine(after, hit ? { option_id: it.option_id, qty: it.qty, answers: answersFor(hit.p, it.answers) } : it);
+    });
+    if (JSON.stringify(after) !== JSON.stringify(before)) writeCart(after);
+    return after;
+  }
+
+  function addToCart(optionId, qty, answers) {
     const cart = readCart();
-    const same = cart.find((x) => x.option_id === optionId);
-    if (same) same.qty = clampQty(same.qty + qty);
-    else if (cart.length < MAX_LINES) cart.push({ option_id: optionId, qty: clampQty(qty) });
+    mergeLine(cart, { option_id: optionId, qty: clampQty(qty), answers: answers || {} });
     writeCart(cart);
   }
 
@@ -467,6 +526,13 @@
               (o.size_kg == null && o.label && o.name !== o.label ? '<span class="choice-sub">' + esc(o.name) + "</span>" : "") +
               '</span><span class="choice-price">' + esc(priceText(p, o.price_cents)) + "</span></label>").join("") +
           "</div></fieldset>" +
+          p.questions.map((q, n) =>
+            "<fieldset><legend>" + esc(q.label) + '</legend><div class="choices choices-row">' +
+              q.choices.map((c, i) =>
+                '<label class="choice"><input type="radio" name="ask' + n + '" value="' + esc(c) + '"' + (i === 0 ? " checked" : "") + ">" +
+                '<span class="choice-text"><span class="choice-title">' + esc(c) + "</span></span></label>").join("") +
+            "</div>" + (QUESTION_HELP[q.label] ? '<p class="fine ask-help">' + esc(QUESTION_HELP[q.label]) + "</p>" : "") +
+            "</fieldset>").join("") +
           '<div class="buy-row">' +
             '<div><label class="label" for="buy-qty">Quantity</label>' + qtyHtml("buy-qty", 1, "Quantity") + "</div>" +
             '<button class="btn" type="submit">Add to order</button>' +
@@ -503,7 +569,12 @@
         const picked = form.elements.option.value;
         if (!picked) return;
         const n = clampQty(qty.value);
-        addToCart(picked, n);
+        const chosen = {};
+        p.questions.forEach((q, i) => { chosen[q.label] = form.elements["ask" + i].value; });
+        // Lines saved before the product asked anything take its standard
+        // answers first, so a like-for-like pack joins its line.
+        tidyCart(optionIndex(shop));
+        addToCart(picked, n, answersFor(p, chosen));
         paintQty(1);
         status.innerHTML = "Added to your order." + ' <a href="/order">Review and place your order &rarr;</a>';
       });
@@ -546,9 +617,14 @@
         total += o.price_cents * it.qty;
         deposit += (p.deposit_cents || 0) * it.qty;
         est = est || isEstimate(p);
-        return '<li class="cart-line" data-id="' + esc(o.id) + '">' +
+        const chosen = answersFor(p, it.answers);
+        return '<li class="cart-line" data-key="' + esc(lineKey(it)) + '">' +
           '<div><span class="cart-name">' + esc(o.name) + '</span><span class="cart-sub">' + esc(lineSub(p, o)) + "</span></div>" +
           '<div class="cart-amount">' + esc(priceText(p, o.price_cents * it.qty)) + "</div>" +
+          (p.questions.length ? '<div class="cart-asks">' + p.questions.map((q) =>
+            '<label class="cart-ask"><span>' + esc(q.label) + '</span><select data-ask="' + esc(q.label) + '">' +
+              q.choices.map((c) => '<option value="' + esc(c) + '"' + (c === chosen[q.label] ? " selected" : "") + ">" + esc(c) + "</option>").join("") +
+            "</select></label>").join("") + "</div>" : "") +
           '<div class="cart-controls">' + qtyHtml("", it.qty, "Quantity of " + o.name) +
             '<button type="button" class="link-btn" data-remove>Remove<span class="sr-only"> ' + esc(o.name) + "</span></button></div>" +
           "</li>";
@@ -584,38 +660,66 @@
         : "";
     }
 
-    function setQty(id, qty) {
+    // A line is found again by its key: which pack, answered how.
+    const lineEl = (key) => $$(".cart-line", lines).find((x) => x.dataset.key === key);
+
+    function setQty(key, qty) {
       const cart = readCart();
-      const it = cart.find((x) => x.option_id === id);
+      const it = cart.find((x) => lineKey(x) === key);
       if (!it) return;
       it.qty = clampQty(qty);
       writeCart(cart);
       paintCart();
     }
 
+    // Change one answer on one line. If that makes it the same as another
+    // line, the two become one. Returns the line's key afterwards.
+    function setAnswer(key, label, choice) {
+      const cart = readCart();
+      const it = cart.find((x) => lineKey(x) === key);
+      if (!it) return key;
+      const given = Object.assign({}, it.answers);
+      given[label] = choice;
+      it.answers = answersFor(index[it.option_id].p, given);
+      const now = lineKey(it);
+      const folded = [];
+      cart.forEach((l) => mergeLine(folded, l));
+      writeCart(folded);
+      paintCart();
+      return now;
+    }
+
     lines.addEventListener("click", (ev) => {
       const li = ev.target.closest(".cart-line");
       if (!li) return;
-      const id = li.dataset.id;
+      const key = li.dataset.key;
       const step = ev.target.closest("[data-step]");
       if (step) {
-        const it = readCart().find((x) => x.option_id === id);
+        const it = readCart().find((x) => lineKey(x) === key);
         if (!it) return;
         const dir = step.dataset.step;
-        setQty(id, it.qty + Number(dir));
+        setQty(key, it.qty + Number(dir));
         // The list was redrawn; put the keyboard back where it was.
-        const again = $$(".cart-line", lines).find((x) => x.dataset.id === id);
+        const again = lineEl(key);
         const btn = again && $('[data-step="' + dir + '"]', again);
         if (btn && !btn.disabled) btn.focus(); else if (again) $("input", again).focus();
       } else if (ev.target.closest("[data-remove]")) {
-        writeCart(readCart().filter((x) => x.option_id !== id));
+        writeCart(readCart().filter((x) => lineKey(x) !== key));
         paintCart();
         addSel.focus();
       }
     });
     lines.addEventListener("change", (ev) => {
       const li = ev.target.closest(".cart-line");
-      if (li && ev.target.matches("input")) setQty(li.dataset.id, ev.target.value);
+      if (!li) return;
+      if (ev.target.matches("select[data-ask]")) {
+        const label = ev.target.dataset.ask;
+        const again = lineEl(setAnswer(li.dataset.key, label, ev.target.value));
+        const sel = again && $$("select[data-ask]", again).find((s) => s.dataset.ask === label);
+        if (sel) sel.focus();
+      } else if (ev.target.matches("input")) {
+        setQty(li.dataset.key, ev.target.value);
+      }
     });
     // Enter in a quantity box means "that many", not "place the order".
     lines.addEventListener("keydown", (ev) => {
@@ -626,7 +730,7 @@
 
     addBtn.addEventListener("click", () => {
       if (!addSel.value) { addSel.focus(); return; }
-      addToCart(addSel.value, 1);
+      addToCart(addSel.value, 1, answersFor(index[addSel.value].p));
       addSel.value = "";
       say("");
       clearError();
@@ -707,9 +811,20 @@
         instructions: delivery ? val("instructions") : "",
         note: val("note"),
         website: form.elements.website.value,
-        items: cart.map((it) => ({ option_id: it.option_id, qty: it.qty }))
+        // Ids, quantities and choices only. A product that asks nothing sends no answers.
+        items: cart.map((it) => {
+          const item = { option_id: it.option_id, qty: it.qty };
+          const pr = index[it.option_id].p;
+          if (pr.questions.length) item.answers = answersFor(pr, it.answers);
+          return item;
+        })
       };
-      const ordered = cart.map((it) => ({ qty: it.qty, name: index[it.option_id].o.name, cut: !!index[it.option_id].p.from_harvest }));
+      const ordered = cart.map((it, i) => ({
+        qty: it.qty,
+        name: index[it.option_id].o.name,
+        answers: p.items[i].answers ? answersText(p.items[i].answers) : "",
+        cut: !!index[it.option_id].p.from_harvest
+      }));
 
       busy = true;
       submit.disabled = true;
@@ -765,7 +880,8 @@
           '<p class="eyebrow">Order received</p>' +
           '<h1 id="confirm-h">Thank you — we’ve got your order</h1>' +
           '<p class="confirm-ref"><span>Your reference</span><strong>' + esc(res.ref) + "</strong></p>" +
-          "<ul>" + ordered.map((l) => "<li>" + l.qty + " &times; " + esc(l.name) + "</li>").join("") + "</ul>" +
+          "<ul>" + ordered.map((l) => "<li>" + l.qty + " &times; " + esc(l.name) +
+            (l.answers ? " — " + esc(l.answers) : "") + "</li>").join("") + "</ul>" +
           "<h2>What happens next</h2>" +
           "<ol>" + steps.map((s) => "<li>" + esc(s) + "</li>").join("") + "</ol>" +
           "<p>Questions? Email " + mailto(email) + " and mention " + esc(res.ref) + ".</p>" +
@@ -787,6 +903,8 @@
         writeCart(live);
         say("Something in your order is no longer available and has been taken out.");
       }
+      // And what is left answers the questions its product asks today.
+      tidyCart(index);
 
       addSel.innerHTML = '<option value="">Choose a pack…</option>' + d.products.filter((p) => p.options.length).map((p) =>
         '<optgroup label="' + esc(p.name) + '">' + p.options.map((o) =>
