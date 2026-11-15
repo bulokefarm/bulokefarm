@@ -395,7 +395,8 @@
         '<div class="wrap footer-inner">' +
           '<div><img class="footer-logo" src="/img/logo.jpg" alt="Buloke Farm" width="591" height="510" loading="lazy"></div>' +
           "<div><h2>Buloke Farm</h2>" +
-            "<address><p>267 North Canal Rd<br>Trafalgar VIC 3824</p>" +
+            // The region, not the street: the farm's address is on invoices, not advertised here.
+            "<address><p>Gippsland, Victoria</p>" +
             "<p>" + mailto(EMAIL) + "</p></address>" +
             "<p>ABN 21 620 822 033</p></div>" +
           '<div><h2>Explore</h2><ul><li><a href="/">Beef &amp; Lamb Orders</a></li>' +
@@ -855,7 +856,7 @@
       }
       if (p.fulfilment === "pickup_farm") {
         return (h && h.pickup_on ? "Local pick-up: " + fmtDate(h.pickup_on) + ". " : "") +
-          "We’ll be in touch to arrange a time to pick up from us in Trafalgar.";
+          "We’ll be in touch to arrange where and when to pick up from us.";
       }
       const place = (h && h.pickup_place) || BUTCHER;
       return h && h.pickup_on
