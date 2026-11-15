@@ -51,9 +51,6 @@
 /lamb-recipes
   Cache-Control: no-cache, must-revalidate
 
-/dog-walking
-  Cache-Control: no-cache, must-revalidate
-
 /*.html
   Cache-Control: no-cache, must-revalidate
 

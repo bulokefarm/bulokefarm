@@ -339,8 +339,8 @@
     ["/why-buloke-meat", "Why Buloke Meat"],
     ["/our-difference", "Our Difference"],
     ["/how-to-cook-it", "How To Cook It"],
-    ["/recipes", "Recipes"],
-    ["/dog-walking", "Dog Walking"]
+    ["/recipes", "Recipes"]
+    // Dog Walking is off the site for now: the page is in hidden/ at the top of the repo.
   ];
   const NAV_PARENT = { "/beef-recipes": "/recipes", "/lamb-recipes": "/recipes" };
 

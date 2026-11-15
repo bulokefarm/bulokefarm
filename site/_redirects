@@ -11,3 +11,7 @@
 /beef-recipes-                                  /beef-recipes  301
 /lamb-recipes-1                                 /lamb-recipes  301
 /cart                                           /order         301
+
+# Off the site for now (the page is in hidden/ at the top of the repo). Temporary, so 302:
+# old links land on the shop instead of a not-found page. Remove this line to bring it back.
+/dog-walking                                    /              302

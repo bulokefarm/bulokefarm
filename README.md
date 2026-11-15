@@ -486,6 +486,9 @@ Build instructions are in `public/vendor/readme.md`.
 public/                 served as-is by Cloudflare Pages: admin.bulokefarm.com.au
 site/                   the public website, served as-is by a second Pages project
   config.js             which Supabase project and farm the shop talks to
+hidden/                 pages taken off the website for now (Dog Walking). Not served.
+                        To bring one back: move it into site/, add it to NAV in site.js
+                        and to _headers, and take its line out of site/_redirects
   vendor/supabase.js    the client, self-hosted, not a CDN (see its readme)
   _headers              cache and security headers, per clean URL
 supabase/
