@@ -396,7 +396,7 @@ create trigger invoice_no before insert on invoice
 
 -- BF-0042. Not lpad alone: lpad truncates, and order 12345 is not 1234.
 create or replace function order_ref(p_prefix text, p_no int) returns text
-language sql immutable as $$
+language sql immutable set search_path = public as $$
   select coalesce(nullif(p_prefix, ''), 'BF') || '-' ||
          case when p_no < 10000 then lpad(p_no::text, 4, '0') else p_no::text end
 $$;
@@ -663,7 +663,7 @@ grant select on v_order, v_harvest, v_customer, v_invoice, v_delivery_postcode t
 -- '' from a form field means "nothing"; jsonb_populate_record would
 -- try to read it as a date or a uuid and refuse the whole order.
 create or replace function blank_to_null(p jsonb) returns jsonb
-language sql immutable as $$
+language sql immutable set search_path = public as $$
   select coalesce(jsonb_object_agg(k, case when v = '""'::jsonb then 'null'::jsonb else v end), '{}'::jsonb)
     from jsonb_each(p) as e(k, v)
 $$;

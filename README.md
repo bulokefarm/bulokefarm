@@ -782,6 +782,9 @@ Supabase → Advisors → Security. Three warnings are expected and stay:
 - Leaked password protection disabled — a Pro-plan toggle.
 - `shop_front()`, `delivery_lookup()` and `place_order()` callable by
   anon — the public website (migration 72).
+- `butcher_harvests()`, `butcher_sheet()` and `butcher_pack()` callable
+  by signed-in users — the butcher's only way in (migration 71). Each
+  checks the caller's role itself.
 
 Anything else is new. User sign-ups are off in Authentication → Sign In /
 Providers; users are added by hand, below.
