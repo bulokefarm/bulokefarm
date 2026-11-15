@@ -936,7 +936,13 @@ async function viewMailing(){
   if(!S.subs){
     $("#out").innerHTML = `<p class="loading">Loading…</p>`;
     try { await reload("subs"); }
-    catch(e){ $("#out").innerHTML = `<p class="gap"><b>Not available yet.</b> ${esc(e.message)} — the mailing list migration (73) hasn't been run.</p>`; return; }
+    catch(e){
+      // Only a missing table means the migration has not been run. Anything else — a timeout, no signal — is said as it is.
+      const missing = /does not exist|schema cache|PGRST205|42P01/i.test(`${e.code || ""} ${e.message || ""}`);
+      $("#out").innerHTML = missing ? `<p class="gap"><b>Not available yet.</b> ${esc(e.message)} — the mailing list migration (73) hasn't been run.</p>`
+        : `<p class="gap"><b>The mailing list could not be loaded.</b> ${esc(e.message)} <button type="button" class="ghost small" data-act="mailingretry">Try again</button></p>`;
+      return;
+    }
   }
   const n = k => S.subs.filter(r => r.status === k).length, rows = mailingShown(), yes = rows.filter(r => r.status === "subscribed");
   $("#out").innerHTML = `<div class="controls noprint">
@@ -1493,6 +1499,7 @@ $("#out").addEventListener("click", safe(async e => {
   if(a.act === "sentinv"){ await q(db.from("invoice").update({ sent_on: today() }).eq("id", INV.inv.id)); await reload("invoices"); openInvoice(INV.inv.id); }
   if(a.act === "voidinv"){ if(!confirm(`Void invoice ${INV.inv.invoice_no}? The number is kept and never reused.`)) return;
     await q(db.from("invoice").update({ void: true }).eq("id", INV.inv.id)); await reload("invoices", "orders"); openInvoice(INV.inv.id); }
+  if(a.act === "mailingretry") await viewMailing();
   if(a.act === "newproduct") editProduct(null);
   if(a.act === "product") editProduct(a.id);
   if(a.act === "savebiz"){

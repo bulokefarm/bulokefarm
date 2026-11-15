@@ -369,6 +369,19 @@ harvest came to tell the butcher what to do with the eye fillet. The
 editor now reads the harvest afresh when it opens, and writes the sheet
 only if someone opened and changed it there.
 
+**A row rule asks its question once, not once a row.** Every table's
+rule ends in `can_read()`, `can_write()` or `my_role()`. Written bare,
+Postgres runs the call for every row it looks at, about a millisecond
+each on production; written `(select can_read())`, it runs once a
+statement. The difference is invisible on an empty table and fatal on a
+full one: it refused a breeding-values file (migration 66) and, when
+the selling tables were written bare again, it stopped the mailing list
+opening — 424 addresses each looked up among 46 customers is 19,500
+calls, 17 seconds against a limit of 8 (migration 80, which rewrote
+every rule and refuses to finish if a bare call is left). A new table's
+rule is written wrapped from the start:
+`using (farm_id = (select current_farm()) and (select can_read()))`.
+
 **Bank details are not in the repo.** They are typed into **Sales →
 Settings**, live in `farm_business`, and only an owner can change them.
 
@@ -657,6 +670,7 @@ rebuild, so anything depending on imported records has to be a seed.
 | 77 | The harvest balance: `harvest.boxes_for_sale`, `v_harvest_balance`. `butcher_sheet()`, `shop_front()` and `place_order()` replaced whole: the summary shows it, the website is told it, and a website order goes on the first open harvest with room. Takes the beef “Remaining” sheet off any lamb harvest that was given one by accident |
 | 78 | Where the carrier collects from: `farm_business.collect_name`, `collect_street`, `collect_suburb`, `collect_state`, `collect_postcode`, `collect_window`, `collect_note`. The collection row of the manifest is written from them |
 | 79 | The butcher's Delivery section and the labels: `butcher_delivery()`; `harvest.collect_on` and `collect_row`; the private `harvest-files` bucket with its three rules and `harvest_file_ok()` |
+| 80 | Every row rule asks `can_read()`, `can_write()` or `my_role()` once a statement instead of once a row. No change to who may do what; the mailing list opens again. Brings a rebuild into line with production, where the herd tables' rules were already in this form |
 
 ### Seeds
 
