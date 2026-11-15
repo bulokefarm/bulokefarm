@@ -851,8 +851,8 @@ serves clean URLs and the rule causes a redirect loop.
 
 | Thing | Where |
 |---|---|
-| Domain | VentraIP (`ns1-3.nameserver.net.au`), two CNAMEs: `admin` → `bulokefarm.pages.dev` and `www` → `bulokefarm-www.pages.dev`. The bare domain's four A records still point at Squarespace |
-| Main website | `site/`, a second Cloudflare Pages project (`bulokefarm-www`), live at `www.bulokefarm.com.au` since 15 November 2026. The bare domain `bulokefarm.com.au` is still answered by Squarespace, which redirects it to `www`; that ends with the Squarespace subscription. Pages takes a bare domain only when its DNS is at Cloudflare, so before Squarespace is cancelled the domain's DNS moves there (or the bare domain is forwarded some other way) |
+| Domain | Registered at VentraIP; its DNS is at Cloudflare (`clay` and `elsa.ns.cloudflare.com`, free plan) since 15 November 2026. Four records, DNS-only: `www` → `bulokefarm-www.pages.dev`, `admin` and `toland` → `bulokefarm.pages.dev`, and a `_dmarc` TXT. A fifth, the bare domain, is a proxied placeholder (`A @ 192.0.2.1`) that exists only so Cloudflare answers for it |
+| Main website | `site/`, a second Cloudflare Pages project (`bulokefarm-www`), live at `www.bulokefarm.com.au` since 15 November 2026. `bulokefarm.com.au` without the `www` is sent there by a Cloudflare redirect rule (`https://bulokefarm.com.au/*` → `https://www.bulokefarm.com.au/${1}`, 301, query string kept), with **Always Use HTTPS** on so plain http is caught too. Nothing points at Squarespace |
 | Carrier | Blackbird Logistics, booked through their Detrack account: the manifest is downloaded from **Sales → Delivery** and imported under Jobs. Its first row is the collection from the butcher's shop (**Sales → Settings**) |
 | Email | The farm's own Gmail mailbox, reached at `smtp.gmail.com:465` with an app password. What was sent is in that mailbox's Sent folder; the log is **Sales → Settings → Email**. Not 587: Supabase closes 25 and 587 to functions |
 | Hosting | Cloudflare Pages, project `bulokefarm` |
