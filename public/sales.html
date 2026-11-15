@@ -237,7 +237,7 @@ const BEEF_REMAINING = { columns: ["Cut", "Choices", "Butchering selection", "Si
 let ME = null, CAN_WRITE = false, OWNER = false;
 const S = { tab: "orders", harvest: null, status: "all", q: "", cq: "", invoiceId: null,
             harvests: [], products: [], options: [], orders: [], customers: [], invoices: [], biz: null,
-            subs: null, mstatus: "subscribed", mq: "", mail: [], balance: [], collect: [] };
+            subs: null, mstatus: "subscribed", mq: "", mail: [], balance: [], collect: [], past: [] };
 const LOADERS = {
   harvests:  () => q(db.from("v_harvest").select("*").order("harvest_on", { ascending: false })),
   products:  () => q(db.from("product").select("*").order("sort").order("name")),
@@ -253,6 +253,8 @@ const LOADERS = {
   // The day the carrier collects and whether that is a row of the manifest (79).
   // They are the harvest's, and v_harvest cannot be given new columns.
   collect:   () => q(db.from("harvest").select("id,collect_on,collect_row")).catch(e => { console.warn("collect", e); return []; }),
+  // Orders from before: what the old shop recorded (81). Looked back on, never added up.
+  past:      () => q(db.from("past_order").select("*").order("placed_at", { ascending: false }).limit(5000)).catch(e => { console.warn("past", e); return []; }),
   mail:      () => q(db.from("v_mail").select("id,kind,order_id,invoice_id,to_email,to_name,subject,status,error,created_at,sent_at,order_ref,invoice_no")
                        .order("created_at", { ascending: false }).limit(300))
 };
@@ -440,11 +442,85 @@ const harvestChips = (withAll) => {
     (withAll ? `<button class="chip" data-h="all" aria-pressed="${S.harvest === "all"}">All</button>` : "") +
     (withAll && loose ? `<button class="chip" data-h="none" aria-pressed="${S.harvest === "none"}">No harvest <small>${loose}</small></button>` : "") +
     S.harvests.slice(0, 10).map(h => `<button class="chip" data-h="${h.id}" aria-pressed="${S.harvest === h.id}">${esc(h.code)} <small>${esc(h.kind)}</small></button>`).join("") +
+    // Not a harvest: the orders the old shop took, kept to look back on (81).
+    (withAll && S.past.length ? `<button class="chip" data-h="past" aria-pressed="${S.harvest === "past"}">Earlier orders <small>${S.past.length}</small></button>` : "") +
     `</div>`;
 };
 
+// ── orders from before ──────────────────────────────────────────
+// What the Squarespace shop wrote down, 2021 to 2026 (migration 81). It
+// took a deposit and the freight; the pack was weighed and the balance
+// invoiced elsewhere. So the money here is what that shop took, not what
+// was sold, and none of it is counted into anything else on this page.
+const fmtAt = t => t ? new Date(t).toLocaleDateString("en-AU", { timeZone: "Australia/Melbourne", day: "2-digit", month: "short", year: "2-digit" }) : "—";
+const pastItems = p => (p.lines || []).map(l => `${l.qty} × ${l.name}${l.variant ? " — " + l.variant : ""}`).join(", ");
+const pastWho = p => p.bill_name || p.ship_name || S.customers.find(c => c.id === p.customer_id)?.name || p.email || "";
+const pastState = p => p.cancelled_at || p.fulfil_status === "cancelled" ? ["cancelled", "cancelled"]
+  : p.total_cents > 0 && p.refunded_cents >= p.total_cents ? ["cancelled", "refunded"]
+  : p.refunded_cents > 0 ? ["warn", "part refunded"]
+  : p.fulfil_status === "fulfilled" ? ["complete", "fulfilled"] : ["warn", "not marked fulfilled"];
+const pastOf = cid => S.past.filter(p => p.customer_id === cid);
+const pastRow = (p, withWho) => { const st = pastState(p);
+  return `<tr class="open-row ${st[1] === "cancelled" || st[1] === "refunded" ? "off" : ""}" data-act="past" data-id="${p.id}">
+    <td class="m">#${esc(p.ref)}<br><small>${fmtAt(p.placed_at)}</small></td>
+    ${withWho ? `<td>${esc(pastWho(p))}<br><small>${esc(p.bill_phone || p.ship_phone || p.email || "")}</small></td>` : ""}
+    <td>${esc(pastItems(p))}${p.note ? ` <span class="tag warn">note</span>` : ""}</td>
+    <td>${esc(p.ship_method || "—")}${p.ship_suburb ? `<br><small>${esc([p.ship_suburb, p.ship_state].filter(Boolean).join(" "))}</small>` : ""}</td>
+    <td class="num">${money(p.total_cents)}</td><td class="num">${p.refunded_cents ? money(p.refunded_cents) : "—"}</td>
+    <td><span class="tag ${st[0]}">${st[1]}</span></td></tr>`; };
+function viewPast(){
+  const term = S.q.trim().toLowerCase();
+  const rows = S.past.filter(p => !term || ["#" + p.ref, pastWho(p), p.ship_name, p.email, p.bill_phone, p.ship_phone, pastItems(p), p.ship_method,
+    p.ship_suburb, p.bill_suburb, p.note].join(" ").toLowerCase().includes(term));
+  const kept = rows.filter(p => !["cancelled", "refunded"].includes(pastState(p)[1])), sum = k => rows.reduce((a, p) => a + (+p[k] || 0), 0);
+  const years = S.past.map(p => new Date(p.placed_at).getFullYear()), span = years.length ? `${Math.min(...years)} to ${Math.max(...years)}` : "";
+  $("#out").innerHTML = `<div class="controls noprint"><label class="grow">Harvest${harvestChips(true)}</label></div>
+    <div class="controls noprint" style="padding-top:0">
+      <label class="grow">Find<input id="oq" type="search" value="${esc(S.q)}" placeholder="Name, email, phone, order number, pack, suburb"></label>
+      <button class="ghost" data-act="print">Print list</button></div>
+    <p class="lede" style="max-width:860px">Orders the old Squarespace shop took, ${span}. It took a deposit and the freight at checkout, and the balance was invoiced after the pack was weighed,
+      so “Taken” is what that shop collected, not what the pack sold for. They are kept to look back on and are not counted in any total elsewhere.</p>` +
+    (rows.length ? `<table><thead><tr><th>Order</th><th>Customer</th><th>What</th><th>How</th><th class="num">Taken</th><th class="num">Refunded</th><th>Status</th></tr></thead><tbody>` +
+      rows.map(p => pastRow(p, true)).join("") +
+      `</tbody><tfoot><tr><td colspan="4">${rows.length} order${rows.length === 1 ? "" : "s"}${kept.length !== rows.length ? `, ${rows.length - kept.length} cancelled or refunded` : ""}</td>
+        <td class="num">${money(sum("total_cents"))}</td><td class="num">${money(sum("refunded_cents"))}</td><td></td></tr></tfoot></table>`
+     : `<p class="none">No earlier orders${term ? " matching that" : ""}.</p>`) +
+    `<footer><span>${esc(ME.farm_name)} · earlier orders</span><span>Produced ${new Date().toLocaleString("en-AU")}</span></footer>`;
+  $("#oq").oninput = e => { S.q = e.target.value; const pos = e.target.selectionStart; viewPast(); const n = $("#oq"); n.focus(); n.setSelectionRange(pos, pos); };
+}
+function openPast(id){
+  const p = S.past.find(x => x.id === id); if(!p) return;
+  const st = pastState(p), c = S.customers.find(x => x.id === p.customer_id);
+  const addr = k => [p[k + "_street"], [p[k + "_suburb"], p[k + "_state"], p[k + "_postcode"]].filter(Boolean).join(" ")].filter(Boolean);
+  const block = (title, k) => p[k + "_name"] || addr(k).length ? `<div><span>${title}</span><b>${esc(p[k + "_name"] || "")}</b>
+    <small style="display:block;font-weight:400">${addr(k).map(esc).join("<br>")}${p[k + "_phone"] ? "<br>" + esc(p[k + "_phone"]) : ""}</small></div>` : "";
+  const d = dialog(`<div class="dhead"><h2>Squarespace order #${esc(p.ref)}</h2></div>
+    <div class="dbody">
+      <p class="lede" style="margin-top:12px">Placed ${fmtAt(p.placed_at)} · <span class="tag ${st[0]}">${st[1]}</span>${p.fulfilled_at ? ` · marked fulfilled ${fmtAt(p.fulfilled_at)}` : ""}${
+        p.cancelled_at ? ` · cancelled ${fmtAt(p.cancelled_at)}` : ""}. What the old shop recorded: the money is what it took at checkout, not what the pack sold for.</p>
+      <table><thead><tr><th class="num">Qty</th><th>Item</th><th>Pack</th><th>SKU</th><th class="num">Taken each</th></tr></thead><tbody>${
+        (p.lines || []).map(l => `<tr><td class="num">${l.qty}</td><td>${esc(l.name)}</td><td>${esc(l.variant || "")}</td><td class="m">${esc(l.sku || "")}</td><td class="num">${money(l.price_cents)}</td></tr>`).join("")}</tbody>
+        <tfoot><tr><td colspan="4">Items</td><td class="num">${money(p.subtotal_cents)}</td></tr>
+          ${p.shipping_cents ? `<tr><td colspan="4">Freight</td><td class="num">${money(p.shipping_cents)}</td></tr>` : ""}
+          ${p.tax_cents ? `<tr><td colspan="4">Tax</td><td class="num">${money(p.tax_cents)}</td></tr>` : ""}
+          <tr><td colspan="4">Taken</td><td class="num">${money(p.total_cents)}</td></tr>
+          ${p.refunded_cents ? `<tr><td colspan="4">Refunded</td><td class="num flag">${money(p.refunded_cents)}</td></tr>` : ""}</tfoot></table>
+      <div class="strip" style="margin-top:14px"><div><span>How it was to leave</span><b>${esc(p.ship_method || "—")}</b></div>
+        ${block("Billed to", "bill")}${block("Sent to", "ship")}
+        <div><span>Email</span><b style="font-weight:400">${esc(p.email || "—")}</b></div>
+        ${p.payment_method ? `<div><span>Paid by</span><b style="font-weight:400">${esc(p.payment_method)}</b><small style="display:block;font-weight:400" class="m">${esc(p.payment_ref || "")}</small></div>` : ""}</div>
+      ${p.note ? `<h3>Note</h3><p style="white-space:pre-wrap;margin:0">${esc(p.note)}</p>` : ""}
+    </div>
+    <div class="dfoot"><div class="left">${c ? `<button type="button" class="ghost" data-act="cust">Open ${esc(c.name)}</button>` : `<span style="font-size:13px;color:var(--ink2)">Not tied to a customer on file.</span>`}</div>
+      <button type="button" data-act="close">Close</button></div>`, true);
+  d.addEventListener("click", e => { const a = e.target.closest("[data-act]")?.dataset; if(!a) return;
+    if(a.act === "close") d.close();
+    if(a.act === "cust"){ d.close(); editCustomer(c.id); } });
+}
+
 // ── orders ──────────────────────────────────────────────────────
 function viewOrders(){
+  if(S.harvest === "past" && S.past.length) return viewPast();
   const term = S.q.trim().toLowerCase();
   const rows = S.orders.filter(o =>
     (S.harvest === "all" || (S.harvest === "none" ? !o.harvest_id : o.harvest_id === S.harvest)) &&
@@ -819,18 +895,21 @@ const CUST_SPEC = [["name", "Name"], ["company", "Company"], ["email", "Email", 
   ["street", "Street"], ["suburb", "Suburb"], ["state", "State"], ["postcode", "Postcode"], ["country", "Country"], ["abn", "ABN"], ["note", "Note", "area", 2]];
 async function editCustomer(id, after, preset){
   const c = id ? S.customers.find(x => x.id === id) : { country: "Australia", ...preset };
-  const theirs = id ? S.orders.filter(o => o.customer_id === id) : [];
+  const theirs = id ? S.orders.filter(o => o.customer_id === id) : [], before = id ? pastOf(id) : [];
   const d = dialog(`<form method="dialog"><div class="dhead"><h2>${id ? esc(c.name) : "New customer"}</h2></div>
     <div class="dbody"><div class="grid">${formHtml(CUST_SPEC, c)}</div>
     ${theirs.length ? `<h3>Orders</h3><table><tbody>${theirs.map(o => `<tr class="open-row" data-act="order" data-id="${o.id}"><td class="m">${esc(o.ref)}</td><td class="m">${fmt(o.placed_on)}</td>
       <td>${esc(o.items)}</td><td class="num">${money(o.total_cents)}</td><td class="num ${o.due_cents > 0 ? "flag" : ""}">${o.due_cents ? money(o.due_cents) + " owing" : "paid"}</td>
-      <td><span class="tag ${o.status}">${o.status}</span></td></tr>`).join("")}</tbody></table>` : ""}</div>
-    <div class="dfoot"><div class="left">${id && OWNER && !theirs.length ? `<button type="button" class="danger" data-act="del">Delete</button>` : ""}</div>
+      <td><span class="tag ${o.status}">${o.status}</span></td></tr>`).join("")}</tbody></table>` : ""}
+    ${before.length ? `<h3>Earlier orders — the old shop</h3><table><thead><tr><th>Order</th><th>What</th><th>How</th><th class="num">Taken</th><th class="num">Refunded</th><th>Status</th></tr></thead>
+      <tbody>${before.map(x => pastRow(x, false)).join("")}</tbody></table>` : ""}</div>
+    <div class="dfoot"><div class="left">${id && OWNER && !theirs.length && !before.length ? `<button type="button" class="danger" data-act="del">Delete</button>` : ""}</div>
       <button type="button" class="ghost" data-act="close">Cancel</button>${CAN_WRITE ? `<button type="button" data-act="save">Save</button>` : ""}</div></form>`);
   d.addEventListener("click", safe(async e => {
     const a = e.target.closest("[data-act]")?.dataset; if(!a) return;
     if(a.act === "close") d.close();
     if(a.act === "order"){ d.close(); editOrder(a.id); }
+    if(a.act === "past"){ d.close(); openPast(a.id); }
     if(a.act === "del"){ if(!confirm("Delete this customer?")) return; await q(db.from("customer").delete().eq("id", id)); await reload("customers"); d.close(); render(); }
     if(a.act === "save"){
       const v = formRead(CUST_SPEC, d.querySelector("form"));
@@ -911,12 +990,16 @@ function importCustomers(){
 function viewCustomers(){
   const term = S.cq.trim().toLowerCase();
   const rows = S.customers.filter(c => !term || [c.name, c.company, c.email, c.phone, c.suburb, c.postcode].join(" ").toLowerCase().includes(term));
+  // Orders from before, per customer: how many, and the latest (S.past is newest first).
+  const earlier = new Map();
+  S.past.forEach(p => { if(!p.customer_id) return; const e = earlier.get(p.customer_id) || { n: 0, last: p.placed_at }; e.n++; earlier.set(p.customer_id, e); });
   $("#out").innerHTML = `<div class="controls noprint"><label class="grow">Find<input id="cq" type="search" value="${esc(S.cq)}" placeholder="Name, email, phone, suburb"></label>
       ${CAN_WRITE ? `<button data-act="newcust">+ New customer</button><button class="ghost" data-act="importcust">Import…</button>` : ""}<button class="ghost" data-act="print">Print list</button></div>` +
     (rows.length ? `<table><thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Where</th><th class="num">Orders</th><th>Last</th><th class="num">Spent</th><th class="num">Owing</th></tr></thead><tbody>` +
       rows.map(c => `<tr class="open-row" data-act="cust" data-id="${c.id}"><td>${esc(c.name)}${c.company ? `<br><small>${esc(c.company)}</small>` : ""}</td>
         <td>${esc(c.email || "")}</td><td class="m">${esc(c.phone || "")}</td><td>${esc([c.suburb, c.state, c.postcode].filter(Boolean).join(" "))}</td>
-        <td class="num">${c.orders}</td><td class="m">${fmt(c.last_order_on)}</td><td class="num">${money(c.total_cents)}</td>
+        <td class="num">${c.orders}${earlier.has(c.id) ? `<br><small>+ ${earlier.get(c.id).n} earlier</small>` : ""}</td>
+        <td class="m">${c.last_order_on ? fmt(c.last_order_on) : earlier.has(c.id) ? fmtAt(earlier.get(c.id).last) : "—"}</td><td class="num">${money(c.total_cents)}</td>
         <td class="num ${c.due_cents > 0 ? "flag" : ""}">${c.due_cents ? money(c.due_cents) : "—"}</td></tr>`).join("") +
       `</tbody><tfoot><tr><td colspan="8">${rows.length} customer${rows.length === 1 ? "" : "s"}</td></tr></tfoot></table>`
      : `<p class="none">No customers${term ? " matching that" : " yet"}.</p>`);
@@ -1469,6 +1552,7 @@ $("#out").addEventListener("click", safe(async e => {
         .map(r => r.map(cell).join(",")).join("\r\n")], { type: "text/csv" }), `Mailing list - subscribed - ${today()}.csv`); }
   }
   if(a.act === "cust") editCustomer(a.id);
+  if(a.act === "past") openPast(a.id);
   if(a.act === "newharvest") await editHarvest(null);
   if(a.act === "harvest") await editHarvest(a.id);
   if(a.act === "inv") openInvoice(a.id);
@@ -1614,7 +1698,7 @@ function signIn(){
   if(ME.logo_url) document.querySelector(".masthead img").src = ME.logo_url;
   window.__setFarm?.({ name: ME.farm_name, logo_url: ME.logo_url }); loadFarms();
   try {
-    await reload("harvests", "products", "options", "orders", "customers", "invoices", "biz");
+    await reload("harvests", "products", "options", "orders", "customers", "invoices", "biz", "past");
   } catch(e){
     $("#out").innerHTML = `<p class="gap"><b>Not available yet.</b> ${esc(e.message)} — the sales migrations (69–72) haven't been run.</p>`;
     return;

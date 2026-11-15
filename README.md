@@ -460,8 +460,22 @@ can be copied or downloaded from **Sales → Mailing list**.
 **People's details are not in the repo either.** Customers and
 subscribers are loaded from the page (**Import…**) or by a converter
 whose output is run and thrown away — `import_mailchimp_audience.py`
-says so at the top. The seeds carry stock, products and a carrier's
-schedule; they do not carry anyone's email address.
+and `import_squarespace_orders.py` say so at the top. The seeds carry
+stock, products and a carrier's schedule; they do not carry anyone's
+email address.
+
+**Orders from before are a record, not orders.** The Squarespace shop
+took 65 orders between 2021 and 2026. They are kept (`past_order`,
+migration 81) because who ordered what, and how often, is worth
+looking back on — but that shop took a deposit and the freight, and
+the balance was invoiced once the pack was weighed, so its "total" is
+not the sale. As `customer_order` rows they would say someone spent
+$120 on 24 kilos of beef, crowd "No harvest", and use up order
+numbers. So they sit in a table nothing is added up from: listed under
+**Sales → Orders → Earlier orders**, and in each customer's record,
+with the money labelled *Taken*. Each is tied to the customer with the
+same email. Loading the export again brings existing rows up to date
+rather than doubling them.
 
 ---
 
@@ -498,6 +512,7 @@ customer ── customer_order ─┬─ order_line      what they ordered; actu
 delivery_zone                                  postcode -> carrier zone and days
 subscriber                                     the mailing list, with everyone who has left it
 mail                                           every email asked for: the words, and whether it went
+past_order                                     orders an earlier shop took, kept to look back on; never summed
 farm_business                                  ABN, bank details: the invoice letterhead; where the carrier collects from
 
 farm                who runs the app on this land: name, address, mark, hostname
@@ -671,6 +686,7 @@ rebuild, so anything depending on imported records has to be a seed.
 | 78 | Where the carrier collects from: `farm_business.collect_name`, `collect_street`, `collect_suburb`, `collect_state`, `collect_postcode`, `collect_window`, `collect_note`. The collection row of the manifest is written from them |
 | 79 | The butcher's Delivery section and the labels: `butcher_delivery()`; `harvest.collect_on` and `collect_row`; the private `harvest-files` bucket with its three rules and `harvest_file_ok()` |
 | 80 | Every row rule asks `can_read()`, `can_write()` or `my_role()` once a statement instead of once a row. No change to who may do what; the mailing list opens again. Brings a rebuild into line with production, where the herd tables' rules were already in this form |
+| 81 | Orders from before: `past_order` and `import_past_orders()`. What the old shop recorded, tied to customers by email, kept apart from `customer_order` |
 
 ### Seeds
 
