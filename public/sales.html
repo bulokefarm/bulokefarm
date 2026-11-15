@@ -972,9 +972,13 @@ const HARV_SPEC = [["code", "Code"], ["kind", "Kind", "sel", [["beef", "Beef"], 
 function editHarvest(id){
   const last = S.harvests[0] || {};
   const h = id ? { ...harvestOf(id) } : { kind: "beef", status: "planned", retail_ratio: 0.66, butcher_name: last.butcher_name, pickup_place: last.pickup_place,
-    pickup_hours: last.pickup_hours, kill_fee_cents: last.kill_fee_cents, butcher_rate_cents: last.butcher_rate_cents, carton_fee_cents: last.carton_fee_cents,
-    remaining_sheet: BEEF_REMAINING };
-  let rem = h.remaining_sheet || null;
+    pickup_hours: last.pickup_hours, kill_fee_cents: last.kill_fee_cents, butcher_rate_cents: last.butcher_rate_cents, carton_fee_cents: last.carton_fee_cents };
+  // What is left over once the packs are cut is a beef question: a lamb
+  // goes out whole or in halves. Until someone opens the sheet, a new
+  // harvest takes the standard for its kind — undefined here means "not
+  // looked at yet", and the kind can still change before it is saved.
+  const standardRem = kind => kind === "beef" ? BEEF_REMAINING : null;
+  let rem = id ? (h.remaining_sheet || null) : undefined;
   const margin = id ? h.total_cents - h.delivery_fee_cents - h.cost_cents : 0;
   const d = dialog(`<form method="dialog"><div class="dhead"><h2>${id ? "Harvest " + esc(h.code) : "New harvest"}</h2></div><div class="dbody">
     ${id ? `<div class="strip" style="margin-top:12px"><div><span>Orders</span><b>${h.orders}</b></div><div><span>Packs</span><b>${h.packs}</b></div>
@@ -988,19 +992,23 @@ function editHarvest(id){
     <div class="dfoot"><div class="left">${id && OWNER && !h.orders ? `<button type="button" class="danger" data-act="del">Delete</button>` : ""}
       ${id ? `<a class="btn" href="/butcher#${id}" target="_blank" rel="noopener">Butcher sheets ↗</a>` : ""}</div>
       <button type="button" class="ghost" data-act="close">Cancel</button>${CAN_WRITE ? `<button type="button" data-act="save">Save</button>` : ""}</div></form>`);
-  const remState = () => d.querySelector("#remstate").textContent = rem ? `${rem.rows.length} lines on the “Remaining” sheet` : "No “Remaining” sheet";
-  remState();
   const f = d.querySelector("form");
+  const remNow = () => rem === undefined ? standardRem(f.elements.kind.value) : rem;
+  const remState = () => { const r = remNow();
+    d.querySelector("#remstate").textContent = r ? `${r.rows.length} lines on the “Remaining” sheet${rem === undefined ? " (the standard for beef)" : ""}`
+      : f.elements.kind.value === "lamb" ? "No “Remaining” sheet — a lamb goes out whole or in halves" : "No “Remaining” sheet"; };
+  remState();
+  f.elements.kind.addEventListener("change", remState);
   f.elements.harvest_on.addEventListener("change", () => { if(!id && !f.elements.code.value && f.elements.harvest_on.value) f.elements.code.value = "H" + f.elements.harvest_on.value.replace(/-/g, ""); });
   d.addEventListener("click", safe(async e => {
     const a = e.target.closest("[data-act]")?.dataset; if(!a) return;
     if(a.act === "close") d.close();
-    if(a.act === "rem") editSheet(rem, "What is left over — the butcher's “Remaining” sheet", sh => { rem = sh; remState(); }, true);
+    if(a.act === "rem") editSheet(remNow(), "What is left over — the butcher's “Remaining” sheet", sh => { rem = sh; remState(); }, true);
     if(a.act === "del"){ if(!confirm("Delete this harvest?")) return; await q(db.from("harvest").delete().eq("id", id)); await reload("harvests"); d.close(); render(); }
     if(a.act === "save"){
       const v = formRead(HARV_SPEC, f);
       if(!v.code || !v.harvest_on){ alert("A harvest needs a code and a harvest date."); return; }
-      v.remaining_sheet = rem;
+      v.remaining_sheet = rem === undefined ? standardRem(v.kind) : rem;
       v.butcher_released_at = f.elements.released.checked ? (h.butcher_released_at || new Date().toISOString()) : null;
       const row = id ? (await q(db.from("harvest").update(v).eq("id", id).select("id")))[0] : (await q(db.from("harvest").insert(v).select("id")))[0];
       await reload("harvests"); S.harvest = row.id; d.close(); render();
