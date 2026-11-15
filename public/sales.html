@@ -727,8 +727,16 @@ function paintLines(){
         ${l.for_butcher ? `<button type="button" class="ghost small" data-act="sheet" data-i="${i}" title="Cut sheet for this line">${l.cut_sheet ? "Own sheet" : "Sheet"}</button>` : ""}</td>
       <td><button type="button" class="ghost small" data-act="delline" data-i="${i}" title="Remove line">×</button></td></tr>
       ${l.for_butcher ? `<tr><td></td><td colspan="10"><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">${lineQuestions(l, i)}
-        <input style="flex:1;min-width:220px" data-l="${i}" data-f="butcher_note" value="${esc(l.butcher_note || "")}" placeholder="Note to the butcher for this line (optional)"></div></td></tr>` : ""}`).join("") + `</tbody>`;
+        <input style="flex:1;min-width:220px" data-l="${i}" data-f="butcher_note" value="${esc(l.butcher_note || "")}" placeholder="Note to the butcher for this line (optional)"></div>
+        ${sheetChanges(l).length || l.butcher_comment ? `<div style="font-size:12.5px;margin-top:6px;line-height:1.5">
+          ${sheetChanges(l).length ? `<div><b>Cut sheet changed for this order:</b> ${sheetChanges(l).join(" · ")}</div>` : ""}
+          ${l.butcher_comment ? `<div><b>Butcher’s comment:</b> ${esc(l.butcher_comment)}</div>` : ""}
+          <div style="color:var(--ink2)">Made on ${ED.o.harvest_id ? `<a href="/butcher#${esc(ED.o.harvest_id)}">Butcher sheets</a>` : "Butcher sheets"}, on this pack's own sheet.</div></div>` : ""}</td></tr>` : ""}`).join("") + `</tbody>`;
 }
+// What was changed on a line's cut sheet for this order, and what the
+// butcher said about it (migration 82). Made on Butcher sheets; shown here.
+const sheetChanges = l => Object.values(l.sheet_marks || {}).map(m => `“${esc(m.row || "a line")}” — ${[m.off ? "not required" + (m.why ? " (" + esc(m.why) + ")" : "") : "",
+  ...Object.entries(m.set || {}).map(([c, v]) => `${esc(c)}: “${esc(v)}”`)].filter(Boolean).join("; ")}`);
 
 function orderSums(){
   const { o, lines, pays } = ED;

@@ -27,7 +27,7 @@ Live at **https://admin.bulokefarm.com.au**
 | `public/stock.html` | `/stock` | Laptop. Livestock trading account by financial year, for tax. |
 | `public/map.html` | `/map` | Laptop. Tracing paddock boundaries on satellite imagery, and spraying. |
 | `public/sales.html` | `/sales` | Laptop. Customers, orders, payments, invoices, harvests, the carrier's manifest and labels, products. |
-| `public/butcher.html` | `/butcher` | The butcher's login. Summary, customer list and a cut sheet per box, for printing; the deliveries, the carrier's manifest and the shipping labels. |
+| `public/butcher.html` | `/butcher` | The butcher's login. Summary, customer list and a cut sheet per box, for printing, each changeable for its order; the deliveries, the carrier's manifest and the shipping labels. |
 | `site/` | `www.bulokefarm.com.au` | The public website: what we sell, the farm, and the order form. A second Pages project. |
 
 The phone app links to the others under **Record → Manage → On a
@@ -408,6 +408,29 @@ labels are what the carrier's system makes once it has the manifest:
 the farm uploads the file on the Delivery page and the butcher
 downloads it from their sheets.
 
+**A cut sheet is the product's; an order carries only what is different
+about it.** Every 1/2 lamb is cut the same way, but one customer does
+not want the bones and the butcher has something to say about a box.
+On **Butcher sheets**, each box has *Change this sheet for this order*:
+the farm and the butcher may both reword an instruction and write under
+*Butcher's comments*; only the farm may mark a line *not required*
+(struck through, with a reason, left out of the total) or change its
+own note to the butcher (migration 82, `butcher_sheet_change()`). None
+of it touches the product's sheet. The order line keeps the differences
+(`order_line.sheet_marks`) and `butcher_sheet()` lays them over the
+standard sheet — which is why a 24 kg pack, the 12 kg sheet in each of
+two boxes, can be changed without being given a sheet of its own (that
+would make it one sheet split between the boxes: half the meat). A
+change is filed under the line's *name*, not its position, so adding a
+line to the product's sheet moves nothing; rename or remove a line and
+the orders that changed it say so on their sheets until the farm clears
+it. It is per order line, like the weight and the tick: two packs on
+one line, or one pack in two boxes, are changed together — put packs
+that differ on separate lines. Only what was touched is sent, so the
+farm striking a line and the butcher rewording another do not undo each
+other. **Sales** shows the changes and the comment on the order, and
+never writes them.
+
 **Files are in a private bucket, and one function says who may touch
 them.** Label files live in Supabase Storage, bucket `harvest-files`,
 one folder a harvest: `<farm id>/<harvest id>/<stamp>-<file name>`. The
@@ -506,7 +529,7 @@ feed_source ─┬─ feed_event ──┬─ paddock         LPA 3C / 3D
 
 product ── product_option                      what is sold, in what sizes, with its cut sheet
 harvest                                        one kill: dates, butcher, yield, costs
-customer ── customer_order ─┬─ order_line      what they ordered; actual kg once packed
+customer ── customer_order ─┬─ order_line      what they ordered; actual kg once packed; what is changed on its cut sheet; the butcher's comments
                             ├─ order_payment   deposit, balance, refund: paid is their sum
                             └─ invoice ── invoice_line   a copy, numbered, kept as sent
 delivery_zone                                  postcode -> carrier zone and days
@@ -687,6 +710,7 @@ rebuild, so anything depending on imported records has to be a seed.
 | 79 | The butcher's Delivery section and the labels: `butcher_delivery()`; `harvest.collect_on` and `collect_row`; the private `harvest-files` bucket with its three rules and `harvest_file_ok()` |
 | 80 | Every row rule asks `can_read()`, `can_write()` or `my_role()` once a statement instead of once a row. No change to who may do what; the mailing list opens again. Brings a rebuild into line with production, where the herd tables' rules were already in this form |
 | 81 | Orders from before: `past_order` and `import_past_orders()`. What the old shop recorded, tied to customers by email, kept apart from `customer_order` |
+| 82 | A cut sheet as changed for one order: `order_line.sheet_marks` (a line not required, an instruction reworded) and `butcher_comment`; `butcher_sheet_change()` for the farm and the butcher, `sheet_marks_on()` to lay the changes over the product's sheet. `butcher_sheet()` replaced whole to carry them |
 
 ### Seeds
 

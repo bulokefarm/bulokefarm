@@ -76,6 +76,29 @@ tfoot td{font-weight:700;border-top:2px solid var(--ink);border-bottom:0}
 .kgin{width:86px;text-align:right;font-family:var(--mono);padding:6px 8px;margin:0}
 /* What the customer chose (soup bones or none): it changes what goes in the box, so it is loud. */
 .ans{display:inline-block;border:2px solid var(--ink);border-radius:6px;padding:4px 12px;font-size:15px;font-weight:700;margin:0 8px 12px 0}
+/* A sheet as changed for one order (migration 82): a line not required is
+   struck through, an instruction that is not the standard one is marked. Both print. */
+[hidden]{display:none !important}
+tr.off s{color:var(--ink2)}
+td .why{display:block;font-weight:700;color:var(--danger);margin-top:2px}
+td.chg{border-left:3px solid var(--warn);font-weight:700}
+td .was,td .std{display:block;font-weight:400;margin-top:2px}
+.pre,.say{white-space:pre-wrap}
+.editing tr.off td:first-child > b{text-decoration:line-through;color:var(--ink2)}
+.say{margin:0;font-size:13.5px;border-left:3px solid var(--accent);background:var(--accent-soft);padding:9px 13px}
+.say small{display:block;color:var(--ink2);margin-top:4px;white-space:normal}
+.page.editing{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.cellin{margin:0;padding:6px 8px;font-size:13.5px;min-width:150px}
+.cellin.n{min-width:70px;text-align:right;font-family:var(--mono)}
+@media (max-width:600px){ .cellin{min-width:120px} }
+.whyin{margin-top:5px}
+.fld{display:block;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ink2);margin:14px 0 0}
+textarea{display:block;width:100%;margin-top:4px;border:1px solid var(--rule);border-radius:8px;padding:8px 10px;
+  font:inherit;font-size:14px;font-weight:400;letter-spacing:0;text-transform:none;background:var(--card);color:var(--ink);resize:vertical}
+textarea:focus{outline:2px solid var(--accent);outline-offset:1px}
+.editbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:14px}
+.editbar span{flex:1;min-width:200px;font-size:12.5px;color:var(--ink2)}
+button.link{background:none;color:var(--accent);padding:0;font-size:inherit;text-decoration:underline;border-radius:0}
 
 @page{margin:12mm;size:A4 portrait}
 @media print{
@@ -140,7 +163,21 @@ const ofPack = b => b.cartons > 1 ? `box ${b.carton} of ${b.cartons} for this pa
 const fmtWhen = t => t ? new Date(t).toLocaleString("en-AU", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }) : "";
 
 // DOC is the workbook (butcher_sheet); DEL is what goes by carrier (butcher_delivery), or null if it could not be read.
-let ME = null, LIST = [], DOC = null, DEL = null, SHOW = "all", CAN_PACK = false;
+// EDIT is the number of the box whose sheet is being changed, if one is.
+let ME = null, LIST = [], DOC = null, DEL = null, SHOW = "all", CAN_PACK = false, EDIT = null;
+
+// What is different about a box's sheet for its order (migration 82):
+// lines not required, instructions reworded. Kept on the order line, so
+// every box of that line shows the same.
+const FARM = () => ME.role !== "butcher";
+const marksOf = b => b?.marks?.rows || {};
+const lostOf = b => b?.marks?.lost || [];
+const many = (k, one, more) => `${k} ${k === 1 ? one : more}`;
+const changesText = b => { const r = Object.values(marksOf(b)), off = r.filter(m => m.off).length, set = r.reduce((a, m) => a + Object.keys(m.set || {}).length, 0);
+  return [off ? many(off, "line", "lines") + " not required" : "", set ? many(set, "instruction", "instructions") + " changed" : ""].filter(Boolean).join(", "); };
+const saidBy = b => [b.comment_by === "butcher" ? "By the butcher" : b.comment_by === "farm" ? "By " + esc(DOC.farm.name) : "", fmtWhen(b.comment_at)].filter(Boolean).join(", ");
+const lostText = m => `“${esc(m.row || "a line")}” — ${[m.off ? "not required" + (m.why ? " (" + esc(m.why) + ")" : "") : "",
+  ...Object.entries(m.set || {}).map(([c, v]) => `${esc(c)}: “${esc(v)}”`)].filter(Boolean).join("; ")}`;
 
 // ── the three parts of the workbook ─────────────────────────────
 const head = (title, sub) => { const f = DOC.farm, h = DOC.harvest; return `<header>
@@ -191,7 +228,8 @@ function pageSummary(){
     ${balanceHtml()}
     <h2>Boxes</h2>
     <table><thead><tr><th>Box</th><th>Customer</th><th>Pack</th><th>How it leaves</th><th>Of</th></tr></thead><tbody>
-      ${boxes.map(b => `<tr><td class="box">${b.box_no}</td><td>${esc(b.customer)}</td><td>${esc(b.pack)}${ofPack(b) ? `<br><small>${ofPack(b)}</small>` : ""}${answers(b).map(([k, v]) => `<br><small>${esc(k)}: ${esc(v)}</small>`).join("")}</td>
+      ${boxes.map(b => `<tr><td class="box">${b.box_no}</td><td>${esc(b.customer)}</td><td>${esc(b.pack)}${ofPack(b) ? `<br><small>${ofPack(b)}</small>` : ""}${answers(b).map(([k, v]) => `<br><small>${esc(k)}: ${esc(v)}</small>`).join("")}${
+          changesText(b) ? `<br><small><b>Changed for this order: ${changesText(b)}</b></small>` : ""}${b.butcher_comment ? `<br><small>Butcher’s comment on the sheet</small>` : ""}</td>
         <td><span class="tag ${b.fulfilment}">${esc(FUL[b.fulfilment])}</span></td><td class="m">${b.idx} of ${b.of}</td></tr>`).join("")}
       ${DOC.remaining_sheet ? `<tr><td class="box">+</td><td>Remaining</td><td colspan="3">Everything left over — see the last sheet</td></tr>`
         : BAL() && BAL().left > 0 ? `<tr><td class="box">+</td><td>Remaining</td><td colspan="3">${BAL().left} box${BAL().left === 1 ? "" : "es"} not sold${
@@ -221,28 +259,59 @@ function pageCustomers(){
 
 // A sheet's last column is a size in grams when its heading says so;
 // then it can be totalled, and doubled for a pack that is the sheet twice.
-function sheetTable(sh, mult){
-  const cols = sh.columns || [], gi = cols.findIndex(c => /\(g\)/i.test(c));
+//
+// b is the box, when the sheet is a customer's: what was changed for its
+// order (82) is laid over the standard sheet — a line not required is
+// struck through and left out of the total, a reworded instruction is
+// marked — and `edit` puts it all in boxes to type in.
+function sheetTable(sh, mult, b, edit){
+  const cols = sh.columns || [], gi = cols.findIndex(c => /\(g\)/i.test(c)), marks = marksOf(b), strike = edit && FARM();
+  const isNum = v => /^\d+(\.\d+)?$/.test(String(v).trim()), quoted = t => t ? "“" + esc(t) + "”" : "blank";
   let grams = 0;
-  const body = (sh.rows || []).map(r => `<tr>${cols.map((c, j) => {
-    let v = r[j] ?? "";
-    if(j === gi && /^\d+(\.\d+)?$/.test(String(v).trim())){ const g = Number(v) * mult; grams += g; v = String(+g.toFixed(0)); return `<td class="num">${esc(v)}</td>`; }
-    return `<td>${j === 0 ? "<b>" + esc(v) + "</b>" : esc(v)}</td>`; }).join("")}<td class="tick"><i></i></td></tr>`).join("");
-  return `<table><thead><tr>${cols.map((c, j) => `<th class="${j === gi ? "num" : ""}">${esc(c)}</th>`).join("")}<th>Packed</th></tr></thead><tbody>${body}</tbody>
-    ${gi >= 0 && grams ? `<tfoot><tr><td colspan="${Math.max(gi, 1)}">Total</td><td class="num">${kg(grams / 1000)} kg</td>${cols.slice(gi + 1).map(() => "<td></td>").join("")}<td></td></tr></tfoot>` : ""}</table>
+  const body = (sh.rows || []).map((r, i) => {
+    const m = marks[i] || {}, set = m.set || {}, off = !!m.off, name = String(r[0] ?? "");
+    const tds = cols.map((c, j) => {
+      const std = String(r[j] ?? ""), g = j === gi;
+      // As the standard sheet reads in this box: a size is multiplied for a pack that is the sheet several times over.
+      const shown = g && isNum(std) ? String(+(Number(std) * mult).toFixed(0)) : std;
+      // What someone typed for this order is for this box as typed.
+      const own = j > 0 && Object.hasOwn(set, c), v = own ? String(set[c]) : shown;
+      if(g && !off && isNum(v)) grams += Number(v);
+      if(j === 0) return strike
+        ? `<td><b>${esc(v)}</b><input class="cellin whyin" data-why="${i}" maxlength="200" placeholder="Why? (optional)" value="${esc(m.why || "")}" aria-label="Why ${esc(name)} is not required" ${off ? "" : "hidden"}></td>`
+        : `<td>${off ? `<s><b>${esc(v)}</b></s><small class="why">Not required${m.why ? " — " + esc(m.why) : ""}</small>` : `<b>${esc(v)}</b>`}</td>`;
+      if(edit) return `<td class="${g ? "num" : ""}"><input class="cellin${g ? " n" : ""}" data-i="${i}" data-col="${esc(c)}" data-was="${esc(v)}" data-shown="${esc(shown)}" data-std="${esc(std)}" maxlength="300" value="${esc(v)}" aria-label="${esc(c)} for ${esc(name)}">${
+          own ? `<small class="std">Standard: ${quoted(shown)} · <button type="button" class="link" data-usestd>use it</button></small>` : ""}</td>`;
+      return `<td class="${g ? "num" : ""}${own ? " chg" : ""}">${off ? "<s>" + esc(v) + "</s>" : esc(v)}${own ? `<small class="was noprint">Standard: ${quoted(shown)}</small>` : ""}</td>`;
+    }).join("");
+    return `<tr class="${off ? "off" : ""}">${tds}<td class="tick">${strike ? `<input type="checkbox" data-off="${i}" ${off ? "checked" : ""} aria-label="${esc(name)} is not required">` : off ? "—" : edit ? "" : "<i></i>"}</td></tr>`;
+  }).join("");
+  return `<div class="scroll"><table><thead><tr>${cols.map((c, j) => `<th class="${j === gi ? "num" : ""}">${esc(c)}</th>`).join("")}<th>${strike ? "Not required" : "Packed"}</th></tr></thead><tbody>${body}</tbody>
+    ${gi >= 0 && grams ? `<tfoot><tr><td colspan="${Math.max(gi, 1)}">Total</td><td class="num">${kg(grams / 1000)} kg</td>${cols.slice(gi + 1).map(() => "<td></td>").join("")}<td></td></tr></tfoot>` : ""}</table></div>
     ${(sh.notes || []).length ? `<div class="notes">${sh.notes.map(n => `<div><b>${esc(n[0])}</b><span>${esc(n[1])}</span></div>`).join("")}</div>` : ""}`;
 }
 function pageBox(b){
-  const mult = +b.sheet_multiple || 1, s = b.ship;
-  return `<section class="page" data-part="sheets">${head("Box " + b.box_no, b.order_ref)}
+  const mult = +b.sheet_multiple || 1, s = b.ship, edit = EDIT === b.box_no, chg = changesText(b), lost = lostOf(b);
+  const same = DOC.boxes.filter(x => x.line_id === b.line_id).map(x => x.box_no);
+  return `<section class="page${edit ? " editing" : ""}" data-part="sheets" data-box="${b.box_no}">${head("Box " + b.box_no, b.order_ref)}
     <div class="cust"><b>${esc(b.customer)}</b><span class="pack">${esc(b.pack)}</span>
       ${mult !== 1 ? `<span class="mult">× ${kg(mult)} — every line on this sheet, ${kg(mult)} times over</span>` : ""}
       ${b.split_boxes ? `<span class="mult">Split between ${b.cartons} boxes — this is box ${b.carton} of ${b.cartons}</span>` : ""}
       ${ofPack(b) && !b.split_boxes ? `<span class="tag">${ofPack(b)} — ${kg(b.size_kg)} kg in this box</span>` : ""}
-      <span class="tag ${b.fulfilment}">${esc(FUL[b.fulfilment])}</span><span class="tag">Box ${b.idx} of ${b.of} on this order</span></div>
+      <span class="tag ${b.fulfilment}">${esc(FUL[b.fulfilment])}</span><span class="tag">Box ${b.idx} of ${b.of} on this order</span>
+      ${chg ? `<span class="mult">Changed for this order — ${chg}</span>` : ""}</div>
     ${answers(b).length ? `<div>${answers(b).map(([k, v]) => `<span class="ans">${esc(k)}: ${esc(v)}</span>`).join("")}</div>` : ""}
-    ${b.butcher_note ? `<p class="gap">${esc(b.butcher_note)}</p>` : ""}
-    ${b.cut_sheet ? sheetTable(b.cut_sheet, mult) : `<p class="none">No cut sheet for this pack.</p>`}
+    ${edit && FARM() ? `<label class="fld" style="margin:0 0 14px">Note to the butcher for this pack<textarea id="e_note" rows="2" maxlength="2000">${esc(b.butcher_note || "")}</textarea></label>`
+      : b.butcher_note ? `<p class="gap pre">${esc(b.butcher_note)}</p>` : ""}
+    ${lost.length ? `<p class="gap"><b>${lost.length === 1 ? "A change was" : lost.length + " changes were"} made for this order to a line this sheet no longer has:</b> ${lost.map(lostText).join(" · ")}${
+        FARM() && CAN_PACK && !edit ? `<br><button type="button" class="ghost noprint" data-act="droplost" data-box="${b.box_no}" style="margin-top:8px">Clear ${lost.length === 1 ? "it" : "them"}</button>` : ""}</p>` : ""}
+    ${b.cut_sheet ? sheetTable(b.cut_sheet, mult, b, edit) : `<p class="none">No cut sheet for this pack.</p>`}
+    ${edit ? `<label class="fld">Butcher’s comments<textarea id="e_comment" rows="3" maxlength="2000" placeholder="Anything about this pack the farm should know">${esc(b.butcher_comment || "")}</textarea></label>
+        <p class="err" id="e_err"></p>
+        <div class="editbar noprint"><span>${same.length > 1 ? `Boxes ${same.slice(0, -1).join(", ")} and ${same.at(-1)} are one line of the order: what is changed here is changed on ${same.length === 2 ? "both" : "all of them"}.` : ""}</span>
+          <button type="button" data-act="savesheet">Save</button><button type="button" class="ghost" data-act="canceledit">Cancel</button></div>`
+      : `${b.butcher_comment ? `<h2>Butcher’s comments</h2><p class="say">${esc(b.butcher_comment)}${saidBy(b) ? `<small>${saidBy(b)}</small>` : ""}</p>` : ""}
+        ${CAN_PACK ? `<p class="noprint" style="margin:14px 0 0"><button type="button" class="ghost" data-act="editsheet" data-box="${b.box_no}">${FARM() ? "Change this sheet for this order" : "Change an instruction or add a comment"}</button></p>` : ""}`}
     ${s ? `<h2>Going by carrier</h2><p style="margin:0;font-size:13.5px">${esc(b.to_name)} · ${esc(b.to_phone || "")}<br>${esc([s.street, s.suburb, s.state, s.postcode].filter(Boolean).join(", "))}
       ${s.deliver_on ? "<br>Delivery " + fmtDay(s.deliver_on) : ""}${s.carrier_ref ? " · shipping label " + esc(s.carrier_ref) : ""}${s.instructions ? "<br>" + esc(s.instructions) : ""}</p>` : ""}
   </section>`;
@@ -317,18 +386,63 @@ async function open(id){
   const [{ data, error }, del] = await Promise.all([db.rpc("butcher_sheet", { p_harvest: id }), db.rpc("butcher_delivery", { p_harvest: id })]);
   if(error){ $("#out").innerHTML = `<p class="gap">${esc(error.message)}</p>`; return; }
   if(del.error) console.warn("butcher_delivery", del.error);
-  DOC = data; DEL = del.error ? null : del.data; history.replaceState(null, "", "#" + id); paint();
+  DOC = data; DEL = del.error ? null : del.data; EDIT = null; history.replaceState(null, "", "#" + id); paint();
+}
+
+// Changing one pack's sheet for its order (82). Only what was touched is
+// sent, so the farm marking a line and the butcher rewording another do
+// not undo each other. What comes back is the pack as it now stands, and
+// it goes on every box of that order line.
+const repaint = () => { const y = scrollY; paint(); scrollTo(0, y); };
+const takeLine = (b, d) => DOC.boxes.filter(x => x.line_id === b.line_id).forEach(x => Object.assign(x, d));
+async function sheetAct(el){
+  const act = el.dataset.act;
+  if(act === "editsheet"){ EDIT = +el.dataset.box; repaint(); return; }
+  if(act === "canceledit"){ EDIT = null; repaint(); return; }
+  if(act === "droplost"){
+    const b = DOC.boxes.find(x => x.box_no === +el.dataset.box);
+    if(!confirm("Clear the changes this sheet no longer has a line for? They are not being followed now, and this forgets them.")) return;
+    el.disabled = true;
+    const { data, error } = await db.rpc("butcher_sheet_change", { p_line: b.line_id, p_change: { drop_lost: true } });
+    if(error){ el.disabled = false; alert(error.message); return; }
+    takeLine(b, data); repaint(); return;
+  }
+  if(act === "savesheet"){
+    const b = DOC.boxes.find(x => x.box_no === EDIT), sec = el.closest(".page"), rows = b.cut_sheet?.rows || [], marks = marksOf(b), ch = {};
+    const nameOf = i => String(rows[i]?.[0] ?? "");
+    // Text put back to what the standard sheet says is sent as the sheet has it, which takes the change off.
+    const cells = [...sec.querySelectorAll(".cellin[data-col]")].filter(n => n.value.trim() !== n.dataset.was.trim())
+      .map(n => ({ i: +n.dataset.i, row: nameOf(+n.dataset.i), column: n.dataset.col, text: n.value.trim() === n.dataset.shown.trim() ? n.dataset.std : n.value }));
+    const strikes = [...sec.querySelectorAll("[data-off]")].map(n => {
+      const i = +n.dataset.off, was = marks[i] || {}, why = sec.querySelector(`[data-why="${i}"]`).value.trim();
+      return n.checked !== !!was.off || (n.checked && why !== (was.why || "")) ? { i, row: nameOf(i), off: n.checked, why } : null; }).filter(Boolean);
+    if(cells.length) ch.cells = cells;
+    if(strikes.length) ch.strikes = strikes;
+    const say = sec.querySelector("#e_comment"), note = sec.querySelector("#e_note");
+    if(say && say.value.trim() !== (b.butcher_comment || "")) ch.comment = say.value;
+    if(note && note.value.trim() !== (b.butcher_note || "")) ch.note = note.value;
+    if(!Object.keys(ch).length){ EDIT = null; repaint(); return; }
+    el.disabled = true; sec.querySelector("#e_err").textContent = "";
+    const { data, error } = await db.rpc("butcher_sheet_change", { p_line: b.line_id, p_change: ch });
+    if(error){ el.disabled = false; sec.querySelector("#e_err").textContent = error.message; return; }
+    takeLine(b, data); EDIT = null; repaint();
+  }
 }
 
 $("#bar").addEventListener("change", e => { if(e.target.id === "hsel") open(e.target.value); });
 $("#bar").addEventListener("click", e => {
   const c = e.target.closest("[data-show]");
   if(c){ SHOW = c.dataset.show; applyShow(); }
-  if(e.target.id === "print") window.print();
+  if(e.target.id === "print"){
+    if(EDIT != null){ alert(`Save or cancel the changes to box ${EDIT} first.`); return; }
+    window.print();
+  }
 });
 // The manifest is made here, from what is on the page; a label file is fetched when asked for.
 $("#out").addEventListener("click", async e => {
-  const d = e.target.closest("[data-dl]"), f = e.target.closest("[data-file]");
+  const d = e.target.closest("[data-dl]"), f = e.target.closest("[data-file]"), a = e.target.closest("[data-act]"), u = e.target.closest("[data-usestd]");
+  if(a){ await sheetAct(a); return; }
+  if(u){ const n = u.closest("td").querySelector(".cellin"); n.value = n.dataset.shown; n.focus(); return; }
   if(d) download(manifestFile(manifestOf(), d.dataset.dl), manifestName(DEL.farm.name, d.dataset.dl));
   if(f){
     f.disabled = true;
@@ -340,7 +454,10 @@ $("#out").addEventListener("click", async e => {
 });
 // A tick or a weight saves as it is made.
 $("#out").addEventListener("change", async e => {
-  const t = e.target; if(!t.dataset.line) return;
+  const t = e.target;
+  // "Not required" on a sheet being changed: strike the line and ask why. Saved with the rest.
+  if(t.dataset.off !== undefined){ const tr = t.closest("tr"), w = tr.querySelector("[data-why]"); tr.classList.toggle("off", t.checked); w.hidden = !t.checked; if(t.checked) w.focus(); return; }
+  if(!t.dataset.line) return;
   const row = t.closest("tr"), tick = row.querySelector('input[type=checkbox]'), w = row.querySelector(".kgin");
   const weight = w.value.trim() === "" ? 0 : Number(w.value);
   const { error } = await db.rpc("butcher_pack", { p_line: t.dataset.line, p_packed: tick.checked, p_actual_kg: weight });
