@@ -27,7 +27,9 @@ input,select{display:block;width:100%;margin-top:4px;border:1px solid var(--rule
 input[type=checkbox]{display:inline-block;width:22px;height:22px;margin:0;vertical-align:middle}
 input:focus,select:focus,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 button{border:0;border-radius:8px;padding:9px 15px;font:inherit;font-weight:700;font-size:14px;background:var(--accent);color:#fff;cursor:pointer}
-button.ghost{background:var(--card);color:var(--ink);border:1px solid var(--rule)}
+button.ghost,a.btn{background:var(--card);color:var(--ink);border:1px solid var(--rule)}
+a.btn{display:inline-block;text-decoration:none;border-radius:8px;padding:8px 15px;font-weight:700;font-size:14px}
+td.over{color:var(--danger)}
 .chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:5px}
 .chip{background:var(--card);color:var(--ink);border:1px solid var(--rule);border-radius:99px;padding:6px 13px;font-size:13px;font-weight:600}
 .chip[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
@@ -135,6 +137,27 @@ const head = (title, sub) => { const f = DOC.farm, h = DOC.harvest; return `<hea
   <div class="who"><b>${esc(f.name)}</b><span>${esc([f.phone, f.email].filter(Boolean).join(" · "))}</span></div>
   <div class="what"><b>${esc(title)}</b>${esc(h.code)}${h.title ? " · " + esc(h.title) : ""}${sub ? "<br>" + esc(sub) : ""}</div></header>`; };
 
+// What the harvest has to sell, what is on these sheets, and the
+// difference (migration 77). Counted in boxes; a lamb harvest is counted
+// in lambs beside them (a lamb is two boxes), beef in kilos.
+const halves = n => { const w = Math.trunc(n), f = Math.abs(n - w); return f === 0.5 ? (w ? w + "½" : (n < 0 ? "-½" : "½")) : String(+n.toFixed(2)); };
+const BAL = () => { const b = DOC.balance; return b && b.boxes != null ? b : null; };
+// "4½ lambs", "1 lamb", "½ lamb" — for a count of boxes, where an animal is a fixed number of them.
+const animalsText = n => { const b = BAL(); if(!b || !b.per_head) return ""; const a = n / b.per_head, lamb = DOC.harvest.kind === "lamb";
+  return `${halves(a)} ${lamb ? "lamb" : "head"}${lamb && Math.abs(a) > 1 ? "s" : ""}`; };
+function balanceHtml(){
+  const b = BAL(), h = DOC.harvest;
+  if(!b) return ME.role === "butcher" ? "" : `<h2>Balance</h2><p class="none" style="padding:6px 0">Not worked out yet: the harvest needs its head (lamb), its kilos for sale (beef), or a number typed under “Boxes for sale”.</p>`;
+  const unit = b.per_head ? (h.kind === "lamb" ? "Lambs" : "Head") : b.box_kg ? "Kg" : "";
+  const as = n => b.per_head ? halves(n / b.per_head) : b.box_kg ? kg(n * b.box_kg) : "";
+  const row = (label, n, cls) => `<tr><td>${label}</td><td class="num ${cls || ""}">${n}</td>${unit ? `<td class="num ${cls || ""}">${as(n)}</td>` : ""}</tr>`;
+  return `<h2>Balance</h2>
+    <table><thead><tr><th></th><th class="num">Boxes</th>${unit ? `<th class="num">${unit}</th>` : ""}</tr></thead><tbody>
+      ${row("For sale on this harvest", b.boxes)}
+      ${row("Sold — on these sheets", b.sold)}</tbody>
+      <tfoot>${row(b.left < 0 ? "Over — more sold than there is" : "Remaining — not sold", b.left, b.left < 0 ? "over" : "")}</tfoot></table>`;
+}
+
 function pageSummary(){
   const h = DOC.harvest, boxes = DOC.boxes;
   // A box is a carton (migration 75): a pack that fills two is two boxes. Count both.
@@ -155,11 +178,14 @@ function pageSummary(){
     <table><thead><tr><th>Pack</th><th class="num">How many</th><th class="num">Boxes</th></tr></thead><tbody>
       ${[...bySize].map(([p, v]) => `<tr><td>${esc(p)}</td><td class="num">${v.packs}</td><td class="num">${v.boxes}</td></tr>`).join("")}</tbody>
       <tfoot><tr><td>${kg(totalKg)} kg</td><td class="num">${packs}</td><td class="num">${boxes.length}</td></tr></tfoot></table>
+    ${balanceHtml()}
     <h2>Boxes</h2>
     <table><thead><tr><th>Box</th><th>Customer</th><th>Pack</th><th>How it leaves</th><th>Of</th></tr></thead><tbody>
       ${boxes.map(b => `<tr><td class="box">${b.box_no}</td><td>${esc(b.customer)}</td><td>${esc(b.pack)}${ofPack(b) ? `<br><small>${ofPack(b)}</small>` : ""}${answers(b).map(([k, v]) => `<br><small>${esc(k)}: ${esc(v)}</small>`).join("")}</td>
         <td><span class="tag ${b.fulfilment}">${esc(FUL[b.fulfilment])}</span></td><td class="m">${b.idx} of ${b.of}</td></tr>`).join("")}
-      ${DOC.remaining_sheet ? `<tr><td class="box">+</td><td>Remaining</td><td colspan="3">Everything left over — see the last sheet</td></tr>` : ""}</tbody></table>
+      ${DOC.remaining_sheet ? `<tr><td class="box">+</td><td>Remaining</td><td colspan="3">Everything left over — see the last sheet</td></tr>`
+        : BAL() && BAL().left > 0 ? `<tr><td class="box">+</td><td>Remaining</td><td colspan="3">${BAL().left} box${BAL().left === 1 ? "" : "es"} not sold${
+            animalsText(BAL().left) ? " — " + animalsText(BAL().left) : ""}</td></tr>` : ""}</tbody></table>
   </section>`;
 }
 
@@ -222,10 +248,11 @@ function paint(){
       <label class="grow">Harvest<select id="hsel">${LIST.map(x => `<option value="${x.id}" ${x.id === h.id ? "selected" : ""}>${esc(x.code)} · ${esc(x.kind)} · ${fmtDay(x.harvest_on)} · ${x.packs} pack${x.packs === 1 ? "" : "s"}${x.released ? "" : " · not released"}</option>`).join("")}</select></label>
       <label>Show<div class="chips" id="show">${[["all", "Everything"], ["summary", "Summary"], ["customers", "Customers"], ["sheets", "Cut sheets"]].map(([k, l]) =>
         `<button class="chip" data-show="${k}" aria-pressed="${SHOW === k}">${l}</button>`).join("")}</div></label>
+      ${ME.role !== "butcher" ? `<a class="btn" href="/sales">← Sales &amp; orders</a>` : ""}
       <button id="print">Print</button></div>
     ${ME.role !== "butcher" && !h.released ? `<p class="gap"><b>Not released.</b> This is what the butcher will see. They can't see it until you tick “The butcher can see this harvest's sheets” on the harvest.</p>` : ""}`;
-  $("#out").innerHTML = DOC.boxes.length || DOC.remaining_sheet
-    ? pageSummary() + pageCustomers() + DOC.boxes.map(pageBox).join("") + (DOC.remaining_sheet ? pageRemaining() : "")
+  $("#out").innerHTML = DOC.boxes.length || DOC.remaining_sheet || BAL()
+    ? pageSummary() + (DOC.boxes.length ? pageCustomers() : "") + DOC.boxes.map(pageBox).join("") + (DOC.remaining_sheet ? pageRemaining() : "")
     : `<p class="none">No packs on this harvest yet.</p>`;
   applyShow();
 }

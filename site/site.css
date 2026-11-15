@@ -223,8 +223,9 @@ h1 + .lede, h2 + .lede { margin-top: var(--s5); }
 .nav-toggle[aria-expanded="true"] .x { display: block; }
 .nav-toggle[aria-expanded="true"] .bars { display: none; }
 
-/* Seven links, the logo and the Order button need about 1090px in one row. */
-@media (min-width: 1120px) {
+/* Seven links (the first is the long one, Beef & Lamb Orders), the logo and
+   the Order button need about 1180px in one row. Below that, the menu button. */
+@media (min-width: 1220px) {
   .brand-name { display: none; }
   .nav-toggle { display: none; }
   .site-nav {
@@ -323,6 +324,22 @@ h1 + .lede, h2 + .lede { margin-top: var(--s5); }
 }
 .tag-open   { background: var(--tint); border-color: var(--accent); color: var(--accent-hi); }
 .tag-closed { border-color: var(--amber); color: var(--amber); }
+
+/* What is left of a harvest: said in words, and drawn. */
+.avail { margin-top: var(--s4); }
+.harvest .avail-text { margin: 0; font-family: var(--font-head); font-weight: 700; font-size: 1.25rem; line-height: 1.3; color: var(--text); }
+.meter { height: 8px; margin-top: var(--s2); border-radius: 99px; background: var(--line); overflow: hidden; }
+.meter span { display: block; height: 100%; border-radius: 99px; background: var(--accent); }
+.avail + .dates { margin-top: var(--s4); }
+.card-cta { margin: var(--s5) 0 0; }
+.hero-now {
+  display: inline-block; max-width: 34rem; margin: var(--s5) 0 0; padding: var(--s2) var(--s4);
+  border: 1px solid var(--accent); border-radius: var(--radius-sm);
+  background: rgba(16, 24, 20, .78); color: var(--text); line-height: 1.45;
+}
+.hero-now strong { color: var(--accent-hi); }
+.choice-left { display: block; color: var(--accent-hi); font-size: .875rem; line-height: 1.45; }
+.choice-left.is-none { color: var(--amber); }
 
 .dates { display: grid; grid-template-columns: auto 1fr; gap: var(--s1) var(--s4); margin: var(--s3) 0 0; }
 .dates dt { color: var(--muted); }

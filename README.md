@@ -342,6 +342,32 @@ the box's cut sheet. The first choice is the standard: it is what an
 order gets if nothing is said. `place_order()` keeps only answers to
 questions the product really asks, from the choices it really offers.
 
+**A harvest is counted in boxes.** Six lambs are twelve boxes; three
+are spoken for; nine are left. A box is what is sold and what is packed
+(a whole lamb is two, a half is one, a 24 kg beef pack is two), so the
+balance is kept in boxes and said the other way beside them — lambs for
+lamb, kilos for beef. *For sale* is `harvest.boxes_for_sale` if someone
+typed it; otherwise it is worked out: head × 2 for lamb, and for beef
+the kilos for sale ÷ the smallest box that kind is sold in, once those
+kilos are known. *Sold* is every box on the butcher's sheets. The sum
+is `v_harvest_balance`, written once and read by three things: the
+butcher's summary, the website (the landing page leads with the coming
+harvests and what is left of each, and each pack says how many the
+harvest still has room for), and `place_order()`, which puts a website
+order on the first open harvest of its kind with room for it. A full
+harvest behaves as a closed one always has: the website says *Fully
+booked*, the order is still taken, and it waits under **No harvest**
+for a person to place. Until the head or the weight is entered nothing
+is known, nothing is said, and nothing is held back.
+
+**The page does not write what nobody looked at.** A harvest's
+“Remaining” sheet is not on the form; it is behind a button. A Sales
+page left open for a day once saved a harvest and wrote its day-old
+copy of that sheet back over one cleared since — which is how a lamb
+harvest came to tell the butcher what to do with the eye fillet. The
+editor now reads the harvest afresh when it opens, and writes the sheet
+only if someone opened and changed it there.
+
 **Bank details are not in the repo.** They are typed into **Sales →
 Settings**, live in `farm_business`, and only an owner can change them.
 
@@ -473,6 +499,7 @@ Every table but `heartbeat`, `user_pref` and `farm_user` carries
 | `v_customer` | Customers with order count, last order, spent and owing |
 | `v_invoice` | An invoice with subtotal, shipping, GST, paid, due, and the BAS split |
 | `v_delivery_postcode` | One row per postcode: the carrier's zone and the days they run |
+| `v_harvest_balance` | What each harvest has to sell, what is sold and what is left, in boxes. Not on `v_harvest`: a later migration cannot add a column to a view an earlier one builds |
 | `v_subscriber` | The mailing list, with whether each address has ever ordered |
 | `v_mail` | The email log: what went to whom, about which order or invoice, and what did not go and why |
 
@@ -591,6 +618,7 @@ rebuild, so anything depending on imported records has to be a seed.
 | 74 | What a product asks on the order form: `product.questions`, `order_line.answers`, `answers_for()`. Choices only. Beef asks about soup bones. `shop_front()`, `place_order()`, `save_order()` and `butcher_sheet()` replaced whole to carry them |
 | 75 | A box is a carton: `butcher_sheet()` numbers one box per carton, so a whole lamb is two boxes and a 24 kg beef pack is two 12 kg boxes, each with its sheet |
 | 76 | Email: `mail` is the queue and the record. `queue_order_mail()`, `mail_order()`, `mail_invoice()`, `mail_test()` and `mail_retry()` write it; `mail_claim()` and `mail_done()` are the sender's alone; `v_mail`; `farm_business.email_web_orders`. `place_order()` replaced whole to queue an order's two emails |
+| 77 | The harvest balance: `harvest.boxes_for_sale`, `v_harvest_balance`. `butcher_sheet()`, `shop_front()` and `place_order()` replaced whole: the summary shows it, the website is told it, and a website order goes on the first open harvest with room. Takes the beef “Remaining” sheet off any lamb harvest that was given one by accident |
 
 ### Seeds
 

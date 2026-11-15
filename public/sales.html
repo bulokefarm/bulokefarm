@@ -25,6 +25,7 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);f
 .tabs button{background:none;color:var(--ink2);border:0;border-bottom:3px solid transparent;border-radius:0;
   padding:8px 12px;font-weight:700;font-size:13.5px}
 .tabs button[aria-current="true"]{color:var(--ink);border-bottom-color:var(--accent)}
+.tabs a.sheets{margin-left:auto;align-self:center;padding:7px 13px;font-size:13px;margin-bottom:6px}
 .tabs .badge{background:var(--danger);color:#fff;border-radius:99px;font-size:11px;padding:1px 7px;margin-left:5px}
 
 .controls{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;padding:14px 0 12px}
@@ -231,7 +232,7 @@ const BEEF_REMAINING = { columns: ["Cut", "Choices", "Butchering selection", "Si
 let ME = null, CAN_WRITE = false, OWNER = false;
 const S = { tab: "orders", harvest: null, status: "all", q: "", cq: "", invoiceId: null,
             harvests: [], products: [], options: [], orders: [], customers: [], invoices: [], biz: null,
-            subs: null, mstatus: "subscribed", mq: "", mail: [] };
+            subs: null, mstatus: "subscribed", mq: "", mail: [], balance: [] };
 const LOADERS = {
   harvests:  () => q(db.from("v_harvest").select("*").order("harvest_on", { ascending: false })),
   products:  () => q(db.from("product").select("*").order("sort").order("name")),
@@ -241,10 +242,22 @@ const LOADERS = {
   invoices:  () => q(db.from("v_invoice").select("*").order("invoice_no", { ascending: false }).limit(3000)),
   biz:       () => q(db.from("farm_business").select("*").maybeSingle()),
   subs:      () => q(db.from("v_subscriber").select("*").order("email").limit(20000)),
+  // What each harvest has to sell and what is left, in boxes (77). Newer than
+  // the rest, so a page ahead of its database shows no balance rather than nothing.
+  balance:   () => q(db.from("v_harvest_balance").select("*")).catch(e => { console.warn("balance", e); return []; }),
   mail:      () => q(db.from("v_mail").select("id,kind,order_id,invoice_id,to_email,to_name,subject,status,error,created_at,sent_at,order_ref,invoice_no")
                        .order("created_at", { ascending: false }).limit(300))
 };
-async function reload(...keys){ await Promise.all(keys.map(async k => { S[k] = await LOADERS[k](); })); }
+async function reload(...keys){
+  // The balance moves whenever an order or a harvest does.
+  if(keys.some(k => k === "orders" || k === "harvests") && !keys.includes("balance")) keys.push("balance");
+  await Promise.all(keys.map(async k => { S[k] = await LOADERS[k](); }));
+}
+const balOf = id => { const b = S.balance.find(x => x.id === id); return b && b.boxes != null ? b : null; };
+const halves = n => { const w = Math.trunc(n), f = Math.abs(n - w); return f === 0.5 ? (w ? w + "½" : (n < 0 ? "-½" : "½")) : String(+n.toFixed(2)); };
+// A count of boxes, said the other way too: "4½ lambs" where an animal is a fixed number of boxes, kilos where it is not.
+const boxesAs = (b, n) => b.per_head ? `${halves(n / b.per_head)} ${b.kind === "lamb" ? "lamb" + (Math.abs(n / b.per_head) > 1 ? "s" : "") : "head"}`
+  : b.box_kg ? `${kg(n * b.box_kg)} kg` : "";
 const harvestOf = id => S.harvests.find(h => h.id === id);
 const productOf = optId => { const o = S.options.find(x => x.id === optId); return o && S.products.find(p => p.id === o.product_id); };
 
@@ -388,7 +401,9 @@ const TABS = [["orders", "Orders"], ["harvests", "Harvests"], ["customers", "Cus
 function paintTabs(){
   const fresh = S.orders.filter(o => o.status === "new").length;
   $("#tabs").innerHTML = TABS.map(([k, label]) => `<button data-tab="${k}" aria-current="${S.tab === k || (k === "invoices" && S.tab === "invoice")}">${label}${
-    k === "orders" && fresh ? `<span class="badge">${fresh}</span>` : ""}</button>`).join("");
+    k === "orders" && fresh ? `<span class="badge">${fresh}</span>` : ""}</button>`).join("") +
+    // Not a tab: the butcher's sheets are a page of their own. It opens on the harvest picked here.
+    `<a class="btn sheets" href="/butcher${harvestOf(S.harvest) ? "#" + S.harvest : ""}">Butcher sheets →</a>`;
   $("#tabs").hidden = false;
 }
 $("#tabs").addEventListener("click", e => { const b = e.target.closest("[data-tab]"); if(b){ go(b.dataset.tab); } });
@@ -440,14 +455,16 @@ function viewOrders(){
       <button class="ghost" data-act="print">Print list</button>
     </div>`;
   if(h){
-    const left = h.for_sale_kg == null ? null : h.for_sale_kg - h.sold_kg;
+    const left = h.for_sale_kg == null ? null : h.for_sale_kg - h.sold_kg, bal = balOf(h.id);
     html += `<div class="strip">
       <div><span>${esc(h.kind)} · harvest ${fmt(h.harvest_on)}</span><b>${esc(h.code)}</b></div>
       <div><span>Pick-up</span><b>${fmt(h.pickup_on)}</b></div>
       <div><span>Packs</span><b>${h.packs}</b></div>
       <div><span>Sold</span><b>${kg(h.sold_kg)} kg${h.for_sale_kg != null ? ` of ${kg(h.for_sale_kg)}` : ""}</b></div>
       ${left != null ? `<div><span>Left</span><b class="${left < 0 ? "flag" : ""}">${kg(left)} kg</b></div>` : ""}
-      <div><span>Cartons</span><b>${h.cartons}</b></div>
+      ${bal ? `<div><span>Boxes sold</span><b>${bal.boxes_sold} of ${bal.boxes}</b></div>
+        <div><span>Boxes left</span><b class="${bal.boxes_left < 0 ? "flag" : ""}">${bal.boxes_left}${boxesAs(bal, bal.boxes_left) ? ` <small style="font-weight:400">· ${boxesAs(bal, bal.boxes_left)}</small>` : ""}</b></div>`
+        : `<div><span>Boxes</span><b>${h.cartons}</b></div>`}
       <div><span>Sales</span><b>${money(h.total_cents)}</b></div>
       <div><span>Paid</span><b>${money(h.paid_cents)}</b></div>
       <div><span>Owing</span><b class="${h.total_cents - h.paid_cents > 0 ? "flag" : ""}">${money(h.total_cents - h.paid_cents)}</b></div>
@@ -1021,14 +1038,17 @@ const HARV_SPEC = [["code", "Code"], ["kind", "Kind", "sel", [["beef", "Beef"], 
   ["h1", "Dates", "head"], ["harvest_on", "Harvest", "date"], ["butcher_on", "Butchering", "date"], ["pickup_on", "Pick-up", "date"],
   ["delivery_on", "Local delivery", "date"], ["interstate_on", "Interstate delivery", "date"], ["interstate_note", "Interstate — where"],
   ["h2", "Butcher and pick-up", "head"], ["butcher_name", "Butcher"], ["pickup_place", "Pick-up place"], ["pickup_hours", "Pick-up hours"],
-  ["h3", "What it yields", "head"], ["head", "Head", "int"], ["live_kg", "Live weight, kg", "num"], ["carcass_kg", "Cold carcass, kg", "num"],
+  ["h3", "What it yields", "head"], ["head", "Head", "int"], ["boxes_for_sale", "Boxes for sale — blank to work it out", "int"], ["live_kg", "Live weight, kg", "num"], ["carcass_kg", "Cold carcass, kg", "num"],
   ["retail_ratio", "Carcass to retail", "num"], ["capacity_kg", "For sale, kg (if not carcass × ratio)", "num"],
   ["h4", "What it costs", "head"], ["kill_fee_cents", "Kill fee", "money"], ["butcher_rate_cents", "Butchering, per kg carcass", "money"],
   ["carton_fee_cents", "Per carton", "money"], ["other_cost_cents", "Other costs", "money"],
   ["butcher_note", "Note to the butcher — printed on the summary", "area", 2], ["note", "Our note", "area", 2]];
-function editHarvest(id){
+async function editHarvest(id){
   const last = S.harvests[0] || {};
-  const h = id ? { ...harvestOf(id) } : { kind: "beef", status: "planned", retail_ratio: 0.66, butcher_name: last.butcher_name, pickup_place: last.pickup_place,
+  // Read as it is now, not as it was when this page loaded: a page left
+  // open for a day once saved its old copy over a harvest fixed since.
+  const h = id ? { ...(await q(db.from("v_harvest").select("*").eq("id", id).single())),
+                   ...(await q(db.from("harvest").select("boxes_for_sale").eq("id", id).single())) } : { kind: "beef", status: "planned", retail_ratio: 0.66, butcher_name: last.butcher_name, pickup_place: last.pickup_place,
     pickup_hours: last.pickup_hours, kill_fee_cents: last.kill_fee_cents, butcher_rate_cents: last.butcher_rate_cents, carton_fee_cents: last.carton_fee_cents };
   // What is left over once the packs are cut is a beef question: a lamb
   // goes out whole or in halves. Until someone opens the sheet, a new
@@ -1036,16 +1056,22 @@ function editHarvest(id){
   // looked at yet", and the kind can still change before it is saved.
   const standardRem = kind => kind === "beef" ? BEEF_REMAINING : null;
   let rem = id ? (h.remaining_sheet || null) : undefined;
+  let remTouched = false;     // an existing harvest's sheet is written only if someone opened and changed it here
+  const bal = id ? balOf(id) : null;
   const margin = id ? h.total_cents - h.delivery_fee_cents - h.cost_cents : 0;
   const d = dialog(`<form method="dialog"><div class="dhead"><h2>${id ? "Harvest " + esc(h.code) : "New harvest"}</h2></div><div class="dbody">
     ${id ? `<div class="strip" style="margin-top:12px"><div><span>Orders</span><b>${h.orders}</b></div><div><span>Packs</span><b>${h.packs}</b></div>
-      <div><span>Sold</span><b>${kg(h.sold_kg)} kg${h.for_sale_kg != null ? " of " + kg(h.for_sale_kg) : ""}</b></div><div><span>Sales</span><b>${money(h.total_cents)}</b></div>
+      <div><span>Sold</span><b>${kg(h.sold_kg)} kg${h.for_sale_kg != null ? " of " + kg(h.for_sale_kg) : ""}</b></div>
+      ${bal ? `<div><span>Boxes sold</span><b>${bal.boxes_sold} of ${bal.boxes}</b></div><div><span>Boxes left</span><b class="${bal.boxes_left < 0 ? "flag" : ""}">${bal.boxes_left}${
+        boxesAs(bal, bal.boxes_left) ? ` <small style="font-weight:400">· ${boxesAs(bal, bal.boxes_left)}</small>` : ""}</b></div>` : ""}<div><span>Sales</span><b>${money(h.total_cents)}</b></div>
       <div><span>Costs</span><b>${money(h.cost_cents)}</b></div><div><span>After kill, butcher, cartons</span><b>${money(margin)}</b></div></div>` : ""}
     <div class="grid">${formHtml(HARV_SPEC, h)}
       <label class="chk wide"><input type="checkbox" name="released" ${h.butcher_released_at ? "checked" : ""}>The butcher can see this harvest's sheets${
         h.butcher_released_at ? ` (released ${new Date(h.butcher_released_at).toLocaleDateString("en-AU")})` : ""}</label></div>
     <p style="margin:12px 0 0"><button type="button" class="ghost small" data-act="rem">What happens to what's left over…</button>
-      <span id="remstate" style="font-size:12.5px;color:var(--ink2);margin-left:8px"></span></p></div>
+      <span id="remstate" style="font-size:12.5px;color:var(--ink2);margin-left:8px"></span></p>
+    <p class="lede" style="margin:10px 0 0">What is left to sell is counted in boxes and shown on the butcher's summary and the website. Leave “Boxes for sale” blank and it is worked out:
+      a lamb is two boxes, so head × 2; beef is the kilos for sale ÷ 12. Type a number to overrule that.</p></div>
     <div class="dfoot"><div class="left">${id && OWNER && !h.orders ? `<button type="button" class="danger" data-act="del">Delete</button>` : ""}
       ${id ? `<a class="btn" href="/butcher#${id}" target="_blank" rel="noopener">Butcher sheets ↗</a>` : ""}</div>
       <button type="button" class="ghost" data-act="close">Cancel</button>${CAN_WRITE ? `<button type="button" data-act="save">Save</button>` : ""}</div></form>`);
@@ -1060,12 +1086,13 @@ function editHarvest(id){
   d.addEventListener("click", safe(async e => {
     const a = e.target.closest("[data-act]")?.dataset; if(!a) return;
     if(a.act === "close") d.close();
-    if(a.act === "rem") editSheet(remNow(), "What is left over — the butcher's “Remaining” sheet", sh => { rem = sh; remState(); }, true);
+    if(a.act === "rem") editSheet(remNow(), "What is left over — the butcher's “Remaining” sheet", sh => { rem = sh; remTouched = true; remState(); }, true);
     if(a.act === "del"){ if(!confirm("Delete this harvest?")) return; await q(db.from("harvest").delete().eq("id", id)); await reload("harvests"); d.close(); render(); }
     if(a.act === "save"){
       const v = formRead(HARV_SPEC, f);
       if(!v.code || !v.harvest_on){ alert("A harvest needs a code and a harvest date."); return; }
-      v.remaining_sheet = rem === undefined ? standardRem(v.kind) : rem;
+      if(!id) v.remaining_sheet = rem === undefined ? standardRem(v.kind) : rem;
+      else if(remTouched) v.remaining_sheet = rem;
       v.butcher_released_at = f.elements.released.checked ? (h.butcher_released_at || new Date().toISOString()) : null;
       const row = id ? (await q(db.from("harvest").update(v).eq("id", id).select("id")))[0] : (await q(db.from("harvest").insert(v).select("id")))[0];
       await reload("harvests"); S.harvest = row.id; d.close(); render();
@@ -1075,12 +1102,14 @@ function editHarvest(id){
 function viewHarvests(){
   $("#out").innerHTML = `<div class="controls noprint"><p class="lede grow" style="margin:0">One row per kill. “Open” harvests show their dates on the website and take web orders.</p>
       ${CAN_WRITE ? `<button data-act="newharvest">+ New harvest</button>` : ""}</div>` +
-    (S.harvests.length ? `<table><thead><tr><th>Code</th><th>Kind</th><th>Harvest</th><th>Pick-up</th><th>Website</th><th>Butcher</th><th class="num">Packs</th>
+    (S.harvests.length ? `<table><thead><tr><th>Code</th><th>Kind</th><th>Harvest</th><th>Pick-up</th><th>Website</th><th>Butcher</th><th class="num">Packs</th><th class="num">Boxes sold</th><th class="num">Boxes left</th>
         <th class="num">Sold kg</th><th class="num">For sale kg</th><th class="num">Sales</th><th class="num">Owing</th></tr></thead><tbody>` +
       S.harvests.map(h => `<tr class="open-row" data-act="harvest" data-id="${h.id}"><td class="m">${esc(h.code)}${h.title ? `<br><small>${esc(h.title)}</small>` : ""}</td>
         <td>${esc(h.kind)}</td><td class="m">${fmt(h.harvest_on)}</td><td class="m">${fmt(h.pickup_on)}</td>
         <td><span class="tag ${h.status}">${h.status}</span></td><td>${h.butcher_released_at ? `<span class="tag confirmed">sheets released</span>` : `<span class="tag">not yet</span>`}</td>
-        <td class="num">${h.packs}</td><td class="num">${kg(h.sold_kg)}</td><td class="num">${h.for_sale_kg != null ? kg(h.for_sale_kg) : "—"}</td>
+        <td class="num">${h.packs}</td>${(b => b ? `<td class="num">${b.boxes_sold} of ${b.boxes}</td><td class="num ${b.boxes_left < 0 ? "flag" : ""}">${b.boxes_left}${
+          boxesAs(b, b.boxes_left) ? `<br><small>${boxesAs(b, b.boxes_left)}</small>` : ""}</td>` : `<td class="num">${h.cartons}</td><td class="num">—</td>`)(balOf(h.id))}
+        <td class="num">${kg(h.sold_kg)}</td><td class="num">${h.for_sale_kg != null ? kg(h.for_sale_kg) : "—"}</td>
         <td class="num">${money(h.total_cents)}</td><td class="num ${h.total_cents - h.paid_cents > 0 ? "flag" : ""}">${money(h.total_cents - h.paid_cents)}</td></tr>`).join("") + `</tbody></table>`
      : `<p class="none">No harvests yet. Add the next one to start taking orders against it.</p>`);
 }
@@ -1440,8 +1469,8 @@ $("#out").addEventListener("click", safe(async e => {
         .map(r => r.map(cell).join(",")).join("\r\n")], { type: "text/csv" }), `Mailing list - subscribed - ${today()}.csv`); }
   }
   if(a.act === "cust") editCustomer(a.id);
-  if(a.act === "newharvest") editHarvest(null);
-  if(a.act === "harvest") editHarvest(a.id);
+  if(a.act === "newharvest") await editHarvest(null);
+  if(a.act === "harvest") await editHarvest(a.id);
   if(a.act === "inv") openInvoice(a.id);
   if(a.act === "backinv") go("invoices");
   if(a.act === "editinv") editInvoice();

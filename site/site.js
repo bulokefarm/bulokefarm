@@ -204,6 +204,51 @@
   const PRODUCT_PAGES = { beef: 1, lamb: 1, pies: 1 };
   const productHref = (p) => (PRODUCT_PAGES[p.slug] ? "/" + p.slug : "/order");
 
+  /* ---------------------------------------------------------- what is left */
+
+  // A harvest says how many boxes it has to sell and how many are left
+  // (boxes, left_boxes), and each pack how many boxes it is (cartons). A
+  // lamb harvest also says a lamb is two boxes (per_head), so it can be put
+  // the way people think of it: "4½ of 6 lambs". Beef is put in kilos.
+  // None of it is known until the farm has entered the harvest's head or
+  // weight; then nothing is said, and nothing is held back.
+  const halves = (n) => {
+    const w = Math.floor(n);
+    return n - w === 0.5 ? (w ? w + "½" : "½") : String(Math.round(n * 100) / 100);
+  };
+  const knowsLeft = (h) => typeof h.boxes === "number" && typeof h.left_boxes === "number";
+  const isFull = (h) => h.status === "closed" || (h.status === "open" && knowsLeft(h) && h.left_boxes <= 0);
+
+  // {text: "4½ of 6 lambs still available", short: "4½ of 6 lambs left", part: 0.75}, or null if unknown.
+  function leftOf(h) {
+    if (knowsLeft(h) && h.boxes > 0) {
+      const part = Math.max(0, Math.min(1, h.left_boxes / h.boxes));
+      if (h.per_head) {
+        const all = h.boxes / h.per_head, left = h.left_boxes / h.per_head;
+        const noun = h.kind === "lamb" ? (all === 1 ? "lamb" : "lambs") : "head";
+        return { text: halves(left) + " of " + halves(all) + " " + noun + " still available",
+                 short: halves(left) + " of " + halves(all) + " " + noun + " left", part: part };
+      }
+      if (h.box_kg) {
+        return { text: "About " + Math.round(h.left_boxes * h.box_kg) + " kg of " +
+          Math.round(h.boxes * h.box_kg) + " kg still available",
+                 short: "about " + Math.round(h.left_boxes * h.box_kg) + " kg left", part: part };
+      }
+      return { text: h.left_boxes + " of " + h.boxes + " boxes still available",
+               short: h.left_boxes + " of " + h.boxes + " boxes left", part: part };
+    }
+    if (typeof h.left_kg === "number" && h.left_kg < 60) {
+      const few = "bout " + Math.max(0, Math.round(h.left_kg)) + " kg left";
+      return { text: "A" + few, short: "a" + few, part: null };
+    }
+    return null;
+  }
+
+  // The harvest an order for this kind would go on: the first one taking
+  // orders that is not full. The shop sends them in date order.
+  const takingOrders = (shop, kind) =>
+    shop.harvests.find((h) => h.kind === kind && h.status === "open" && !isFull(h)) || null;
+
   /* ---------------------------------------------------------- harvest dates */
 
   function harvestItem(h) {
@@ -212,7 +257,7 @@
       return '<li class="harvest"><span class="tag">Planned</span><p>' +
         esc(month ? month + ", dates to be confirmed" : "Dates to be confirmed") + "</p></li>";
     }
-    if (h.status === "closed") {
+    if (isFull(h)) {
       return '<li class="harvest"><span class="tag tag-closed">Fully booked</span>' +
         (month ? "<p>" + esc(month) + "</p>" : "") + "</li>";
     }
@@ -224,6 +269,12 @@
       rows.push(["Interstate deliveries", fmtDate(h.interstate_on), h.interstate_note || ""]);
     }
     let html = '<li class="harvest"><span class="tag tag-open">Taking orders now</span>';
+    const left = leftOf(h);
+    if (left) {
+      html += '<div class="avail"><p class="avail-text">' + esc(left.text) + "</p>" +
+        (left.part == null ? "" : '<div class="meter" aria-hidden="true"><span style="width:' +
+          Math.round(left.part * 100) + '%"></span></div>') + "</div>";
+    }
     if (rows.length) {
       html += '<dl class="dates">' + rows.map((r) =>
         "<dt>" + esc(r[0]) + "</dt><dd>" + esc(r[1]) +
@@ -234,9 +285,6 @@
     if (h.pickup_place) {
       html += '<p class="fine">Pick-up from ' + esc(h.pickup_place) +
         (h.pickup_hours ? " (" + esc(h.pickup_hours) + ")" : "") + "</p>";
-    }
-    if (typeof h.left_kg === "number" && h.left_kg < 60) {
-      html += '<p class="fine">About ' + Math.max(0, Math.round(h.left_kg)) + " kg left</p>";
     }
     return html + "</li>";
   }
@@ -354,6 +402,7 @@
   /* ---------------------------------------------------------- header and footer */
 
   const NAV = [
+    ["/", "Beef &amp; Lamb Orders"],      // the shop: the landing page
     ["/buloke-farm", "Buloke Farm"],
     ["/aboutus", "About Us"],
     ["/why-buloke-meat", "Why Buloke Meat"],
@@ -362,7 +411,9 @@
     ["/recipes", "Recipes"]
     // Dog Walking is off the site for now: the page is in hidden/ at the top of the repo.
   ];
-  const NAV_PARENT = { "/beef-recipes": "/recipes", "/lamb-recipes": "/recipes" };
+  // A page under one of the menu's: the pack pages and the order form are the shop.
+  const NAV_PARENT = { "/beef-recipes": "/recipes", "/lamb-recipes": "/recipes",
+                       "/beef": "/", "/lamb": "/", "/pies": "/", "/order": "/" };
 
   // "/aboutus.html", "/aboutus/" and "/aboutus" are the same page.
   function herePath() {
@@ -419,7 +470,7 @@
             "<address><p>Gippsland, Victoria</p>" +
             "<p>" + mailto(EMAIL) + "</p></address>" +
             "<p>ABN 21 620 822 033</p></div>" +
-          '<div><h2>Explore</h2><ul><li><a href="/">Beef &amp; Lamb Orders</a></li>' +
+          "<div><h2>Explore</h2><ul>" +
             NAV.map((n) => '<li><a href="' + n[0] + '">' + n[1] + "</a></li>").join("") + "</ul></div>" +
           "<div><h2>Follow</h2><ul>" +
             '<li><a href="https://www.instagram.com/bulokefarm/" rel="noopener">Instagram</a></li>' +
@@ -454,8 +505,22 @@
       if (dates) {
         const cut = selling.filter((p) => p.from_harvest);
         dates.innerHTML = cut.length ? cut.map((p) =>
-          '<div class="card"><h3>' + esc(p.name) + " packs</h3>" + harvestBlock(shop, p.kind) + "</div>").join("")
+          '<div class="card"><h3>' + esc(p.name) + " packs</h3>" + harvestBlock(shop, p.kind) +
+          '<p class="card-cta"><a class="btn btn-ghost" href="' + productHref(p) + '">Choose your ' +
+            esc(p.name.toLowerCase()) + " pack &rarr;</a></p></div>").join("")
           : '<p class="muted">Next harvest dates to be confirmed — order now and we’ll be in touch.</p>';
+      }
+      // One line in the picture at the top: what can be ordered today, and how much of it is left.
+      const now = $("#hero-now");
+      if (now) {
+        const bits = selling.filter((p) => p.from_harvest).map((p) => {
+          const h = takingOrders(shop, p.kind), left = h && leftOf(h);
+          return h ? p.name + (left ? " — " + left.short : "") : "";
+        }).filter(Boolean);
+        if (bits.length) {
+          now.innerHTML = "<strong>Taking orders now:</strong> " + bits.map(esc).join(" · ");
+          now.hidden = false;
+        }
       }
     }).catch(() => {
       if (tiles) tiles.innerHTML = unavailableHtml();
@@ -532,6 +597,14 @@
         return;
       }
       const weighed = p.options.some((o) => o.size_kg != null);
+      // How many of each pack the harvest now taking orders still has room for.
+      const open = p.from_harvest ? takingOrders(shop, p.kind) : null;
+      const roomFor = (o) => {
+        if (!open || !knowsLeft(open)) return "";
+        const n = Math.floor(open.left_boxes / (o.cartons || 1));
+        return n > 0 ? '<span class="choice-left">' + n + " left on this harvest</span>"
+                     : '<span class="choice-left is-none">Not enough left on this harvest — we’ll put it on the next</span>';
+      };
 
       const title = $("#product-name");
       if (title && p.name) title.textContent = p.name;
@@ -545,6 +618,7 @@
               '<label class="choice"><input type="radio" name="option" value="' + esc(o.id) + '"' + (i === 0 ? " checked" : "") + ">" +
               '<span class="choice-text"><span class="choice-title">' + esc(optionName(o)) + "</span>" +
               (o.size_kg == null && o.label && o.name !== o.label ? '<span class="choice-sub">' + esc(o.name) + "</span>" : "") +
+              roomFor(o) +
               '</span><span class="choice-price">' + esc(priceText(p, o.price_cents)) + "</span></label>").join("") +
           "</div></fieldset>" +
           p.questions.map((q, n) =>
