@@ -1,6 +1,7 @@
 // Where the shop's three public functions live. The key is the project's
 // anon key: public by design, and it can call shop_front, delivery_lookup
-// and place_order and nothing else.
+// and place_order, wake the function that sends queued email (which takes
+// no input and answers with two counts), and nothing else.
 window.SHOP = {
   url:  "https://hgnzignikbpdbbyubahu.supabase.co",
   key:  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhnbnppZ25pa2JwZGJieXViYWh1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU1NTgzNTcsImV4cCI6MjEwMTEzNDM1N30.U5vvmmZfSP0SOXsvLaxpjJ6LjWjOvaOYwTZ9VKyfFs0",

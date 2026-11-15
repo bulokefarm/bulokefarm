@@ -231,7 +231,7 @@ const BEEF_REMAINING = { columns: ["Cut", "Choices", "Butchering selection", "Si
 let ME = null, CAN_WRITE = false, OWNER = false;
 const S = { tab: "orders", harvest: null, status: "all", q: "", cq: "", invoiceId: null,
             harvests: [], products: [], options: [], orders: [], customers: [], invoices: [], biz: null,
-            subs: null, mstatus: "subscribed", mq: "" };
+            subs: null, mstatus: "subscribed", mq: "", mail: [] };
 const LOADERS = {
   harvests:  () => q(db.from("v_harvest").select("*").order("harvest_on", { ascending: false })),
   products:  () => q(db.from("product").select("*").order("sort").order("name")),
@@ -240,7 +240,9 @@ const LOADERS = {
   customers: () => q(db.from("v_customer").select("*").order("name").limit(5000)),
   invoices:  () => q(db.from("v_invoice").select("*").order("invoice_no", { ascending: false }).limit(3000)),
   biz:       () => q(db.from("farm_business").select("*").maybeSingle()),
-  subs:      () => q(db.from("v_subscriber").select("*").order("email").limit(20000))
+  subs:      () => q(db.from("v_subscriber").select("*").order("email").limit(20000)),
+  mail:      () => q(db.from("v_mail").select("id,kind,order_id,invoice_id,to_email,to_name,subject,status,error,created_at,sent_at,order_ref,invoice_no")
+                       .order("created_at", { ascending: false }).limit(300))
 };
 async function reload(...keys){ await Promise.all(keys.map(async k => { S[k] = await LOADERS[k](); })); }
 const harvestOf = id => S.harvests.find(h => h.id === id);
@@ -257,6 +259,37 @@ async function zones(pcs){
 const DAYK = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 const zoneDays = z => z ? DAYK.slice(1).filter(d => z[d]).map(d => d[0].toUpperCase() + d.slice(1)).join(", ") : "";
 const runsOn = (z, iso) => !z || !iso || !!z[DAYK[new Date(iso + "T00:00:00").getDay()]];
+
+// ── email ───────────────────────────────────────────────────────
+// The database writes an email (migration 76: a row in `mail`, in words
+// made from the order or the invoice as it stands). It does not send it.
+// The send-mail function does, and holds the mailbox's password so that
+// no page ever does. So sending from here is three steps: ask for the
+// email (an RPC, which answers with its id), wake the sender, and read
+// what became of it.
+const MAILKIND = { order: "Order confirmation", order_notice: "Notice to us", invoice: "Invoice", test: "Test" };
+const fmtWhen = t => t ? new Date(t).toLocaleString("en-AU", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }) : "";
+async function wakeSender(){
+  try { await db.functions.invoke("send-mail", { body: {} }); } catch(e){ console.warn("send-mail", e); }
+}
+async function sendQueued(id){
+  let m;
+  for(let i = 0; i < 10; i++){
+    if(i % 4 === 0) await wakeSender();
+    m = await q(db.from("v_mail").select("id,status,error,to_email").eq("id", id).single());
+    if(m.status === "sent" || m.status === "failed") break;
+    await new Promise(r => setTimeout(r, 1500));
+  }
+  await reload("mail");
+  return m;
+}
+const mailResult = m => m.status === "sent" ? `Sent to ${m.to_email}.`
+  : m.status === "failed" ? `Not sent. ${m.error || ""}`
+  : "Not sent yet — it is still in the queue. Look under Settings → Email in a minute.";
+// What has been emailed about an order or an invoice, one line each.
+const mailLines = rows => rows.length ? `<p class="lede noprint" style="margin:10px 0">${rows.map(m =>
+  `${esc(MAILKIND[m.kind] || m.kind)} ${m.status === "sent" ? "emailed" : m.status === "failed" ? `<span class="flag">not sent</span>` : "queued"} to ${esc(m.to_email)} · ${
+    fmtWhen(m.sent_at || m.created_at)}${m.status === "failed" ? " — " + esc(m.error || "") : ""}`).join("<br>")}</p>` : "";
 
 // ── forms from a spec: [key, label, type, extra] ────────────────
 function formHtml(spec, obj){
@@ -365,6 +398,7 @@ window.addEventListener("hashchange", () => {
   const [tab, arg] = location.hash.slice(1).split("/");
   if(!ME) return;
   if(tab === "invoice" && arg) safe(openInvoice)(arg);
+  else if(tab === "order" && arg) safe(editOrder)(arg);
   else if(TABS.some(t => t[0] === tab) && tab !== S.tab){ S.tab = tab; render(); }
 });
 
@@ -478,7 +512,8 @@ async function editOrder(id, preset){
       ${id ? `<button class="ghost small" data-act="msg" title="Copy a pick-up or delivery message for this customer">Copy message</button>` : ""}</div>
     <div class="dbody" id="ob"></div>
     <div class="dfoot"><div class="left">${id && OWNER ? `<button class="danger" data-act="delorder">Delete</button>` : ""}
-      ${id && CAN_WRITE ? `<button class="ghost" data-act="invoice">Raise invoice</button>` : ""}</div>
+      ${id && CAN_WRITE ? `<button class="ghost" data-act="invoice">Raise invoice</button>
+        <button class="ghost" data-act="mailorder" title="Email the customer what they ordered and what happens next">Email confirmation</button>` : ""}</div>
       <button class="ghost" data-act="close">Close</button>${CAN_WRITE ? `<button data-act="save">Save</button>` : ""}</div>`, true);
   ED.d = d;
   paintOrder();
@@ -521,6 +556,7 @@ function paintOrder(){
       <label>How<select data-o="fulfilment">${Object.entries(FUL).map(([k, l]) => `<option value="${k}" ${o.fulfilment === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
     </div>
     ${typedBlock(o, c)}
+    ${o.id ? mailLines(S.mail.filter(m => m.order_id === o.id && m.kind !== "order_notice")) : ""}
     <div id="shipbox"></div>
     <h3>What they ordered</h3>
     <div style="overflow-x:auto"><table class="lines" id="linetab"></table></div>
@@ -716,6 +752,17 @@ async function onOrderClick(e){
     await reload("invoices", "orders"); d.close(); openInvoice(iid);
   }
   if(a.act === "openinv"){ d.close(); openInvoice(a.id); }
+  if(a.act === "mailorder"){
+    const c = S.customers.find(x => x.id === o.customer_id);
+    if(!c?.email){ alert("This customer has no email address. Add one to the customer first."); return; }
+    if(!(await saveOrder())) return;      // what is emailed is the order as saved
+    const had = S.mail.some(m => m.order_id === o.id && m.kind === "order" && m.status === "sent");
+    if(!confirm(`Email ${c.email} a confirmation of this order — what they ordered and what happens next?` +
+                (had ? "\n\nOne has already been sent." : ""))) return;
+    el.disabled = true; el.textContent = "Sending…";
+    try { const m = await sendQueued(await q(db.rpc("mail_order", { p_order: o.id }))); paintOrder(); alert(mailResult(m)); }
+    finally { el.disabled = false; el.textContent = "Email confirmation"; }
+  }
   if(a.act === "delorder"){
     if(!confirm("Delete this order altogether? Cancel it instead if it was a real order that fell through.")) return;
     await q(db.from("customer_order").delete().eq("id", o.id));
@@ -1061,15 +1108,14 @@ function viewInvoice(){
   const { inv, lines } = INV, b = S.biz || {};
   const amt = l => Math.round(l.qty * l.rate_cents);
   const goods = lines.filter(l => !l.shipping);
-  const mail = `mailto:${encodeURIComponent(inv.customer_email || "")}?subject=${encodeURIComponent(`Invoice ${inv.invoice_no} from ${ME.farm_name}`)}&body=${encodeURIComponent(
-    `Hi ${inv.customer_name.split(" ")[0]},\n\nPlease find attached invoice ${inv.invoice_no} for ${money(inv.due_cents)}, due ${fmtNum(inv.due_on)}.\n\nThank you,\n${ME.farm_name}`)}`;
   $("#out").innerHTML = `<div class="controls noprint">
       <button class="ghost" data-act="backinv">← Invoices</button><span class="grow"></span>
       ${CAN_WRITE && !inv.void ? `<button class="ghost" data-act="editinv">Edit</button>` : ""}
       ${CAN_WRITE && !inv.void && !inv.sent_on ? `<button class="ghost" data-act="sentinv">Mark as sent</button>` : ""}
-      ${inv.customer_email ? `<a class="btn" href="${mail}">Email…</a>` : ""}
+      ${CAN_WRITE && !inv.void ? `<button class="ghost" data-act="mailinv">Email invoice…</button>` : ""}
       ${CAN_WRITE && !inv.void ? `<button class="danger" data-act="voidinv">Void</button>` : ""}
       <button data-act="print">Print / save as PDF</button></div>
+    ${mailLines(S.mail.filter(m => m.invoice_id === inv.id))}
     <div class="inv">
       <div class="top"><div class="from"><b>${esc(ME.farm_name)}</b><br>${esc((ME.farm_address || "").replace(/,\s*/, "\n")).replace(/\n/g, "<br>")}
           ${b.phone ? "<br>" + esc(b.phone) : ""}${b.email ? "<br>" + esc(b.email) : ""}${b.website ? "<br>" + esc(b.website) : ""}${b.abn ? "<br>ABN " + esc(b.abn) : ""}</div>
@@ -1096,6 +1142,37 @@ function viewInvoice(){
         <tr><td class="num">GST @ 0%</td><td class="num">0.00</td><td class="num">${plain(inv.net_free_cents)}</td></tr>
         ${inv.net_taxed_cents ? `<tr><td class="num">GST @ 10%</td><td class="num">${plain(inv.gst_cents)}</td><td class="num">${plain(inv.net_taxed_cents)}</td></tr>` : ""}</tbody></table></div>
     </div>`;
+}
+// The message is typed here; the invoice itself is added under it by the
+// database (mail_invoice), from the invoice as it stands at that moment.
+function mailInvoice(){
+  const { inv } = INV, first = (inv.customer_name || "").split(" ")[0];
+  const msg = `Hi ${first},\n\nThank you for your order. Your invoice is below` +
+    (inv.due_cents > 0 ? ` — ${money(inv.due_cents)} is due${inv.due_on ? " by " + fmtNum(inv.due_on) : ""}.` : ".");
+  const d = dialog(`<form method="dialog"><div class="dhead"><h2>Email invoice ${inv.invoice_no}</h2></div><div class="dbody"><div class="grid">
+      <label class="wide">To<input name="to" type="email" required value="${esc(inv.customer_email || "")}"></label>
+      <label class="wide">Subject<input name="subject" required value="${esc(`Invoice ${inv.invoice_no} from ${ME.farm_name}`)}"></label>
+      <label class="wide">Message<textarea name="message" rows="6">${esc(msg)}</textarea></label></div>
+      <p class="lede" style="margin:12px 0 0">The invoice follows your message in the body of the email — the lines, the totals and the payment details, as they stand now. There is no attachment.
+        It is sent from ${esc(S.biz?.email || "the farm's email address")}, and a copy lands in that mailbox's Sent folder.</p>
+      <p class="err" id="mailmsg" style="margin:10px 0 0"></p></div>
+    <div class="dfoot"><button type="button" class="ghost" data-act="close">Cancel</button><button type="button" data-act="send">Send</button></div></form>`);
+  d.addEventListener("click", async e => {
+    const btn = e.target.closest("[data-act]"); if(!btn) return;
+    if(btn.dataset.act === "close"){ d.close(); return; }
+    if(btn.dataset.act !== "send") return;
+    const f = d.querySelector("form"), out = d.querySelector("#mailmsg");
+    if(!f.reportValidity()) return;
+    btn.disabled = true; btn.textContent = "Sending…"; out.textContent = "";
+    try {
+      const id = await q(db.rpc("mail_invoice", { p_invoice: inv.id, p_to: f.elements.to.value.trim(),
+        p_subject: f.elements.subject.value.trim(), p_message: f.elements.message.value }));
+      const m = await sendQueued(id);
+      if(m.status === "sent"){ await reload("invoices"); d.close(); await openInvoice(inv.id); return; }
+      out.textContent = mailResult(m);
+    } catch(err){ console.error(err); out.textContent = err?.message || String(err); }
+    btn.disabled = false; btn.textContent = "Send";
+  });
 }
 const INV_SPEC = [["issued_on", "Date", "date"], ["due_on", "Due", "date"], ["ship_on", "Ship date", "date"], ["ship_via", "Ship via"], ["tracking", "Tracking no."],
   ["sent_on", "Sent on", "date"], ["bill_to", "Invoice to", "area", 4], ["ship_to", "Ship to", "area", 4], ["note", "Note printed under the payment details", "area", 2]];
@@ -1320,7 +1397,20 @@ function viewSettings(){
     <form id="bizf"><div class="grid" style="max-width:820px">${formHtml(BIZ_SPEC, S.biz || { invoice_terms_days: 14, order_prefix: "BF", first_invoice_no: 1 })}</div>
     <p>${OWNER ? `<button type="button" data-act="savebiz">Save</button>` : ""} <span id="bizmsg" style="font-size:13px;color:var(--accent)"></span></p></form>
     <h2>The butcher's login</h2><p class="lede" style="max-width:820px">The butcher signs in at <b>/butcher</b> and sees only the harvests whose sheets you have released: the summary, the customer list and each cut sheet. No prices, no payments, nothing about the herd.
-      Create their login under Supabase → Authentication → Users → Add user, then on the phone app go to Record → Manage → Who can see this farm and add their email with the role Butcher.</p>`;
+      Create their login under Supabase → Authentication → Users → Add user, then on the phone app go to Record → Manage → Who can see this farm and add their email with the role Butcher.</p>
+    <h2>Email</h2><p class="lede" style="max-width:820px">Order confirmations and invoices are sent from the Email address above${S.biz?.email ? ` (<b>${esc(S.biz.email)}</b>)` : ""}, and a copy of each lands in that mailbox's Sent folder.
+      The mailbox's password is not kept here or anywhere in these pages: it is a secret on the sending function, set in Supabase → Edge Functions → Secrets.
+      Send a test first; when it arrives, turn on the website confirmations.</p>
+    <p>${OWNER ? `<button type="button" class="ghost" data-act="mailtest">Send a test email</button>` : ""} <span id="mailtestmsg" style="font-size:13px"></span></p>
+    <p><label style="display:inline-flex;gap:8px;align-items:center;font-size:13.5px;font-weight:600"><input type="checkbox" id="mailweb" ${S.biz?.email_web_orders ? "checked" : ""} ${OWNER ? "" : "disabled"}>
+      When an order arrives from the website, email the customer a confirmation and email us a notice</label></p>
+    <h3>What has been emailed</h3>` +
+    (S.mail.length ? `<table><thead><tr><th>When</th><th>What</th><th>To</th><th>About</th><th>Subject</th><th>Status</th><th></th></tr></thead><tbody>` +
+      S.mail.map(m => `<tr class="open-row" data-act="mailview" data-id="${m.id}"><td class="m">${fmtWhen(m.created_at)}</td><td>${esc(MAILKIND[m.kind] || m.kind)}</td>
+        <td>${esc(m.to_email)}</td><td class="m">${esc(m.invoice_no ? "Invoice " + m.invoice_no : m.order_ref || "")}</td><td>${esc(m.subject)}</td>
+        <td>${m.status === "sent" ? "Sent" : m.status === "failed" ? `<span class="flag">Not sent</span> — ${esc(m.error || "")}` : "Queued"}</td>
+        <td>${m.status === "failed" && CAN_WRITE ? `<button type="button" class="ghost small" data-act="mailretry" data-id="${m.id}">Try again</button>` : ""}</td></tr>`).join("") + `</tbody></table>`
+     : `<p class="none">Nothing has been emailed yet.</p>`);
 }
 
 // ── clicks on the page ──────────────────────────────────────────
@@ -1355,6 +1445,28 @@ $("#out").addEventListener("click", safe(async e => {
   if(a.act === "inv") openInvoice(a.id);
   if(a.act === "backinv") go("invoices");
   if(a.act === "editinv") editInvoice();
+  if(a.act === "mailinv") mailInvoice();
+  if(a.act === "mailtest"){
+    const out = $("#mailtestmsg"); el.disabled = true; out.textContent = "Sending…";
+    try { const m = await sendQueued(await q(db.rpc("mail_test"))); viewSettings(); $("#mailtestmsg").textContent = m.status === "sent" ? `Sent to ${m.to_email} — check the inbox.` : mailResult(m); }
+    catch(err){ el.disabled = false; out.textContent = ""; throw err; }
+    return;
+  }
+  if(a.act === "mailretry"){
+    el.disabled = true; el.textContent = "Sending…";
+    await q(db.rpc("mail_retry", { p_id: a.id })); const m = await sendQueued(a.id); viewSettings();
+    if(m.status !== "sent") alert(mailResult(m));
+    return;
+  }
+  if(a.act === "mailview"){
+    const m = await q(db.from("v_mail").select("to_email,to_name,subject,body_text,status,error,created_at,sent_at").eq("id", a.id).single());
+    const d = dialog(`<div class="dhead"><h2>${esc(m.subject)}</h2></div><div class="dbody">
+        <p class="lede">To ${esc(m.to_name ? m.to_name + " — " : "")}${esc(m.to_email)} · ${m.status === "sent" ? "sent " + fmtWhen(m.sent_at) : m.status === "failed" ? "not sent: " + esc(m.error || "") : "queued " + fmtWhen(m.created_at)}</p>
+        <pre style="white-space:pre-wrap;font:inherit;font-size:13.5px;margin:0">${esc(m.body_text)}</pre></div>
+      <div class="dfoot"><button type="button" data-act="close">Close</button></div>`);
+    d.addEventListener("click", e => { if(e.target.closest("[data-act=close]")) d.close(); });
+    return;
+  }
   if(a.act === "sentinv"){ await q(db.from("invoice").update({ sent_on: today() }).eq("id", INV.inv.id)); await reload("invoices"); openInvoice(INV.inv.id); }
   if(a.act === "voidinv"){ if(!confirm(`Void invoice ${INV.inv.invoice_no}? The number is kept and never reused.`)) return;
     await q(db.from("invoice").update({ void: true }).eq("id", INV.inv.id)); await reload("invoices", "orders"); openInvoice(INV.inv.id); }
@@ -1375,6 +1487,12 @@ $("#out").addEventListener("click", safe(async e => {
 // Typing in the delivery table saves that one field.
 $("#out").addEventListener("change", safe(async e => {
   const t = e.target;
+  if(t.id === "mailweb"){
+    if(t.checked && !S.mail.some(m => m.kind === "test" && m.status === "sent") &&
+       !confirm("No test email has got through yet, so these may not be sent. Turn it on anyway?")){ t.checked = false; return; }
+    await q(db.from("farm_business").upsert({ farm_id: ME.farm_id, email_web_orders: t.checked }));
+    await reload("biz"); return;
+  }
   if(t.dataset.id && t.dataset.f){
     const v = t.value.trim() || null;
     await q(db.from("customer_order").update({ [t.dataset.f]: v }).eq("id", t.dataset.id));
@@ -1437,6 +1555,11 @@ function signIn(){
     $("#out").innerHTML = `<p class="gap"><b>Not available yet.</b> ${esc(e.message)} — the sales migrations (69–72) haven't been run.</p>`;
     return;
   }
+  // The email log is newer than the rest (76) and nothing else waits on it.
+  // Anything still queued — a website order whose browser closed before it
+  // could wake the sender — is sent now that somebody is here.
+  try { await reload("mail"); } catch(e){ console.warn("mail", e); S.mail = []; }
+  if(S.mail.some(m => m.status === "queued")) wakeSender().then(() => reload("mail")).catch(() => {});
   // Start on the harvest that is taking orders, or the latest; but if the
   // website has sent orders nobody has looked at, start with those.
   S.harvest = S.orders.some(o => o.status === "new") ? "all" : (S.harvests.find(h => h.status === "open") || S.harvests[0] || { id: "all" }).id;
@@ -1445,6 +1568,8 @@ function signIn(){
   if(tab === "invoice" && arg) { await safe(openInvoice)(arg); return; }
   if(TABS.some(t => t[0] === tab)) S.tab = tab;
   render();
+  // The link in a "new website order" email: /sales#order/<id>.
+  if(tab === "order" && arg) await safe(editOrder)(arg);
 })();
 </script>
 </body>

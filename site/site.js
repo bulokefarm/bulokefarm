@@ -13,6 +13,7 @@
  *        shop_front       what is for sale and when the next harvest is
  *        delivery_lookup  whether the carrier goes to a postcode, and when
  *        place_order      writes the order, returns its reference
+ *      and, when place_order says it queued emails, wakes send-mail.
  *   4. Renders whichever page it is on: the shop home (body data-page="home"),
  *      a product (body data-product="beef"), or the order form
  *      (body data-page="order"). Every other page is plain HTML.
@@ -119,6 +120,25 @@
         clearTimeout(timer);
         throw new Error(UNREACHABLE);
       });
+  }
+
+  // An order's emails are written by the database as part of place_order
+  // and wait in a queue; this wakes the function that sends them. It
+  // carries nothing and nothing depends on it: if it never arrives, the
+  // order is still in, and the queue is sent the next time anyone asks.
+  function wakeSender() {
+    try {
+      fetch(SHOP.url + "/functions/v1/send-mail", {
+        method: "POST",
+        headers: {
+          "apikey": SHOP.key,
+          "Authorization": "Bearer " + SHOP.key,
+          "Content-Type": "application/json"
+        },
+        body: "{}",
+        keepalive: true
+      }).catch(() => {});
+    } catch (e) { /* the order is in; the email can wait */ }
   }
 
   // One shop_front call per page view, shared by whoever asks.
@@ -832,6 +852,7 @@
       submit.textContent = "Placing your order…";
       rpc("place_order", { p_farm: SHOP.farm, p: p }).then((res) => {
         if (!res || !res.ref) throw new Error(UNREACHABLE);
+        if (res.emailed) wakeSender();
         done = true;
         onCartChange = null;
         writeCart([]);
@@ -885,6 +906,7 @@
             (l.answers ? " — " + esc(l.answers) : "") + "</li>").join("") + "</ul>" +
           "<h2>What happens next</h2>" +
           "<ol>" + steps.map((s) => "<li>" + esc(s) + "</li>").join("") + "</ol>" +
+          (res.emailed ? "<p>We’ve emailed a copy of this to " + esc(p.email) + ". If it isn’t there in a few minutes, check your junk folder.</p>" : "") +
           "<p>Questions? Email " + mailto(email) + " and mention " + esc(res.ref) + ".</p>" +
           '<p class="actions"><a class="btn btn-ghost" href="/">Back to the shop</a></p>' +
         "</section>";

@@ -345,6 +345,30 @@ questions the product really asks, from the choices it really offers.
 **Bank details are not in the repo.** They are typed into **Sales →
 Settings**, live in `farm_business`, and only an owner can change them.
 
+**The database writes an email; a function sends it.** Three emails go
+out, all from the mailbox on the letterhead (`farm_business.email`): a
+confirmation to the customer and a notice to the farm when an order
+arrives from the website, and an invoice when someone presses **Email
+invoice…** in Sales. Each is a row in `mail` — who to, the subject, the
+words — written in SQL from the order or the invoice as it stands
+(migration 76), and that row is the record of what was said. Sending is
+the one thing in this system that is neither a page nor the database:
+`supabase/functions/send-mail` claims what is queued, hands each to
+Gmail, and reports back. It exists because a browser must never hold
+the mailbox's password and Postgres cannot talk to a mail server; it
+decides nothing. So an order never depends on email — `place_order()`
+queues after the order is written, and a failure there is undone alone.
+Nothing is sent twice — the claim is a lock. And nothing old is sent by
+surprise — a row not sent within a day is marked failed, and a person
+may send it again from **Sales → Settings → Email**. The confirmation
+says what the website's thank-you page says (`queue_order_mail()` here,
+`showConfirmation` in `site/site.js`: change one, change the other).
+The invoice goes in the body of the email, not as an attachment.
+Website confirmations are a switch the owner turns on
+(`farm_business.email_web_orders`) once the test email has arrived. A
+second farm with a different address on its letterhead is refused in
+its log, not sent as the first.
+
 **A subscriber is not a customer.** A customer has ordered; a
 subscriber gave an email address to be told when there is meat to
 order. Most of one are not the other, so `subscriber` is its own table,
@@ -399,6 +423,7 @@ customer ── customer_order ─┬─ order_line      what they ordered; actu
                             └─ invoice ── invoice_line   a copy, numbered, kept as sent
 delivery_zone                                  postcode -> carrier zone and days
 subscriber                                     the mailing list, with everyone who has left it
+mail                                           every email asked for: the words, and whether it went
 farm_business                                  ABN, bank details: the invoice letterhead
 
 farm                who runs the app on this land: name, address, mark, hostname
@@ -449,6 +474,7 @@ Every table but `heartbeat`, `user_pref` and `farm_user` carries
 | `v_invoice` | An invoice with subtotal, shipping, GST, paid, due, and the BAS split |
 | `v_delivery_postcode` | One row per postcode: the carrier's zone and the days they run |
 | `v_subscriber` | The mailing list, with whether each address has ever ordered |
+| `v_mail` | The email log: what went to whom, about which order or invoice, and what did not go and why |
 
 ### Deliberately not used
 
@@ -498,6 +524,7 @@ supabase/
   seed/toland/          Toland Merino's, the same way
     notes/
   seed/tools/           the xlsx/csv -> SQL converters; last argument is the farm slug
+  functions/send-mail/  hands queued email to the farm's mailbox. The only server-side code
   config.toml           the Supabase CLI, for a local stack (ports 544xx)
   schema.sql            snapshot, written back by the backup workflow
 .github/workflows/      keepalive and backup
@@ -563,6 +590,7 @@ rebuild, so anything depending on imported records has to be a seed.
 | 73 | The mailing list: `subscriber` with subscribed, unsubscribed and bounced; `import_subscribers()`, where the later change wins and an opt-out is never undone by an older yes; `v_subscriber` |
 | 74 | What a product asks on the order form: `product.questions`, `order_line.answers`, `answers_for()`. Choices only. Beef asks about soup bones. `shop_front()`, `place_order()`, `save_order()` and `butcher_sheet()` replaced whole to carry them |
 | 75 | A box is a carton: `butcher_sheet()` numbers one box per carton, so a whole lamb is two boxes and a 24 kg beef pack is two 12 kg boxes, each with its sheet |
+| 76 | Email: `mail` is the queue and the record. `queue_order_mail()`, `mail_order()`, `mail_invoice()`, `mail_test()` and `mail_retry()` write it; `mail_claim()` and `mail_done()` are the sender's alone; `v_mail`; `farm_business.email_web_orders`. `place_order()` replaced whole to queue an order's two emails |
 
 ### Seeds
 
@@ -597,8 +625,9 @@ reproduce the database. Migration 52 is what that looks like: an event
 trigger that lived only on the live database, and a rebuild that died
 at 48 because of it.
 
-A rebuild can be run locally: `supabase start` (Docker; only the
-database is enabled in `config.toml`) applies every migration to an
+A rebuild can be run locally: `supabase start` (Docker; `config.toml`
+enables the database, the API, logins, the function runtime and a mail
+catcher) applies every migration to an
 empty database, and yesterday's backup artifact restores into a second
 database beside it for testing against real data. The farm-scope
 migrations were proved that way — see `farm_scope_plan.md` §8. `supabase/schema.sql` is the check — the backup
@@ -728,6 +757,16 @@ or `python .claude/serve.py site 8789`. On localhost only, a JSON
 `{url, key}` in localStorage under `bf.api` points a page at a local
 Supabase stack instead of production.
 
+The sender is not a page and is deployed on its own, only when it
+changes: `supabase functions deploy send-mail --project-ref <ref>`. Its
+two secrets are set in the dashboard, **Edge Functions → Secrets**:
+`GMAIL_USER` and `GMAIL_APP_PASSWORD`. To try it locally, `supabase
+functions serve --env-file <file>` with
+`SMTP_HOST=supabase_inbucket_bulokefarm`, `SMTP_PORT=1025`,
+`SMTP_TLS=false` and `GMAIL_USER` the farm's address: mail then lands
+in the stack's own catcher, `http://127.0.0.1:54424`, and goes nowhere
+else.
+
 **`_headers` must name the clean URLs.** Pages serves `/` and `/reports`,
 not `/index.html`, so a `/*.html` rule matches the filename nobody
 requests and applies to nothing — `X-Frame-Options` was missing from
@@ -749,6 +788,7 @@ serves clean URLs and the rule causes a redirect loop.
 | Domain | VentraIP (`ns1-3.nameserver.net.au`), one CNAME: `admin` → `bulokefarm.pages.dev` |
 | Main website | `site/`, a second Cloudflare Pages project, once `www` is pointed at it. Until then Squarespace is still what the public sees |
 | Carrier | Blackbird Logistics, booked through their Detrack account: the manifest is downloaded from **Sales → Delivery** and imported under Jobs |
+| Email | The farm's own Gmail mailbox, reached at `smtp.gmail.com:465` with an app password. What was sent is in that mailbox's Sent folder; the log is **Sales → Settings → Email**. Not 587: Supabase closes 25 and 587 to functions |
 | Hosting | Cloudflare Pages, project `bulokefarm` |
 | Database | Supabase project `production`, region **Oceania (Sydney)** |
 | Repo | `github.com/bulokefarm/bulokefarm` |
@@ -765,6 +805,13 @@ owners, delete to owners.
 
 The **service_role** key bypasses RLS entirely. Never in this repo,
 never in the HTML.
+
+The **mailbox's app password** is a secret on the `send-mail` function
+(`GMAIL_APP_PASSWORD`, beside `GMAIL_USER`). It opens the whole
+mailbox, not only sending. Never in this repo, never in the HTML, never
+in a table. If it leaks, or the function is retired, delete it at
+myaccount.google.com/apppasswords: that ends it at once, and a new one
+goes in the same secret.
 
 The Supabase client is self-hosted at `public/vendor/supabase.js`, with
 esm.sh only as a fallback. Refresh it with:
@@ -906,13 +953,15 @@ migration 39; the stored values are listed by
 anything else was a deliberate adjustment, so they are not rewritten
 automatically. The one-line accept is in the migration's comments.
 
-**Selling, the parts not built.** A web order does not email anyone:
-it shows as *new* on **Sales** and the customer sees a reference on the
-page. Invoices are printed to PDF and emailed by hand. Deliveries are
-booked by downloading the manifest and importing it into Detrack; the
-Detrack number and tracking link are pasted back. All three want a
-server-side piece — an edge function holding a mail key and a Detrack
-API key — and none has one yet. There is no card payment. A harvest is
+**Selling, the parts not built.** Email carries no attachment: an
+invoice goes in the body, and a PDF is still Print → Save as PDF.
+Nothing is emailed when an order is packed, delivered or paid. The
+queue is sent when a page wakes the sender (the website after an
+order, Sales when someone presses Send or opens the page); there is no
+timer behind it. Deliveries are booked by downloading the manifest and
+importing it into Detrack; the Detrack number and tracking link are
+pasted back. That wants a second function, holding a Detrack API key,
+and has none yet. There is no card payment. A harvest is
 not yet linked to the animals that went on it (`consignment`), and
 whether pies carry GST is the accountant's call: they are set GST-free.
 Campaigns are still written and sent in Mailchimp. The mailing list
