@@ -334,6 +334,26 @@ an hour from one email, forty in all, then it asks people to write.
 **Bank details are not in the repo.** They are typed into **Sales →
 Settings**, live in `farm_business`, and only an owner can change them.
 
+**A subscriber is not a customer.** A customer has ordered; a
+subscriber gave an email address to be told when there is meat to
+order. Most of one are not the other, so `subscriber` is its own table,
+and a subscriber who has also ordered is found by their email
+(`v_subscriber`), not by a link someone has to keep in step. The list
+keeps everyone who has left it: `unsubscribed`, and `bounced` (what
+Mailchimp calls cleaned). Those two are the more important half — a
+list that only remembers who said yes will, the first time it is
+re-imported, write to someone who said no. `status_on` is when each
+became what they are, and it settles every disagreement:
+`import_subscribers()` lets the later change win, and at the same
+moment the one that is not *subscribed*. Only *subscribed* addresses
+can be copied or downloaded from **Sales → Mailing list**.
+
+**People's details are not in the repo either.** Customers and
+subscribers are loaded from the page (**Import…**) or by a converter
+whose output is run and thrown away — `import_mailchimp_audience.py`
+says so at the top. The seeds carry stock, products and a carrier's
+schedule; they do not carry anyone's email address.
+
 ---
 
 ## 3. Data model
@@ -367,6 +387,7 @@ customer ── customer_order ─┬─ order_line      what they ordered; actu
                             ├─ order_payment   deposit, balance, refund: paid is their sum
                             └─ invoice ── invoice_line   a copy, numbered, kept as sent
 delivery_zone                                  postcode -> carrier zone and days
+subscriber                                     the mailing list, with everyone who has left it
 farm_business                                  ABN, bank details: the invoice letterhead
 
 farm                who runs the app on this land: name, address, mark, hostname
@@ -416,6 +437,7 @@ Every table but `heartbeat`, `user_pref` and `farm_user` carries
 | `v_customer` | Customers with order count, last order, spent and owing |
 | `v_invoice` | An invoice with subtotal, shipping, GST, paid, due, and the BAS split |
 | `v_delivery_postcode` | One row per postcode: the carrier's zone and the days they run |
+| `v_subscriber` | The mailing list, with whether each address has ever ordered |
 
 ### Deliberately not used
 
@@ -524,6 +546,7 @@ rebuild, so anything depending on imported records has to be a seed.
 | 70 | Selling: `product`, `product_option`, `harvest`, `customer`, `customer_order`, `order_line`, `order_payment`, `invoice`, `invoice_line`, `delivery_zone`, `farm_business`; per-farm order and invoice numbers; `save_order()`, `issue_invoice()`; `v_order`, `v_harvest`, `v_customer`, `v_invoice` |
 | 71 | What the butcher sees: `butcher_harvests()`, `butcher_sheet()`, and `butcher_pack()` to tick a pack off and weigh it |
 | 72 | The shop front, callable with no login: `shop_front()`, `delivery_lookup()`, `place_order()` |
+| 73 | The mailing list: `subscriber` with subscribed, unsubscribed and bounced; `import_subscribers()`, where the later change wins and an opt-out is never undone by an older yes; `v_subscriber` |
 
 ### Seeds
 
@@ -872,6 +895,11 @@ server-side piece — an edge function holding a mail key and a Detrack
 API key — and none has one yet. There is no card payment. A harvest is
 not yet linked to the animals that went on it (`consignment`), and
 whether pies carry GST is the accountant's call: they are set GST-free.
+Campaigns are still written and sent in Mailchimp. The mailing list
+here is a copy taken on 15 November 2026: export the audience again and
+import it under **Sales → Mailing list** before relying on it, and add
+anyone who unsubscribes by replying. The new website has no sign-up
+form yet.
 
 **Smaller things.** The masthead head count ignores the species scope.
 `n/B/R` (`marking_code`) meaning still unknown. `TOL 20-P1065`'s EID is

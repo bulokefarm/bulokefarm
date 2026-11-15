@@ -230,7 +230,8 @@ const BEEF_REMAINING = { columns: ["Cut", "Choices", "Butchering selection", "Si
 // ── state ───────────────────────────────────────────────────────
 let ME = null, CAN_WRITE = false, OWNER = false;
 const S = { tab: "orders", harvest: null, status: "all", q: "", cq: "", invoiceId: null,
-            harvests: [], products: [], options: [], orders: [], customers: [], invoices: [], biz: null };
+            harvests: [], products: [], options: [], orders: [], customers: [], invoices: [], biz: null,
+            subs: null, mstatus: "subscribed", mq: "" };
 const LOADERS = {
   harvests:  () => q(db.from("v_harvest").select("*").order("harvest_on", { ascending: false })),
   products:  () => q(db.from("product").select("*").order("sort").order("name")),
@@ -238,7 +239,8 @@ const LOADERS = {
   orders:    () => q(db.from("v_order").select("*").order("order_no", { ascending: false }).limit(3000)),
   customers: () => q(db.from("v_customer").select("*").order("name").limit(5000)),
   invoices:  () => q(db.from("v_invoice").select("*").order("invoice_no", { ascending: false }).limit(3000)),
-  biz:       () => q(db.from("farm_business").select("*").maybeSingle())
+  biz:       () => q(db.from("farm_business").select("*").maybeSingle()),
+  subs:      () => q(db.from("v_subscriber").select("*").order("email").limit(20000))
 };
 async function reload(...keys){ await Promise.all(keys.map(async k => { S[k] = await LOADERS[k](); })); }
 const harvestOf = id => S.harvests.find(h => h.id === id);
@@ -348,7 +350,7 @@ function editSheet(sheet, title, onSave, canClear){
 }
 
 // ── tabs ────────────────────────────────────────────────────────
-const TABS = [["orders", "Orders"], ["harvests", "Harvests"], ["customers", "Customers"], ["invoices", "Invoices"],
+const TABS = [["orders", "Orders"], ["harvests", "Harvests"], ["customers", "Customers"], ["mailing", "Mailing list"], ["invoices", "Invoices"],
               ["delivery", "Delivery"], ["products", "Products"], ["settings", "Settings"]];
 function paintTabs(){
   const fresh = S.orders.filter(o => o.status === "new").length;
@@ -369,7 +371,7 @@ window.addEventListener("hashchange", () => {
 function render(){
   document.body.classList.toggle("printing-inv", S.tab === "invoice");
   paintTabs();
-  const view = { orders: viewOrders, harvests: viewHarvests, customers: viewCustomers, invoices: viewInvoices,
+  const view = { orders: viewOrders, harvests: viewHarvests, customers: viewCustomers, mailing: viewMailing, invoices: viewInvoices,
                  invoice: viewInvoice, delivery: viewDelivery, products: viewProducts, settings: viewSettings }[S.tab] || viewOrders;
   safe(view)();
 }
@@ -838,6 +840,125 @@ function viewCustomers(){
   $("#cq").oninput = e => { S.cq = e.target.value; const pos = e.target.selectionStart; viewCustomers(); const n = $("#cq"); n.focus(); n.setSelectionRange(pos, pos); };
 }
 
+// ── the mailing list ────────────────────────────────────────────
+// Who has asked to hear about the next harvest, and who has asked not
+// to (migration 73). Only "subscribed" is ever copied or downloaded:
+// the other two are kept so that nobody is written to by mistake.
+const MSTATUS = { subscribed: "Subscribed", unsubscribed: "Unsubscribed", bounced: "Bounced" };
+const subName = r => [r.first_name, r.last_name].filter(Boolean).join(" ");
+const mailingShown = () => { const term = S.mq.trim().toLowerCase();
+  return (S.subs || []).filter(r => (S.mstatus === "all" || r.status === S.mstatus) &&
+    (!term || [r.email, r.first_name, r.last_name, r.state, r.status_note].join(" ").toLowerCase().includes(term))); };
+async function viewMailing(){
+  if(!S.subs){
+    $("#out").innerHTML = `<p class="loading">Loading…</p>`;
+    try { await reload("subs"); }
+    catch(e){ $("#out").innerHTML = `<p class="gap"><b>Not available yet.</b> ${esc(e.message)} — the mailing list migration (73) hasn't been run.</p>`; return; }
+  }
+  const n = k => S.subs.filter(r => r.status === k).length, rows = mailingShown(), yes = rows.filter(r => r.status === "subscribed");
+  $("#out").innerHTML = `<div class="controls noprint">
+      <label>Show<div class="chips">${[...Object.entries(MSTATUS), ["all", "All"]].map(([k, l]) =>
+        `<button class="chip" data-m="${k}" aria-pressed="${S.mstatus === k}">${l} <small>${k === "all" ? S.subs.length : n(k)}</small></button>`).join("")}</div></label>
+      <label class="grow">Find<input id="mq" type="search" value="${esc(S.mq)}" placeholder="Email, name, state"></label>
+      ${CAN_WRITE ? `<button data-act="newsub">+ Add</button><button class="ghost" data-act="importsub">Import…</button>` : ""}
+    </div>
+    <div class="controls noprint" style="padding-top:0"><p class="lede grow" style="margin:0">Only people marked <b>subscribed</b> may be written to.
+        Unsubscribed and bounced addresses are kept so they are never added back by mistake.</p>
+      <button class="ghost" data-act="copysubs" ${yes.length ? "" : "disabled"}>Copy ${yes.length} subscribed email${yes.length === 1 ? "" : "s"}</button>
+      <button class="ghost" data-act="csvsubs" ${yes.length ? "" : "disabled"}>Download them (.csv)</button></div>` +
+    (rows.length ? `<table><thead><tr><th>Email</th><th>Name</th><th>State</th><th>Status</th><th>Since</th><th>Note</th><th>Has ordered</th></tr></thead><tbody>` +
+      rows.map(r => `<tr class="open-row" data-act="sub" data-id="${r.id}"><td>${esc(r.email)}</td><td>${esc(subName(r))}</td><td>${esc(r.state || "")}</td>
+        <td><span class="tag ${r.status === "subscribed" ? "confirmed" : r.status === "bounced" ? "warn" : "new"}">${r.status}</span></td>
+        <td class="m">${fmt((r.status_on || "").slice(0, 10))}</td><td><small>${esc(r.status_note || "")}</small></td>
+        <td>${r.customer_id ? `${esc(r.customer_name)}${r.orders ? ` <small>· ${r.orders} order${r.orders === 1 ? "" : "s"}</small>` : ""}` : ""}</td></tr>`).join("") +
+      `</tbody><tfoot><tr><td colspan="7">${rows.length} shown</td></tr></tfoot></table>`
+     : `<p class="none">${S.subs.length ? "Nobody here matching that." : "Nobody on the list yet. Import a Mailchimp export to start."}</p>`);
+  $("#mq").oninput = e => { S.mq = e.target.value; const pos = e.target.selectionStart; viewMailing(); const el = $("#mq"); el.focus(); el.setSelectionRange(pos, pos); };
+}
+const SUB_SPEC = [["email", "Email", "text", 'type="email"'], ["first_name", "First name"], ["last_name", "Last name"], ["state", "State"],
+  ["status", "Status", "sel", Object.entries(MSTATUS)], ["status_note", "Note — why, or which campaign", "area", 2]];
+function editSubscriber(id){
+  const r = id ? S.subs.find(x => x.id === id) : { status: "subscribed" };
+  const d = dialog(`<form method="dialog"><div class="dhead"><h2>${id ? esc(r.email) : "Add to the mailing list"}</h2></div>
+    <div class="dbody"><div class="grid">${formHtml(SUB_SPEC, r)}</div>
+      ${id ? `<p class="lede" style="margin-top:10px">${esc(MSTATUS[r.status])} since ${fmtDay((r.status_on || "").slice(0, 10))}${r.source ? " · from " + esc(r.source) : ""}${
+        r.customer_id ? ` · also a customer (${esc(r.customer_name)})` : ""}</p>` : ""}</div>
+    <div class="dfoot"><div class="left">${id && OWNER ? `<button type="button" class="danger" data-act="del">Delete</button>` : ""}</div>
+      <button type="button" class="ghost" data-act="close">Cancel</button>${CAN_WRITE ? `<button type="button" data-act="save">Save</button>` : ""}</div></form>`);
+  d.addEventListener("click", safe(async e => {
+    const a = e.target.closest("[data-act]")?.dataset; if(!a) return;
+    if(a.act === "close") d.close();
+    if(a.act === "del"){
+      if(!confirm("Delete this address altogether? To stop writing to someone, mark them unsubscribed instead — a deleted address can be imported again as subscribed.")) return;
+      await q(db.from("subscriber").delete().eq("id", id)); await reload("subs"); d.close(); render();
+    }
+    if(a.act === "save"){
+      const v = formRead(SUB_SPEC, d.querySelector("form"));
+      if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v.email || "")){ alert("That email address does not look right."); return; }
+      v.email = v.email.toLowerCase();
+      if(!id || v.status !== r.status) v.status_on = new Date().toISOString();
+      if(id) await q(db.from("subscriber").update(v).eq("id", id));
+      else await q(db.from("subscriber").insert({ ...v, source: "manual", opted_in_on: v.status === "subscribed" ? v.status_on : null }));
+      await reload("subs"); d.close(); render();
+    }
+  }));
+}
+// A Mailchimp audience export, or any CSV with an email column. Which
+// list a Mailchimp file is — subscribed, unsubscribed, cleaned — is
+// read from its columns; the database decides what happens to someone
+// already on the list (import_subscribers: the later change wins).
+const mcWhen = v => { v = String(v || "").trim(); let m;
+  if((m = v.match(/^(\d{4})-(\d\d)-(\d\d)(?:[ T](\d\d):(\d\d)(?::(\d\d))?)?/))) return `${m[1]}-${m[2]}-${m[3]} ${m[4] || "00"}:${m[5] || "00"}:${m[6] || "00"}`;
+  if((m = v.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?: (\d{1,2}):(\d\d)(?::(\d\d))?)?/))) return `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")} ${(m[4] || "0").padStart(2, "0")}:${m[5] || "00"}:${m[6] || "00"}`;
+  return ""; };
+function readAudience(text){
+  const rows = parseTable(text); if(rows.length < 2) return { why: "That file has no rows." };
+  const heads = rows[0].map(h => h.trim()), at = name => heads.findIndex(h => h.toLowerCase() === name.toLowerCase());
+  const ie = heads.findIndex(h => /^e-?mail( address)?$/i.test(h)); if(ie < 0) return { why: "No column headed Email or Email Address was found." };
+  const status = at("UNSUB_TIME") >= 0 ? "unsubscribed" : at("CLEAN_TIME") >= 0 ? "bounced" : "subscribed";
+  const reasons = { NORMAL: "", NOSIGNUP: "said they never signed up", SPAM: "marked it as spam", OTHER: "" };
+  const out = rows.slice(1).map(r => { const g = name => { const i = at(name); return i < 0 ? "" : String(r[i] ?? "").trim(); };
+    const why = (g("UNSUB_REASON") in reasons ? reasons[g("UNSUB_REASON")] : g("UNSUB_REASON").toLowerCase()) || g("UNSUB_REASON_OTHER");
+    return { email: String(r[ie] ?? "").trim(), first_name: g("First Name"), last_name: g("Last Name"), state: g("State"),
+      opted_in_on: mcWhen(g("CONFIRM_TIME")) || mcWhen(g("OPTIN_TIME")),
+      changed_on: status === "unsubscribed" ? mcWhen(g("UNSUB_TIME")) : status === "bounced" ? mcWhen(g("CLEAN_TIME")) : (mcWhen(g("LAST_CHANGED")) || mcWhen(g("CONFIRM_TIME"))),
+      note: status === "unsubscribed" ? [g("UNSUB_CAMPAIGN_TITLE") ? `Unsubscribed from “${g("UNSUB_CAMPAIGN_TITLE")}”` : "", why].filter(Boolean).join("; ")
+          : status === "bounced" ? (g("CLEAN_CAMPAIGN_TITLE") ? `Bounced on “${g("CLEAN_CAMPAIGN_TITLE")}”` : "") : "",
+      source: at("LEID") >= 0 ? "Mailchimp" + (g("SOURCE") ? ": " + g("SOURCE") : "") : "import" }; }).filter(x => x.email);
+  return { status, rows: out, mailchimp: at("LEID") >= 0 };
+}
+function importSubscribers(){
+  let got = null;
+  const d = dialog(`<div class="dhead"><h2>Import to the mailing list</h2></div><div class="dbody">
+    <p class="lede" style="margin-top:12px">Choose a Mailchimp audience export (Audience → Export audience gives up to three files: subscribed, unsubscribed, cleaned), or any CSV with an Email column.
+      Import all three — the people who left are the ones the list most needs to remember. Importing the same file twice changes nothing.</p>
+    <input type="file" id="subfile" accept=".csv,text/csv">
+    <div class="grid" style="margin-top:10px"><label>This file is a list of<select id="substatus">${Object.entries(MSTATUS).map(([k, l]) => `<option value="${k}">${l} addresses</option>`).join("")}</select></label></div>
+    <p id="submsg" style="font-size:13.5px;min-height:1.3em"></p></div>
+    <div class="dfoot"><button class="ghost" data-act="close">Close</button><button data-act="go" disabled>Import</button></div>`);
+  d.querySelector("#subfile").addEventListener("change", safe(async e => {
+    const f = e.target.files[0]; if(!f) return;
+    got = readAudience(await f.text());
+    const msg = d.querySelector("#submsg"), go = d.querySelector("[data-act=go]");
+    if(got.why){ msg.innerHTML = `<span class="flag">${esc(got.why)}</span>`; go.disabled = true; return; }
+    d.querySelector("#substatus").value = got.status; d.querySelector("#substatus").disabled = got.mailchimp;
+    msg.innerHTML = `<b>${got.rows.length}</b> address${got.rows.length === 1 ? "" : "es"}${got.mailchimp ? ` — Mailchimp's <b>${esc(MSTATUS[got.status].toLowerCase())}</b> list` : ""}.`;
+    go.disabled = !got.rows.length;
+  }));
+  d.addEventListener("click", safe(async e => {
+    const a = e.target.closest("[data-act]")?.dataset; if(!a) return;
+    if(a.act === "close"){ d.close(); render(); }
+    if(a.act === "go"){
+      const go = d.querySelector("[data-act=go]"), rows = got.rows; got = null;
+      go.disabled = true; d.querySelector("#submsg").textContent = "Importing…";
+      const res = await q(db.rpc("import_subscribers", { p_status: d.querySelector("#substatus").value, p_rows: rows }));
+      await reload("subs"); viewMailing();   // the list behind the dialog, so closing early never shows a stale one
+      d.querySelector("#submsg").innerHTML = `Done: <b>${res.added}</b> added, <b>${res.changed}</b> updated, ${res.unchanged} already as they were${res.skipped ? `, ${res.skipped} skipped (no usable email, or repeated)` : ""}. Choose another file, or close.`;
+      d.querySelector("[data-act=go]").disabled = true; d.querySelector("#subfile").value = ""; got = null;
+    }
+  }));
+}
+
 // ── harvests ────────────────────────────────────────────────────
 const HARV_SPEC = [["code", "Code"], ["kind", "Kind", "sel", [["beef", "Beef"], ["lamb", "Lamb"]]], ["title", "Title"], ["status", "On the website", "sel", HSTATUS],
   ["h1", "Dates", "head"], ["harvest_on", "Harvest", "date"], ["butcher_on", "Butchering", "date"], ["pickup_on", "Pick-up", "date"],
@@ -1184,6 +1305,8 @@ $("#out").addEventListener("click", safe(async e => {
   if(hc){ S.harvest = hc.dataset.h; render(); return; }
   const sc = e.target.closest("[data-s]");
   if(sc){ S.status = sc.dataset.s; render(); return; }
+  const mc = e.target.closest("[data-m]");
+  if(mc){ S.mstatus = mc.dataset.m; render(); return; }
   const el = e.target.closest("[data-act]"); if(!el) return;
   const a = el.dataset;
   if(el.tagName === "A") e.preventDefault();
@@ -1192,6 +1315,16 @@ $("#out").addEventListener("click", safe(async e => {
   if(a.act === "order") editOrder(a.id);
   if(a.act === "newcust") editCustomer(null);
   if(a.act === "importcust") importCustomers();
+  if(a.act === "newsub") editSubscriber(null);
+  if(a.act === "sub") editSubscriber(a.id);
+  if(a.act === "importsub") importSubscribers();
+  if(a.act === "copysubs" || a.act === "csvsubs"){
+    const yes = mailingShown().filter(r => r.status === "subscribed");
+    if(a.act === "copysubs"){ await navigator.clipboard.writeText(yes.map(r => r.email).join(", ")); el.textContent = "Copied"; }
+    else { const cell = v => /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+      download(new Blob([[["Email Address", "First Name", "Last Name", "State"], ...yes.map(r => [r.email, r.first_name || "", r.last_name || "", r.state || ""])]
+        .map(r => r.map(cell).join(",")).join("\r\n")], { type: "text/csv" }), `Mailing list - subscribed - ${today()}.csv`); }
+  }
   if(a.act === "cust") editCustomer(a.id);
   if(a.act === "newharvest") editHarvest(null);
   if(a.act === "harvest") editHarvest(a.id);
