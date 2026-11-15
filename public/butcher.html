@@ -30,6 +30,8 @@ button{border:0;border-radius:8px;padding:9px 15px;font:inherit;font-weight:700;
 button.ghost,a.btn{background:var(--card);color:var(--ink);border:1px solid var(--rule)}
 a.btn{display:inline-block;text-decoration:none;border-radius:8px;padding:8px 15px;font-weight:700;font-size:14px}
 td.over{color:var(--danger)}
+/* A wide table on a narrow screen scrolls inside its page; on paper it is simply printed. */
+.scroll{overflow-x:auto}
 .chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:5px}
 .chip{background:var(--card);color:var(--ink);border:1px solid var(--rule);border-radius:99px;padding:6px 13px;font-size:13px;font-weight:600}
 .chip[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
@@ -84,6 +86,7 @@ tfoot td{font-weight:700;border-top:2px solid var(--ink);border-bottom:0}
   .page:last-child{break-after:auto}
   .page[hidden]{display:none}
   .kgin{border:0;border-bottom:1px solid var(--ink);border-radius:0}
+  .scroll{overflow:visible}
   thead{display:table-header-group}
   tr{break-inside:avoid}
 }
@@ -103,6 +106,9 @@ tfoot td{font-weight:700;border-top:2px solid var(--ink);border-bottom:0}
 </div>
 
 <script type="module">
+// The carrier's manifest and the label files: shared with Sales → Delivery.
+import { manifestRows, manifestFile, manifestName, labelId, download, FILES, sizeText } from "/carrier.js";
+
 // Local testing only: on localhost, a JSON {url,key} in localStorage
 // "bf.api" points the page at a local Supabase stack instead.
 const LOCAL = (() => { try {
@@ -115,9 +121,10 @@ let createClient;
 try      { ({ createClient } = await import("/vendor/supabase.js")); }
 catch(e) { console.warn("vendor/supabase.js failed — falling back to esm.sh", e);
            ({ createClient } = await import("https://esm.sh/@supabase/supabase-js@2")); }
+// Twenty seconds is plenty for a query and far too short for a file: a download of one gets five minutes.
 const timedFetch = (url, opts = {}) => {
   const c = new AbortController();
-  const t = setTimeout(() => c.abort(), 20000);
+  const t = setTimeout(() => c.abort(), /\/storage\/v1\//.test(String(url?.url || url)) ? 300000 : 20000);
   return fetch(url, { ...opts, signal: c.signal }).finally(() => clearTimeout(t));
 };
 const db = createClient(SUPABASE_URL, SUPABASE_ANON, { global: { fetch: timedFetch } });
@@ -130,7 +137,10 @@ const FUL = { pickup_butcher: "Pick-up from the shop", pickup_farm: "Pick-up —
 const answers = b => Object.entries(b.answers || {});
 const ofPack = b => b.cartons > 1 ? `box ${b.carton} of ${b.cartons} for this pack` : "";
 
-let ME = null, LIST = [], DOC = null, SHOW = "all", CAN_PACK = false;
+const fmtWhen = t => t ? new Date(t).toLocaleString("en-AU", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }) : "";
+
+// DOC is the workbook (butcher_sheet); DEL is what goes by carrier (butcher_delivery), or null if it could not be read.
+let ME = null, LIST = [], DOC = null, DEL = null, SHOW = "all", CAN_PACK = false;
 
 // ── the three parts of the workbook ─────────────────────────────
 const head = (title, sub) => { const f = DOC.farm, h = DOC.harvest; return `<header>
@@ -242,18 +252,58 @@ function pageRemaining(){
     <div class="cust"><b>Remaining</b><span class="pack">All remaining</span></div>${sheetTable(DOC.remaining_sheet, 1)}</section>`;
 }
 
+// What goes by carrier (migration 79): the list the manifest is made
+// from, as Sales → Delivery has it; the manifest itself; and the labels
+// the carrier made for the cartons, which the farm uploads. Each
+// delivery says which boxes it is, so a label can be put on the right one.
+const hasDelivery = () => !!DEL && (DEL.deliveries.length > 0 || DEL.files.length > 0);
+const manifestOf = () => {
+  const zones = new Map(DEL.deliveries.map(o => [o.to_postcode, o.zone]));
+  if(DEL.collect) zones.set(DEL.collect.postcode, DEL.collect.zone);
+  return manifestRows({ farm: DEL.farm.name, prefix: DEL.farm.order_prefix, phone: DEL.farm.phone, email: DEL.farm.email,
+    code: DEL.harvest.code, deliveryOn: DEL.harvest.delivery_on, deliveries: DEL.deliveries, zoneOf: pc => zones.get(pc), collect: DEL.collect });
+};
+function pageDelivery(){
+  const h = DEL.harvest, rows = DEL.deliveries, c = DEL.collect, cartons = rows.reduce((a, o) => a + o.cartons, 0);
+  const n = (k, one, many) => `${k} ${k === 1 ? one : many}`;
+  const boxesOf = o => DOC.boxes.filter(b => b.order_ref === o.ref).map(b => b.box_no).join(", ");
+  const tracked = o => /^https?:\/\//i.test(o.tracking_url || "") ? `<a href="${esc(o.tracking_url)}" target="_blank" rel="noopener">${esc(o.carrier_no || "track")}</a>` : esc(o.carrier_no || "");
+  return `<section class="page" data-part="delivery">${head("Delivery", `${n(rows.length, "delivery", "deliveries")} · ${n(cartons, "carton", "cartons")}`)}
+    ${c && rows.length ? `<p style="margin:0 0 12px;font-size:13.5px">The carrier collects all <b>${n(cartons, "carton", "cartons")}</b> from ${esc(c.name)} on <b>${fmtDay(c.on)}</b>, between ${esc(c.window.replace("-", " and "))}.</p>` : ""}
+    ${rows.length ? `<div class="scroll"><table><thead><tr><th>Label</th><th>Boxes</th><th>To</th><th>Address</th><th>Zone</th><th>Delivery</th><th class="num">Cartons</th><th>Instructions</th></tr></thead><tbody>
+      ${rows.map(o => `<tr><td class="m"><b>${esc(labelId(o))}</b>${o.carrier_no || o.tracking_url ? `<br><small>${tracked(o)}</small>` : ""}</td>
+        <td class="m">${boxesOf(o)}</td>
+        <td>${esc(o.to_name)}<br><small>${esc(o.to_phone || "")}</small></td>
+        <td>${esc(o.to_street || "")}<br><small>${esc([o.to_suburb, o.to_state, o.to_postcode].filter(Boolean).join(" "))}</small></td>
+        <td>${esc(o.zone || "—")}</td><td>${fmtDay(o.deliver_on || h.delivery_on)}</td><td class="num">${o.cartons}</td>
+        <td>${esc(o.ship_instructions || "")}</td></tr>`).join("")}</tbody>
+      <tfoot><tr><td colspan="6">${n(rows.length, "delivery", "deliveries")}</td><td class="num">${cartons}</td><td></td></tr></tfoot></table></div>
+      <p class="noprint" style="margin:14px 0 0"><button type="button" class="ghost" data-dl="xlsx">Download manifest (.xlsx)</button>
+        <button type="button" class="ghost" data-dl="csv">…as CSV</button></p>`
+     : `<p class="none">Nothing on this harvest goes by carrier.</p>`}
+    <div class="noprint"><h2>Shipping labels</h2>
+    ${DEL.files.length ? `<div class="scroll"><table><thead><tr><th>File</th><th class="num">Size</th><th>Added</th><th></th></tr></thead><tbody>${
+        DEL.files.map(f => `<tr><td>${esc(f.name)}</td><td class="num">${sizeText(f.size)}</td><td class="m">${fmtWhen(f.added_at)}</td>
+          <td class="num"><button type="button" data-file="${esc(f.path)}" data-name="${esc(f.name)}">Download</button></td></tr>`).join("")}</tbody></table></div>`
+      : `<p class="none" style="padding:6px 0">No labels yet. The farm adds them here once the carrier has the manifest.</p>`}</div>
+  </section>`;
+}
+
 function paint(){
   const h = DOC.harvest;
   $("#bar").innerHTML = `<div class="controls">
       <label class="grow">Harvest<select id="hsel">${LIST.map(x => `<option value="${x.id}" ${x.id === h.id ? "selected" : ""}>${esc(x.code)} · ${esc(x.kind)} · ${fmtDay(x.harvest_on)} · ${x.packs} pack${x.packs === 1 ? "" : "s"}${x.released ? "" : " · not released"}</option>`).join("")}</select></label>
-      <label>Show<div class="chips" id="show">${[["all", "Everything"], ["summary", "Summary"], ["customers", "Customers"], ["sheets", "Cut sheets"]].map(([k, l]) =>
+      <label>Show<div class="chips" id="show">${[["all", "Everything"], ["summary", "Summary"], ["customers", "Customers"], ["sheets", "Cut sheets"],
+          ...(hasDelivery() ? [["delivery", "Delivery"]] : [])].map(([k, l]) =>
         `<button class="chip" data-show="${k}" aria-pressed="${SHOW === k}">${l}</button>`).join("")}</div></label>
       ${ME.role !== "butcher" ? `<a class="btn" href="/sales">← Sales &amp; orders</a>` : ""}
       <button id="print">Print</button></div>
     ${ME.role !== "butcher" && !h.released ? `<p class="gap"><b>Not released.</b> This is what the butcher will see. They can't see it until you tick “The butcher can see this harvest's sheets” on the harvest.</p>` : ""}`;
-  $("#out").innerHTML = DOC.boxes.length || DOC.remaining_sheet || BAL()
+  $("#out").innerHTML = DOC.boxes.length || DOC.remaining_sheet || BAL() || hasDelivery()
     ? pageSummary() + (DOC.boxes.length ? pageCustomers() : "") + DOC.boxes.map(pageBox).join("") + (DOC.remaining_sheet ? pageRemaining() : "")
+      + (hasDelivery() ? pageDelivery() : "")
     : `<p class="none">No packs on this harvest yet.</p>`;
+  if(SHOW === "delivery" && !hasDelivery()) SHOW = "all";
   applyShow();
 }
 function applyShow(){
@@ -263,9 +313,11 @@ function applyShow(){
 
 async function open(id){
   $("#out").innerHTML = `<p class="loading">Fetching the sheets…</p>`;
-  const { data, error } = await db.rpc("butcher_sheet", { p_harvest: id });
+  // The deliveries are a second call, and newer (79): if it fails the sheets are still shown, without that part.
+  const [{ data, error }, del] = await Promise.all([db.rpc("butcher_sheet", { p_harvest: id }), db.rpc("butcher_delivery", { p_harvest: id })]);
   if(error){ $("#out").innerHTML = `<p class="gap">${esc(error.message)}</p>`; return; }
-  DOC = data; history.replaceState(null, "", "#" + id); paint();
+  if(del.error) console.warn("butcher_delivery", del.error);
+  DOC = data; DEL = del.error ? null : del.data; history.replaceState(null, "", "#" + id); paint();
 }
 
 $("#bar").addEventListener("change", e => { if(e.target.id === "hsel") open(e.target.value); });
@@ -273,6 +325,18 @@ $("#bar").addEventListener("click", e => {
   const c = e.target.closest("[data-show]");
   if(c){ SHOW = c.dataset.show; applyShow(); }
   if(e.target.id === "print") window.print();
+});
+// The manifest is made here, from what is on the page; a label file is fetched when asked for.
+$("#out").addEventListener("click", async e => {
+  const d = e.target.closest("[data-dl]"), f = e.target.closest("[data-file]");
+  if(d) download(manifestFile(manifestOf(), d.dataset.dl), manifestName(DEL.farm.name, d.dataset.dl));
+  if(f){
+    f.disabled = true;
+    const { data, error } = await db.storage.from(FILES).download(f.dataset.file);
+    f.disabled = false;
+    if(error){ alert("That file could not be downloaded. " + (error.message || "")); return; }
+    download(data, f.dataset.name);
+  }
 });
 // A tick or a weight saves as it is made.
 $("#out").addEventListener("change", async e => {

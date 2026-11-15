@@ -26,12 +26,13 @@ Live at **https://admin.bulokefarm.com.au**
 | `public/reports.html` | `/reports` | Laptop. LPA records, shed work, joining register. Printable, editable, with change history. |
 | `public/stock.html` | `/stock` | Laptop. Livestock trading account by financial year, for tax. |
 | `public/map.html` | `/map` | Laptop. Tracing paddock boundaries on satellite imagery, and spraying. |
-| `public/sales.html` | `/sales` | Laptop. Customers, orders, payments, invoices, harvests, the carrier's manifest, products. |
-| `public/butcher.html` | `/butcher` | The butcher's login. Summary, customer list and a cut sheet per box, for printing. |
+| `public/sales.html` | `/sales` | Laptop. Customers, orders, payments, invoices, harvests, the carrier's manifest and labels, products. |
+| `public/butcher.html` | `/butcher` | The butcher's login. Summary, customer list and a cut sheet per box, for printing; the deliveries, the carrier's manifest and the shipping labels. |
 | `site/` | `www.bulokefarm.com.au` | The public website: what we sell, the farm, and the order form. A second Pages project. |
 
 The phone app links to the others under **Record → Manage → On a
-laptop**. `public/nav.js` is the shared menu.
+laptop**. `public/nav.js` is the shared menu; `public/carrier.js` is the
+carrier's manifest, shared by `/sales` and `/butcher`.
 
 ### What the app does
 
@@ -382,6 +383,29 @@ row is the carrier's own collection job of 4 June 2026 put into the
 manifest's columns. `harvest.pickup_place` is something else: words for
 a customer picking up their own box.
 
+**The butcher sees what goes by carrier.** They pack the boxes the
+carrier takes and stick the labels on, so for a released harvest they
+get the delivery list as **Sales → Delivery** has it, the manifest, and
+the label files (`butcher_delivery()`, migration 79). The manifest is
+made by one piece of code, `public/carrier.js`, from the same fields on
+both pages, and the day the carrier collects is the harvest's
+(`harvest.collect_on`, `collect_row`) rather than something ticked on a
+page and forgotten — so the file is the same whoever downloads it. The
+labels are what the carrier's system makes once it has the manifest:
+the farm uploads the file on the Delivery page and the butcher
+downloads it from their sheets.
+
+**Files are in a private bucket, and one function says who may touch
+them.** Label files live in Supabase Storage, bucket `harvest-files`,
+one folder a harvest: `<farm id>/<harvest id>/<stamp>-<file name>`. The
+bucket is not public and has three rules, all of which ask
+`harvest_file_ok()`: an owner or manager may add and remove, they and a
+viewer may read, the butcher may read and only once the harvest is
+released. A file is added or removed, never written over. PDF, PNG and
+JPEG only, 25 MB each. This is the only place the app keeps a file
+outside the database, so it is the only thing a database backup does
+not hold.
+
 **The database writes an email; a function sends it.** Three emails go
 out, all from the mailbox on the letterhead (`farm_business.email`): a
 confirmation to the customer and a notice to the farm when an order
@@ -513,6 +537,7 @@ Every table but `heartbeat`, `user_pref` and `farm_user` carries
 | `v_harvest_balance` | What each harvest has to sell, what is sold and what is left, in boxes. Not on `v_harvest`: a later migration cannot add a column to a view an earlier one builds |
 | `v_subscriber` | The mailing list, with whether each address has ever ordered |
 | `v_mail` | The email log: what went to whom, about which order or invoice, and what did not go and why |
+| `butcher_delivery()` | Not a view but read like one: a harvest's deliveries, where and when the carrier collects, and its label files. What the manifest is made from, on both pages |
 
 ### Deliberately not used
 
@@ -631,6 +656,7 @@ rebuild, so anything depending on imported records has to be a seed.
 | 76 | Email: `mail` is the queue and the record. `queue_order_mail()`, `mail_order()`, `mail_invoice()`, `mail_test()` and `mail_retry()` write it; `mail_claim()` and `mail_done()` are the sender's alone; `v_mail`; `farm_business.email_web_orders`. `place_order()` replaced whole to queue an order's two emails |
 | 77 | The harvest balance: `harvest.boxes_for_sale`, `v_harvest_balance`. `butcher_sheet()`, `shop_front()` and `place_order()` replaced whole: the summary shows it, the website is told it, and a website order goes on the first open harvest with room. Takes the beef “Remaining” sheet off any lamb harvest that was given one by accident |
 | 78 | Where the carrier collects from: `farm_business.collect_name`, `collect_street`, `collect_suburb`, `collect_state`, `collect_postcode`, `collect_window`, `collect_note`. The collection row of the manifest is written from them |
+| 79 | The butcher's Delivery section and the labels: `butcher_delivery()`; `harvest.collect_on` and `collect_row`; the private `harvest-files` bucket with its three rules and `harvest_file_ok()` |
 
 ### Seeds
 
@@ -666,8 +692,8 @@ trigger that lived only on the live database, and a rebuild that died
 at 48 because of it.
 
 A rebuild can be run locally: `supabase start` (Docker; `config.toml`
-enables the database, the API, logins, the function runtime and a mail
-catcher) applies every migration to an
+enables the database, the API, logins, file storage, the function
+runtime and a mail catcher) applies every migration to an
 empty database, and yesterday's backup artifact restores into a second
 database beside it for testing against real data. The farm-scope
 migrations were proved that way — see `farm_scope_plan.md` §8. `supabase/schema.sql` is the check — the backup
@@ -915,6 +941,9 @@ Supabase → Advisors → Security. Three warnings are expected and stay:
 - `butcher_harvests()`, `butcher_sheet()` and `butcher_pack()` callable
   by signed-in users — the butcher's only way in (migration 71). Each
   checks the caller's role itself.
+- `butcher_delivery()` and `harvest_file_ok()` callable by signed-in
+  users — the deliveries and the label files (migration 79). The second
+  is what the storage rules ask, so it has to be.
 
 Anything else is new. User sign-ups are off in Authentication → Sign In /
 Providers; users are added by hand, below.

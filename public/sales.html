@@ -170,6 +170,9 @@ footer{margin-top:34px;padding-top:10px;border-top:1px solid var(--rule);font-si
 </div>
 
 <script type="module">
+// The carrier's manifest and the label files: shared with the butcher's page.
+import { manifestRows, manifestFile, manifestName, cartonText, download, FILES, FILE_TYPES, FILE_MAX, filePath, sizeText } from "/carrier.js";
+
 // Local testing only: on localhost, a JSON {url,key} in localStorage
 // "bf.api" points the page at a local Supabase stack instead.
 const LOCAL = (() => { try {
@@ -183,9 +186,11 @@ try      { ({ createClient } = await import("/vendor/supabase.js")); }
 catch(e) { console.warn("vendor/supabase.js failed — falling back to esm.sh", e);
            ({ createClient } = await import("https://esm.sh/@supabase/supabase-js@2")); }
 
+// Twenty seconds is plenty for a query and far too short for a file on farm
+// internet: an upload or a download of one gets five minutes.
 const timedFetch = (url, opts = {}) => {
   const c = new AbortController();
-  const t = setTimeout(() => c.abort(), 20000);
+  const t = setTimeout(() => c.abort(), /\/storage\/v1\//.test(String(url?.url || url)) ? 300000 : 20000);
   return fetch(url, { ...opts, signal: c.signal }).finally(() => clearTimeout(t));
 };
 const db = createClient(SUPABASE_URL, SUPABASE_ANON, { global: { fetch: timedFetch } });
@@ -232,7 +237,7 @@ const BEEF_REMAINING = { columns: ["Cut", "Choices", "Butchering selection", "Si
 let ME = null, CAN_WRITE = false, OWNER = false;
 const S = { tab: "orders", harvest: null, status: "all", q: "", cq: "", invoiceId: null,
             harvests: [], products: [], options: [], orders: [], customers: [], invoices: [], biz: null,
-            subs: null, mstatus: "subscribed", mq: "", mail: [], balance: [] };
+            subs: null, mstatus: "subscribed", mq: "", mail: [], balance: [], collect: [] };
 const LOADERS = {
   harvests:  () => q(db.from("v_harvest").select("*").order("harvest_on", { ascending: false })),
   products:  () => q(db.from("product").select("*").order("sort").order("name")),
@@ -245,12 +250,16 @@ const LOADERS = {
   // What each harvest has to sell and what is left, in boxes (77). Newer than
   // the rest, so a page ahead of its database shows no balance rather than nothing.
   balance:   () => q(db.from("v_harvest_balance").select("*")).catch(e => { console.warn("balance", e); return []; }),
+  // The day the carrier collects and whether that is a row of the manifest (79).
+  // They are the harvest's, and v_harvest cannot be given new columns.
+  collect:   () => q(db.from("harvest").select("id,collect_on,collect_row")).catch(e => { console.warn("collect", e); return []; }),
   mail:      () => q(db.from("v_mail").select("id,kind,order_id,invoice_id,to_email,to_name,subject,status,error,created_at,sent_at,order_ref,invoice_no")
                        .order("created_at", { ascending: false }).limit(300))
 };
 async function reload(...keys){
   // The balance moves whenever an order or a harvest does.
   if(keys.some(k => k === "orders" || k === "harvests") && !keys.includes("balance")) keys.push("balance");
+  if(keys.includes("harvests") && !keys.includes("collect")) keys.push("collect");
   await Promise.all(keys.map(async k => { S[k] = await LOADERS[k](); }));
 }
 const balOf = id => { const b = S.balance.find(x => x.id === id); return b && b.boxes != null ? b : null; };
@@ -1242,42 +1251,53 @@ function editInvoice(){
 }
 
 // ── delivery ────────────────────────────────────────────────────
-const MANIFEST = ["Detrack Job Type", "Sender Name", "Group", "Order Identifier", "Delivery Identifier", "No. Cartons", "No. Pallets", "Delivery Name",
-  "Phone Number", "Email", "Time Window", "Delivery Date", "Delivery Type", "Delivery Address", "Delivery State", "Delivery Suburb", "Delivery Postcode",
-  "Delivery Zone ID", "Special Instructions", "No. of Shipping Labels"];
-const cartonText = o => `${kg(o.kg)}kg (${o.cartons} Carton${o.cartons > 1 ? `, ${kg(o.kg / o.cartons)}kg each` : ""})`;
+// The manifest itself is made in /carrier.js, so the butcher downloads the same file.
 const deliveries = () => S.orders.filter(o => o.fulfilment === "delivery" && o.status !== "cancelled" && (harvestOf(S.harvest) ? o.harvest_id === S.harvest : true))
                               .sort((a, b) => a.order_no - b.order_no);
 // Where the carrier collects the cartons from before it delivers any: the
-// butcher's shop, typed once in Settings (migration 78). The row is the
-// carrier's own collection job of 4 June 2026 put into the manifest's
-// columns: the shop's address, an 11:00-18:00 window, our phone and email
-// as the contact, "Pick up from Cherry Tree Organics", every carton.
+// butcher's shop, typed once in Settings (migration 78).
 const collectFrom = () => { const b = S.biz || {};
   return { name: b.collect_name || "", street: b.collect_street || "", suburb: b.collect_suburb || "", state: b.collect_state || "", postcode: b.collect_postcode || "",
            window: b.collect_window || "11:00-18:00", note: b.collect_note || (b.collect_name ? "Pick up from " + b.collect_name : "") }; };
 const collectGaps = c => [!c.name && "name", !c.street && "street address", !c.suburb && "suburb", !c.state && "state", !c.postcode && "postcode"].filter(Boolean);
-// What was ticked and picked on the Delivery page, kept while the table under it is redrawn.
+// Which day the carrier collects, and whether the collection is a row of the
+// manifest, are the harvest's (migration 79): ticked here, read by the
+// butcher's page too. With no harvest picked there is nowhere to keep them but here.
 const COLLECT = { on: null, dates: {} };
-const collectOn = () => COLLECT.on ?? !collectGaps(collectFrom()).length;
-const collectDate = () => COLLECT.dates[S.harvest || ""] ?? harvestOf(S.harvest)?.pickup_on ?? "";
-const pcCell = pc => /^[1-9]\d{3}$/.test(pc || "") ? Number(pc) : (pc || "");
-function manifestRows(){
-  const prefix = S.biz?.order_prefix || "BF", h = harvestOf(S.harvest);
-  const rows = deliveries().map(o => ["Delivery", ME.farm_name, ME.farm_name, prefix, o.carrier_ref || pad4(o.order_no), o.cartons, "", o.to_name, o.to_phone || "",
-    o.customer_email || "", "08:00-18:00", { d: o.deliver_on || h?.delivery_on || "" }, o.ship_type, o.to_street || "", o.to_state || "", o.to_suburb || "",
-    pcCell(o.to_postcode), ZONES.get(o.to_postcode)?.zone || "", o.ship_instructions || cartonText(o), o.cartons]);
-  if(collectOn() && rows.length){
-    const total = rows.reduce((a, r) => a + r[5], 0), c = collectFrom();
-    rows.unshift(["Collection", ME.farm_name, ME.farm_name, prefix, "C" + (h?.code || "").replace(/^H/, ""), total, "", c.name, S.biz?.phone || "",
-      S.biz?.email || "", c.window, { d: collectDate() }, "Business", c.street, c.state, c.suburb, pcCell(c.postcode), ZONES.get(c.postcode)?.zone || "", c.note, total]);
-  }
-  return rows;
+const collectOf = () => S.collect.find(x => x.id === S.harvest) || null;
+const collectOn = () => !collectGaps(collectFrom()).length && (collectOf() ? collectOf().collect_row : COLLECT.on ?? true);
+const collectDate = () => collectOf() ? (collectOf().collect_on || harvestOf(S.harvest)?.pickup_on || "") : (COLLECT.dates[""] ?? "");
+function manifest(){
+  const h = harvestOf(S.harvest);
+  return manifestRows({ farm: ME.farm_name, prefix: S.biz?.order_prefix || "BF", phone: S.biz?.phone, email: S.biz?.email, code: h?.code, deliveryOn: h?.delivery_on,
+    deliveries: deliveries(), zoneOf: pc => ZONES.get(pc)?.zone, collect: collectOn() ? { ...collectFrom(), on: collectDate() } : null });
 }
+
+// The label files of the harvest on this page. Read through the call the
+// butcher's page makes, so what is listed here is what they are offered.
+const LABELS = { files: [], err: "" };
+async function loadLabels(){
+  LABELS.files = []; LABELS.err = "";
+  if(!harvestOf(S.harvest)) return;
+  const { data, error } = await db.rpc("butcher_delivery", { p_harvest: S.harvest });
+  if(error){ LABELS.err = error.message; return; }
+  LABELS.files = data.files || [];
+}
+const labelsHtml = h => !h ? "" : `<h3>Shipping labels</h3>
+  <p class="lede" style="max-width:820px">Once the manifest is in the carrier's system it makes a label for every carton. Add that file here and the butcher can download it from their sheets${
+    h.butcher_released_at ? "." : " — once this harvest's sheets are released to them, which they are not yet."}</p>
+  ${LABELS.err ? `<p class="gap">The label files could not be read: ${esc(LABELS.err)}</p>`
+    : LABELS.files.length ? `<div style="overflow-x:auto;max-width:820px"><table class="lines"><thead><tr><th>File</th><th class="num">Size</th><th>Added</th><th></th></tr></thead><tbody>${
+        LABELS.files.map(f => `<tr><td>${esc(f.name)}</td><td class="num">${sizeText(f.size)}</td><td class="m">${fmtWhen(f.added_at)}</td>
+          <td style="white-space:nowrap"><button type="button" class="ghost small" data-act="labelget" data-path="${esc(f.path)}" data-name="${esc(f.name)}">Download</button>
+            ${CAN_WRITE ? `<button type="button" class="ghost small" data-act="labeldel" data-path="${esc(f.path)}" data-name="${esc(f.name)}">Remove</button>` : ""}</td></tr>`).join("")}</tbody></table></div>`
+    : `<p class="none">No label files yet.</p>`}
+  ${CAN_WRITE && !LABELS.err ? `<div class="controls noprint"><label>Add label files — PDF, or a photo<input type="file" id="labelfile" accept="application/pdf,image/png,image/jpeg" multiple></label>
+    <span id="labelmsg" style="font-size:13px;padding-bottom:9px"></span></div>` : ""}`;
 async function viewDelivery(){
   if(!harvestOf(S.harvest)) S.harvest = (S.harvests.find(h => S.orders.some(o => o.harvest_id === h.id && o.fulfilment === "delivery")) || S.harvests[0] || {}).id || null;
   const h = harvestOf(S.harvest), rows = deliveries(), c = collectFrom(), gaps = collectGaps(c);
-  await zones([...rows.map(o => o.to_postcode), c.postcode]);
+  await Promise.all([zones([...rows.map(o => o.to_postcode), c.postcode]), loadLabels()]);
   const cartons = rows.reduce((a, o) => a + o.cartons, 0);
   const probs = o => { const z = ZONES.get(o.to_postcode), d = o.deliver_on || h?.delivery_on, out = [];
     if(!o.to_street || !o.to_suburb || !o.to_postcode) out.push("address incomplete"); if(!o.to_phone) out.push("no phone");
@@ -1286,7 +1306,8 @@ async function viewDelivery(){
   const bad = rows.filter(o => probs(o).length).length;
   $("#out").innerHTML = `<div class="controls noprint"><label class="grow">Harvest${harvestChips(false)}</label>
       <label>Look up a postcode<input id="pcq" inputmode="numeric" maxlength="4" style="width:130px" placeholder="3934"></label><div id="pcr" style="font-size:13px;min-width:200px;padding-bottom:8px"></div></div>
-    <p class="lede">Deliveries on ${h ? esc(h.code) : "every harvest"} for ${esc(S.biz?.order_prefix || "BF")}. Check the dates against the carrier's days, download the manifest, import it under Jobs in Detrack, then paste the Detrack numbers and tracking links back here.</p>
+    <p class="lede">Deliveries on ${h ? esc(h.code) : "every harvest"} for ${esc(S.biz?.order_prefix || "BF")}. Check the dates against the carrier's days, download the manifest, import it under Jobs in Detrack, then paste the Detrack numbers and tracking links back here and add the labels it makes.
+      ${h ? (h.butcher_released_at ? "The butcher sees this list, the manifest and the labels on their sheets." : "The butcher will see this list, the manifest and the labels once this harvest's sheets are released to them.") : ""}</p>
     ${bad ? `<p class="gap"><b>${bad} deliver${bad === 1 ? "y needs" : "ies need"} attention</b> before the manifest is right — see the notes in red.</p>` : ""}` +
     (rows.length ? `<div style="overflow-x:auto"><table class="lines"><thead><tr><th>ID</th><th>To</th><th>Address</th><th>Zone · days</th><th>Deliver on</th><th class="num">Cartons</th>
         <th>Instructions</th><th>Detrack no.</th><th>Tracking link</th></tr></thead><tbody>` +
@@ -1308,62 +1329,13 @@ async function viewDelivery(){
             ZONES.get(c.postcode) ? ` (${esc(ZONES.get(c.postcode).zone)})` : ""}, between ${esc(c.window.replace("-", " and "))}, with our phone and email as the contact and the instruction “${esc(c.note)}”.
             It is the first row of the manifest. To change the place, go to <a href="#settings">Settings</a>.</p>`}
       <div class="controls noprint" style="margin-top:8px">
-        <label class="chk" style="text-transform:none;letter-spacing:0;font-size:13.5px;color:var(--ink)"><input type="checkbox" id="collect" ${collectOn() ? "checked" : ""}>Add the collection from ${esc(c.name || "the butcher")} as the first row</label>
-        <label>Collected on<input type="date" id="collect_on" value="${esc(collectDate())}" style="width:160px"></label><span class="grow"></span>
+        <label class="chk" style="text-transform:none;letter-spacing:0;font-size:13.5px;color:var(--ink)"><input type="checkbox" id="collect" ${collectOn() ? "checked" : ""} ${CAN_WRITE && !gaps.length ? "" : "disabled"}>Add the collection from ${esc(c.name || "the butcher")} as the first row</label>
+        <label>Collected on<input type="date" id="collect_on" value="${esc(collectDate())}" ${CAN_WRITE ? "" : "disabled"} style="width:160px"></label><span class="grow"></span>
         <button data-act="xlsx">Download manifest (.xlsx)</button><button class="ghost" data-act="csv">…as CSV</button></div>
       <p class="lede">The manifest has Blackbird's twenty columns in their order. Suburb goes under “Delivery Suburb” and state under “Delivery State”, as the headings say.
-        The collection row carries what Blackbird's own collection job of 4 June 2026 had. Importing one with the deliveries is still untried — check the first with them.</p>`
+        The collection row carries what Blackbird's own collection job of 4 June 2026 had. Importing one with the deliveries is still untried — check the first with them.</p>
+      ${labelsHtml(h)}`
      : `<p class="none">No deliveries on this harvest. An order is a delivery when “How” is set to Delivery.</p>`);
-}
-
-// A real .xlsx with nothing but the browser: a zip of six small XML
-// files, stored uncompressed. Strings are shared strings and dates are
-// real date cells, because that is what the carrier's own template has.
-const CRC = (() => { const t = new Uint32Array(256); for(let n = 0; n < 256; n++){ let c = n; for(let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
-const crc32 = u8 => { let c = 0xFFFFFFFF; for(let i = 0; i < u8.length; i++) c = CRC[(c ^ u8[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; };
-function zip(files){
-  const enc = new TextEncoder(), parts = [], central = []; let off = 0;
-  for(const [name, text] of files){
-    const nm = enc.encode(name), data = enc.encode(text), crc = crc32(data), n = data.length;
-    const lh = new DataView(new ArrayBuffer(30));
-    lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(12, 0x21, true);
-    lh.setUint32(14, crc, true); lh.setUint32(18, n, true); lh.setUint32(22, n, true); lh.setUint16(26, nm.length, true);
-    const ch = new DataView(new ArrayBuffer(46));
-    ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(14, 0x21, true);
-    ch.setUint32(16, crc, true); ch.setUint32(20, n, true); ch.setUint32(24, n, true); ch.setUint16(28, nm.length, true); ch.setUint32(42, off, true);
-    parts.push(new Uint8Array(lh.buffer), nm, data); central.push(new Uint8Array(ch.buffer), nm);
-    off += 30 + nm.length + n;
-  }
-  const end = new DataView(new ArrayBuffer(22));
-  end.setUint32(0, 0x06054b50, true); end.setUint16(8, files.length, true); end.setUint16(10, files.length, true);
-  end.setUint32(12, central.reduce((a, b) => a + b.length, 0), true); end.setUint32(16, off, true);
-  return new Blob([...parts, ...central, new Uint8Array(end.buffer)], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-}
-function xlsx(sheetName, rows){
-  const x = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-  const colName = i => { let s = ""; i++; while(i){ s = String.fromCharCode(65 + (i - 1) % 26) + s; i = Math.floor((i - 1) / 26); } return s; };
-  const strs = [], idx = new Map();
-  const sid = v => { if(!idx.has(v)){ idx.set(v, strs.length); strs.push(v); } return idx.get(v); };
-  const cell = (v, r, c) => { const ref = colName(c) + r;
-    if(v === null || v === undefined || v === "") return "";
-    if(typeof v === "number") return `<c r="${ref}"><v>${v}</v></c>`;
-    if(typeof v === "object"){ if(!v.d) return ""; const [y, m, dd] = v.d.split("-").map(Number);
-      return `<c r="${ref}" s="1"><v>${Math.round((Date.UTC(y, m - 1, dd) - Date.UTC(1899, 11, 30)) / 86400000)}</v></c>`; }
-    return `<c r="${ref}" t="s"><v>${sid(String(v))}</v></c>`; };
-  const ns = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"', head = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
-  const sheet = `${head}<worksheet ${ns}><sheetData>${rows.map((row, i) => `<row r="${i + 1}">${row.map((v, c) => cell(v, i + 1, c)).join("")}</row>`).join("")}</sheetData></worksheet>`;
-  return zip([
-    ["[Content_Types].xml", `${head}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/></Types>`],
-    ["_rels/.rels", `${head}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`],
-    ["xl/workbook.xml", `${head}<workbook ${ns} xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="${x(sheetName)}" sheetId="1" r:id="rId1"/></sheets></workbook>`],
-    ["xl/_rels/workbook.xml.rels", `${head}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/></Relationships>`],
-    ["xl/styles.xml", `${head}<styleSheet ${ns}><fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="14" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs></styleSheet>`],
-    ["xl/sharedStrings.xml", `${head}<sst ${ns} count="${strs.length}" uniqueCount="${strs.length}">${strs.map(s => `<si><t xml:space="preserve">${x(s)}</t></si>`).join("")}</sst>`],
-    ["xl/worksheets/sheet1.xml", sheet]]);
-}
-function download(blob, name){
-  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name;
-  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
 
 // ── products ────────────────────────────────────────────────────
@@ -1447,7 +1419,7 @@ function viewSettings(){
   $("#out").innerHTML = `<h2>The invoice letterhead</h2><p class="lede">The name and address come from the farm; the rest is here. Only an owner can change it.</p>
     <form id="bizf"><div class="grid" style="max-width:820px">${formHtml(BIZ_SPEC, S.biz || { invoice_terms_days: 14, order_prefix: "BF", first_invoice_no: 1 })}</div>
     <p>${OWNER ? `<button type="button" data-act="savebiz">Save</button>` : ""} <span id="bizmsg" style="font-size:13px;color:var(--accent)"></span></p></form>
-    <h2>The butcher's login</h2><p class="lede" style="max-width:820px">The butcher signs in at <b>/butcher</b> and sees only the harvests whose sheets you have released: the summary, the customer list and each cut sheet. No prices, no payments, nothing about the herd.
+    <h2>The butcher's login</h2><p class="lede" style="max-width:820px">The butcher signs in at <b>/butcher</b> and sees only the harvests whose sheets you have released: the summary, the customer list, each cut sheet, and the deliveries with the carrier's manifest and labels. No prices, no payments, nothing about the herd.
       Create their login under Supabase → Authentication → Users → Add user, then on the phone app go to Record → Manage → Who can see this farm and add their email with the role Butcher.</p>
     <h2>Email</h2><p class="lede" style="max-width:820px">Order confirmations and invoices are sent from the Email address above${S.biz?.email ? ` (<b>${esc(S.biz.email)}</b>)` : ""}, and a copy of each lands in that mailbox's Sent folder.
       The mailbox's password is not kept here or anywhere in these pages: it is a secret on the sending function, set in Supabase → Edge Functions → Secrets.
@@ -1533,16 +1505,21 @@ $("#out").addEventListener("click", safe(async e => {
     await reload("biz"); viewSettings(); $("#bizmsg").textContent = "Saved.";     // redrawn: the form shows what was kept, tidied
   }
   if(a.act === "xlsx" || a.act === "csv"){
-    if(collectOn()){
-      // A collection the carrier cannot find, or on no day, is worse than none.
-      const gaps = collectGaps(collectFrom());
-      if(gaps.length){ alert(`The collection has no ${gaps.join(", ")}. Fill it in under Settings → Where the carrier collects from, or untick the collection.`); return; }
-      if(!collectDate()){ alert("Pick the day the carrier collects (“Collected on”), or untick the collection."); return; }
-    }
-    const rows = manifestRows(), h = harvestOf(S.harvest), stamp = today().replace(/-/g, "");
-    if(a.act === "xlsx") download(xlsx("Template", [MANIFEST, ...rows]), `Booking Manifest - ${ME.farm_name}_${stamp}.xlsx`);
-    else download(new Blob([[MANIFEST, ...rows].map(r => r.map(v => { const s = v && typeof v === "object" ? (v.d || "") : String(v ?? "");
-      return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }).join(",")).join("\r\n")], { type: "text/csv" }), `Booking Manifest - ${ME.farm_name}_${stamp}.csv`);
+    // A collection on no day is worse than none.
+    if(collectOn() && !collectDate()){ alert("Pick the day the carrier collects (“Collected on”), or untick the collection."); return; }
+    download(manifestFile(manifest(), a.act), manifestName(ME.farm_name, a.act));
+  }
+  if(a.act === "labelget"){
+    const { data, error } = await db.storage.from(FILES).download(a.path);
+    if(error) throw error;
+    download(data, a.name);
+  }
+  if(a.act === "labeldel"){
+    if(!confirm(`Remove ${a.name}? The butcher will no longer be able to download it.`)) return;
+    const { data, error } = await db.storage.from(FILES).remove([a.path]);
+    if(error) throw error;
+    if(!data?.length) throw new Error("That file could not be removed.");
+    await viewDelivery();
   }
 }));
 // Typing in the delivery table saves that one field.
@@ -1554,8 +1531,25 @@ $("#out").addEventListener("change", safe(async e => {
     await q(db.from("farm_business").upsert({ farm_id: ME.farm_id, email_web_orders: t.checked }));
     await reload("biz"); return;
   }
-  if(t.id === "collect"){ COLLECT.on = t.checked; return; }
-  if(t.id === "collect_on"){ COLLECT.dates[S.harvest || ""] = t.value; return; }
+  if(t.id === "collect" || t.id === "collect_on"){
+    const k = collectOf();
+    if(!k){ if(t.id === "collect") COLLECT.on = t.checked; else COLLECT.dates[""] = t.value; return; }
+    await q(db.from("harvest").update(t.id === "collect" ? { collect_row: t.checked } : { collect_on: t.value || null }).eq("id", k.id));
+    await reload("collect"); await viewDelivery(); return;
+  }
+  if(t.id === "labelfile"){
+    const msg = $("#labelmsg"), bad = [];
+    for(const f of [...t.files]){
+      if(!FILE_TYPES.includes(f.type)){ bad.push(`${f.name}: not a PDF or a photo`); continue; }
+      if(f.size > FILE_MAX){ bad.push(`${f.name}: over 25 MB`); continue; }
+      msg.textContent = `Uploading ${f.name}…`;
+      const { error } = await db.storage.from(FILES).upload(filePath(ME.farm_id, S.harvest, f.name), f, { contentType: f.type, upsert: false });
+      if(error) bad.push(`${f.name}: ${error.message}`);
+    }
+    await viewDelivery();
+    if(bad.length) alert("Not uploaded:\n" + bad.join("\n"));
+    return;
+  }
   if(t.dataset.id && t.dataset.f){
     const v = t.value.trim() || null;
     await q(db.from("customer_order").update({ [t.dataset.f]: v }).eq("id", t.dataset.id));

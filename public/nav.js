@@ -13,7 +13,7 @@
     ["/stock",   "Stock account",     "Trading account by financial year, for tax"],
     ["/map",     "Paddock editor",    "Trace fence lines on satellite imagery"],
     ["/sales",   "Sales & orders",    "Customers, orders, invoices, the carrier's manifest"],
-    ["/butcher", "Butcher sheets",    "What the butcher sees: summary, customers, cut sheets"]
+    ["/butcher", "Butcher sheets",    "What the butcher sees: summary, customers, cut sheets, deliveries"]
   ];
 
   var here = location.pathname.replace(/index\.html$/, "").replace(/\/$/, "") || "/";

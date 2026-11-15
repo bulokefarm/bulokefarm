@@ -51,6 +51,11 @@
 /nav.js
   Cache-Control: no-cache, must-revalidate
 
+# The carrier's manifest, shared by /sales and /butcher. Edited in place
+# like the pages that import it, so it must not be served stale either.
+/carrier.js
+  Cache-Control: no-cache, must-revalidate
+
 # Version-pinned and never edited in place — a new library means a new
 # file, so this can cache hard. It is 210 KB; re-fetching it on every
 # cold start in the yards is the difference between usable and not.
