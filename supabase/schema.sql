@@ -2,10 +2,10 @@
 -- PostgreSQL database dump
 --
 
-\restrict pr4DPwnQ4p7kO7GGK94Eg5c3BTGQ7bRALtzgcihYQMAEPw04XR1QCJ75wN3hixM
+\restrict qfeZ1ucUTo6n0maJg0Cpi1xT6AOzxEFSqvtjl24hV3ReLzKRHpi8v351oGKSfHA
 
 -- Dumped from database version 17.6
--- Dumped by pg_dump version 17.11 (Ubuntu 17.11-1.pgdg26.04+2)
+-- Dumped by pg_dump version 17.12 (Ubuntu 17.12-1.pgdg26.04+1)
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -104,7 +104,8 @@ CREATE TYPE public.destination_t AS ENUM (
 CREATE TYPE public.farm_role_t AS ENUM (
     'owner',
     'manager',
-    'viewer'
+    'viewer',
+    'butcher'
 );
 
 
@@ -244,6 +245,18 @@ end $$;
 
 
 --
+-- Name: amount_text(numeric); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.amount_text(p_cents numeric) RETURNS text
+    LANGUAGE sql STABLE STRICT
+    SET search_path TO 'public'
+    AS $$
+  select case when p_cents < 0 then '-' else '' end || btrim(to_char(abs(p_cents) / 100.0, '999,999,990.00'))
+$$;
+
+
+--
 -- Name: animal_code_parts(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -269,6 +282,26 @@ COMMENT ON FUNCTION public.animal_code_parts() IS 'Splits a typed stock code int
 
 
 --
+-- Name: answers_for(jsonb, jsonb); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.answers_for(p_questions jsonb, p_given jsonb) RETURNS jsonb
+    LANGUAGE sql IMMUTABLE
+    SET search_path TO 'public'
+    AS $$
+  select jsonb_object_agg(
+           q ->> 'label',
+           coalesce((select g.value
+                       from jsonb_each_text(case when jsonb_typeof(p_given) = 'object' then p_given else '{}'::jsonb end) g
+                      where g.key = q ->> 'label' and (q -> 'choices') ? g.value),
+                    q -> 'choices' ->> 0))
+    from jsonb_array_elements(case when jsonb_typeof(p_questions) = 'array' then p_questions else '[]'::jsonb end) q
+   where coalesce(q ->> 'label', '') <> ''
+     and jsonb_typeof(q -> 'choices') = 'array' and jsonb_array_length(q -> 'choices') > 0
+$$;
+
+
+--
 -- Name: beat(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -281,6 +314,258 @@ $$;
 
 
 --
+-- Name: blank_to_null(jsonb); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.blank_to_null(p jsonb) RETURNS jsonb
+    LANGUAGE sql IMMUTABLE
+    SET search_path TO 'public'
+    AS $$
+  select coalesce(jsonb_object_agg(k, case when v = '""'::jsonb then 'null'::jsonb else v end), '{}'::jsonb)
+    from jsonb_each(p) as e(k, v)
+$$;
+
+
+--
+-- Name: butcher_delivery(uuid); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.butcher_delivery(p_harvest uuid) RETURNS jsonb
+    LANGUAGE plpgsql STABLE SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+declare
+  fid   uuid := current_farm();
+  role  text := my_role()::text;
+  h     harvest;
+  files jsonb := '[]'::jsonb;
+begin
+  if fid is null or role is null then
+    raise exception 'Sign in first';
+  end if;
+  select * into h from harvest where id = p_harvest and farm_id = fid;
+  if not found or (role = 'butcher' and h.butcher_released_at is null) then
+    raise exception 'That harvest is not available';
+  end if;
+
+  -- The label files: whatever is in this harvest's folder, oldest first.
+  -- The name shown is the file's own, without the stamp put in front of
+  -- it to keep two uploads of "labels.pdf" apart.
+  if to_regclass('storage.objects') is not null then
+    select coalesce(jsonb_agg(jsonb_build_object(
+             'path', o.name,
+             'name', regexp_replace(split_part(o.name, '/', 3), '^[0-9]{10,}-', ''),
+             'size', (o.metadata->>'size')::bigint,
+             'type', o.metadata->>'mimetype',
+             'added_at', o.created_at) order by o.created_at), '[]'::jsonb)
+      into files
+      from storage.objects o
+     where o.bucket_id = 'harvest-files'
+       and o.name like fid::text || '/' || h.id::text || '/%';
+  end if;
+
+  return jsonb_build_object(
+    'role', role,
+    'farm', (select jsonb_build_object('id', f.id, 'name', f.name, 'phone', b.phone, 'email', b.email,
+                                       'order_prefix', coalesce(b.order_prefix, 'BF'))
+               from farm f left join farm_business b on b.farm_id = f.id
+              where f.id = fid),
+    'harvest', jsonb_build_object(
+      'id', h.id, 'code', h.code, 'kind', h.kind, 'title', h.title,
+      'pickup_on', h.pickup_on, 'delivery_on', h.delivery_on,
+      'collect_on', h.collect_on, 'collect_row', h.collect_row,
+      'released', h.butcher_released_at is not null),
+    -- Where and when the carrier collects, if that is a row of the
+    -- manifest: ticked, the place complete, and a day to do it on.
+    'collect', (
+      select jsonb_build_object(
+               'name', b.collect_name, 'street', b.collect_street, 'suburb', b.collect_suburb,
+               'state', b.collect_state, 'postcode', b.collect_postcode,
+               'window', coalesce(nullif(b.collect_window, ''), '11:00-18:00'),
+               'note', coalesce(nullif(b.collect_note, ''), 'Pick up from ' || b.collect_name),
+               'on', coalesce(h.collect_on, h.pickup_on),
+               'zone', (select z.zone from v_delivery_postcode z
+                         where z.farm_id = fid and z.postcode = b.collect_postcode
+                         order by z.carrier limit 1))
+        from farm_business b
+       where b.farm_id = fid and h.collect_row
+         and coalesce(h.collect_on, h.pickup_on) is not null
+         and nullif(b.collect_name, '') is not null and nullif(b.collect_street, '') is not null
+         and nullif(b.collect_suburb, '') is not null and nullif(b.collect_state, '') is not null
+         and nullif(b.collect_postcode, '') is not null),
+    'deliveries', coalesce((
+      select jsonb_agg(to_jsonb(d) order by d.order_no)
+        from (select v.order_no, v.ref, v.carrier_ref, v.to_name, v.to_phone, v.customer_email,
+                     v.to_street, v.to_suburb, v.to_state, v.to_postcode,
+                     v.ship_type, v.ship_instructions, v.deliver_on,
+                     v.cartons, v.kg, v.carrier_no, v.tracking_url,
+                     (select z.zone from v_delivery_postcode z
+                       where z.farm_id = fid and z.postcode = v.to_postcode
+                       order by z.carrier limit 1) as zone
+                from v_order v
+               where v.farm_id = fid and v.harvest_id = h.id
+                 and v.fulfilment = 'delivery' and v.status <> 'cancelled') d), '[]'::jsonb),
+    'files', files);
+end $$;
+
+
+--
+-- Name: FUNCTION butcher_delivery(p_harvest uuid); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.butcher_delivery(p_harvest uuid) IS 'A harvest''s deliveries, where and when the carrier collects, and its label files: what the manifest is made from. The butcher gets it for a released harvest only.';
+
+
+--
+-- Name: butcher_harvests(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.butcher_harvests() RETURNS jsonb
+    LANGUAGE plpgsql STABLE SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+declare
+  fid  uuid := current_farm();
+  role text := my_role()::text;
+begin
+  if fid is null or role is null then
+    raise exception 'Sign in first';
+  end if;
+  return coalesce((
+    select jsonb_agg(to_jsonb(x) order by x.harvest_on desc)
+      from (select h.id, h.code, h.kind, h.title, h.harvest_on, h.butcher_on, h.pickup_on,
+                   h.butcher_released_at is not null as released,
+                   (select coalesce(sum(l.qty), 0)
+                      from order_line l
+                      join customer_order o on o.id = l.order_id
+                     where o.harvest_id = h.id and o.status <> 'cancelled' and l.for_butcher) as packs
+              from harvest h
+             where h.farm_id = fid
+               and (role <> 'butcher' or h.butcher_released_at is not null)) x), '[]'::jsonb);
+end $$;
+
+
+--
+-- Name: butcher_pack(uuid, boolean, numeric); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.butcher_pack(p_line uuid, p_packed boolean, p_actual_kg numeric DEFAULT NULL::numeric) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+declare
+  fid  uuid := current_farm();
+  role text := my_role()::text;
+begin
+  if fid is null or role is null or role not in ('butcher', 'owner', 'manager') then
+    raise exception 'Not allowed';
+  end if;
+  update order_line l
+     set packed    = p_packed,
+         actual_kg = case when p_actual_kg is null then l.actual_kg
+                          when p_actual_kg = 0     then null
+                          else p_actual_kg end
+   where l.id = p_line and l.farm_id = fid
+     and exists (select 1 from customer_order o
+                   join harvest h on h.id = o.harvest_id
+                  where o.id = l.order_id
+                    and (role <> 'butcher' or h.butcher_released_at is not null));
+  if not found then
+    raise exception 'No such pack';
+  end if;
+end $$;
+
+
+--
+-- Name: butcher_sheet(uuid); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.butcher_sheet(p_harvest uuid) RETURNS jsonb
+    LANGUAGE plpgsql STABLE SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+declare
+  fid  uuid := current_farm();
+  role text := my_role()::text;
+  h    harvest;
+begin
+  if fid is null or role is null then
+    raise exception 'Sign in first';
+  end if;
+  select * into h from harvest where id = p_harvest and farm_id = fid;
+  if not found or (role = 'butcher' and h.butcher_released_at is null) then
+    raise exception 'That harvest is not available';
+  end if;
+
+  return jsonb_build_object(
+    'role', role,
+    'farm', (select jsonb_build_object('name', f.name, 'logo_url', f.logo_url,
+                                       'phone', b.phone, 'email', b.email)
+               from farm f left join farm_business b on b.farm_id = f.id
+              where f.id = fid),
+    'harvest', jsonb_build_object(
+      'id', h.id, 'code', h.code, 'kind', h.kind, 'title', h.title,
+      'harvest_on', h.harvest_on, 'butcher_on', h.butcher_on, 'pickup_on', h.pickup_on,
+      'delivery_on', h.delivery_on, 'interstate_on', h.interstate_on,
+      'interstate_note', h.interstate_note, 'butcher_name', h.butcher_name,
+      'pickup_place', h.pickup_place, 'head', h.head, 'carcass_kg', h.carcass_kg,
+      'butcher_note', h.butcher_note, 'released', h.butcher_released_at is not null),
+    'boxes', coalesce((
+      select jsonb_agg(to_jsonb(b) order by b.box_no)
+        from (
+          select row_number() over (order by o.order_no, l.sort, l.created_at, g.n, k.c) as box_no,
+                 row_number() over (partition by o.id order by l.sort, l.created_at, g.n, k.c) as idx,
+                 count(*)     over (partition by o.id)                              as of,
+                 l.id                                    as line_id,
+                 order_ref(fb.order_prefix, o.order_no)  as order_ref,
+                 c.name                                  as customer,
+                 o.fulfilment,
+                 l.description                           as pack,
+                 g.n                                     as pack_no,     -- which of the line's packs
+                 k.c                                     as carton,      -- which of that pack's boxes
+                 x.cartons,                                              -- how many boxes that pack fills
+                 round(l.size_kg / x.cartons, 2)         as size_kg,     -- in this box
+                 l.qty                                   as line_qty,
+                 l.packed,
+                 l.actual_kg,
+                 l.butcher_note,
+                 l.answers,
+                 coalesce(l.cut_sheet, po.cut_sheet, pr.cut_sheet) as cut_sheet,
+                 case when x.own_sheet then 1
+                      else round(coalesce(po.sheet_multiple, 1) / x.cartons, 2) end as sheet_multiple,
+                 (x.own_sheet and x.cartons > 1)         as split_boxes,
+                 coalesce(nullif(o.ship_name, ''), c.name)         as to_name,
+                 coalesce(nullif(o.ship_phone, ''), c.phone)       as to_phone,
+                 case when o.fulfilment = 'delivery' then
+                   jsonb_build_object(
+                     'street',   case when coalesce(o.ship_street, '') <> '' then o.ship_street   else c.street   end,
+                     'suburb',   case when coalesce(o.ship_street, '') <> '' then o.ship_suburb   else c.suburb   end,
+                     'state',    case when coalesce(o.ship_street, '') <> '' then o.ship_state    else c.state    end,
+                     'postcode', case when coalesce(o.ship_street, '') <> '' then o.ship_postcode else c.postcode end,
+                     'instructions', o.ship_instructions,
+                     'deliver_on', o.deliver_on,
+                     'carrier_ref', o.carrier_ref)
+                 end                                     as ship
+            from customer_order o
+            join customer c    on c.id = o.customer_id
+            join order_line l  on l.order_id = o.id and l.for_butcher
+            left join product_option po on po.id = l.product_option_id
+            left join product pr        on pr.id = po.product_id
+            left join farm_business fb  on fb.farm_id = o.farm_id
+            cross join lateral (select greatest(l.cartons, 1) as cartons,
+                                       (l.cut_sheet is not null or po.cut_sheet is not null) as own_sheet) x
+            cross join lateral generate_series(1, l.qty)     as g(n)
+            cross join lateral generate_series(1, x.cartons) as k(c)
+           where o.harvest_id = h.id and o.status <> 'cancelled') b), '[]'::jsonb),
+    -- What there is to sell, what is on these sheets, and the difference (77).
+    'balance', (select jsonb_build_object('boxes', b.boxes, 'sold', b.boxes_sold, 'left', b.boxes_left,
+                                          'head', b.head, 'per_head', b.per_head, 'box_kg', b.box_kg)
+                  from v_harvest_balance b where b.id = h.id),
+    'remaining_sheet', h.remaining_sheet);
+end $$;
+
+
+--
 -- Name: can_read(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -288,8 +573,15 @@ CREATE FUNCTION public.can_read() RETURNS boolean
     LANGUAGE sql STABLE
     SET search_path TO 'public'
     AS $$
-  select my_role() is not null
+  select coalesce(my_role()::text in ('owner', 'manager', 'viewer'), false)
 $$;
+
+
+--
+-- Name: FUNCTION can_read(); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.can_read() IS 'Owner, manager or viewer on the session''s farm. A butcher is a member but not a reader.';
 
 
 --
@@ -525,6 +817,40 @@ end $$;
 
 
 --
+-- Name: day_text(date); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.day_text(p date) RETURNS text
+    LANGUAGE sql STABLE STRICT
+    SET search_path TO 'public'
+    AS $$
+  select to_char(p, 'FMDay FMDD FMMonth YYYY')
+$$;
+
+
+--
+-- Name: delivery_lookup(text, text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.delivery_lookup(p_farm text, p_postcode text) RETURNS jsonb
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+  select jsonb_build_object(
+           'postcode', z.postcode, 'zone', string_agg(distinct z.zone, ' / '),
+           'region', min(z.region),
+           'days', array_remove(array[
+             case when bool_or(z.mon) then 'Mon' end, case when bool_or(z.tue) then 'Tue' end,
+             case when bool_or(z.wed) then 'Wed' end, case when bool_or(z.thu) then 'Thu' end,
+             case when bool_or(z.fri) then 'Fri' end, case when bool_or(z.sat) then 'Sat' end], null))
+    from delivery_zone z
+    join farm f on f.id = z.farm_id
+   where f.slug = p_farm and z.postcode = btrim(p_postcode)
+   group by z.postcode
+$$;
+
+
+--
 -- Name: farm_id_from_parent(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -718,6 +1044,54 @@ end $$;
 
 
 --
+-- Name: harvest_file_ok(text, boolean); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.harvest_file_ok(p_name text, p_write boolean) RETURNS boolean
+    LANGUAGE plpgsql STABLE SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $_$
+declare
+  fid   uuid := current_farm();
+  role  text := my_role()::text;
+  parts text[] := string_to_array(coalesce(p_name, ''), '/');
+  h     harvest;
+begin
+  if fid is null or role is null then return false; end if;
+  -- <farm id>/<harvest id>/<file name>, and nothing else.
+  if array_length(parts, 1) is distinct from 3 or parts[1] <> fid::text
+     or parts[2] !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+     or parts[3] !~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$' then
+    return false;
+  end if;
+  select * into h from harvest where id = parts[2]::uuid and farm_id = fid;
+  if not found then return false; end if;
+  if p_write then return role in ('owner', 'manager'); end if;
+  return role in ('owner', 'manager', 'viewer')
+      or (role = 'butcher' and h.butcher_released_at is not null);
+end $_$;
+
+
+--
+-- Name: FUNCTION harvest_file_ok(p_name text, p_write boolean); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.harvest_file_ok(p_name text, p_write boolean) IS 'May the person signed in read (or, p_write, add and remove) this file of a harvest? The path is <farm id>/<harvest id>/<file name>. The butcher reads, and only a released harvest.';
+
+
+--
+-- Name: html_esc(text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.html_esc(p text) RETURNS text
+    LANGUAGE sql IMMUTABLE STRICT
+    SET search_path TO 'public'
+    AS $$
+  select replace(replace(replace(replace(p, '&', '&amp;'), '<', '&lt;'), '>', '&gt;'), '"', '&quot;')
+$$;
+
+
+--
 -- Name: import_asbv(date, jsonb, text, text); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -839,6 +1213,218 @@ COMMENT ON FUNCTION public.import_asbv(p_analysis_on date, p_rows jsonb, p_file_
 
 
 --
+-- Name: import_past_orders(text, jsonb); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.import_past_orders(p_source text, p_rows jsonb) RETURNS jsonb
+    LANGUAGE plpgsql
+    SET search_path TO 'public'
+    AS $$
+declare
+  fid   uuid := current_farm();
+  src   text := coalesce(nullif(trim(p_source), ''), 'squarespace');
+  added int;
+  again int;
+begin
+  if fid is null then
+    raise exception 'No farm';
+  end if;
+  if auth.uid() is not null and not coalesce(can_write(), false) then
+    raise exception 'Only an owner or a manager can load past orders';
+  end if;
+  if jsonb_typeof(p_rows) is distinct from 'array' then
+    raise exception 'The orders must be a list';
+  end if;
+
+  with s as (
+    select r.*
+      from jsonb_to_recordset(p_rows) as r(
+        ref text, email text, placed_at timestamptz, paid_status text, fulfil_status text,
+        fulfilled_at timestamptz, cancelled_at timestamptz,
+        subtotal_cents int, shipping_cents int, tax_cents int, refunded_cents int, total_cents int,
+        ship_method text, lines jsonb,
+        bill_name text, bill_street text, bill_suburb text, bill_state text, bill_postcode text, bill_phone text,
+        ship_name text, ship_street text, ship_suburb text, ship_state text, ship_postcode text, ship_phone text,
+        note text, payment_method text, payment_ref text)
+     where nullif(trim(r.ref), '') is not null and r.placed_at is not null),
+  up as (
+    insert into past_order (farm_id, source, ref, customer_id, email, placed_at, paid_status, fulfil_status,
+        fulfilled_at, cancelled_at, subtotal_cents, shipping_cents, tax_cents, refunded_cents, total_cents,
+        ship_method, lines, bill_name, bill_street, bill_suburb, bill_state, bill_postcode, bill_phone,
+        ship_name, ship_street, ship_suburb, ship_state, ship_postcode, ship_phone, note, payment_method, payment_ref)
+    select fid, src, trim(s.ref),
+           (select c.id from customer c
+             where c.farm_id = fid and nullif(trim(s.email), '') is not null and lower(c.email) = lower(trim(s.email))
+             order by c.created_at limit 1),
+           nullif(lower(trim(s.email)), ''), s.placed_at, nullif(lower(s.paid_status), ''), nullif(lower(s.fulfil_status), ''),
+           s.fulfilled_at, s.cancelled_at,
+           coalesce(s.subtotal_cents, 0), coalesce(s.shipping_cents, 0), coalesce(s.tax_cents, 0),
+           coalesce(s.refunded_cents, 0), coalesce(s.total_cents, 0),
+           nullif(trim(s.ship_method), ''), coalesce(s.lines, '[]'::jsonb),
+           nullif(s.bill_name, ''), nullif(s.bill_street, ''), nullif(s.bill_suburb, ''), nullif(s.bill_state, ''), nullif(s.bill_postcode, ''), nullif(s.bill_phone, ''),
+           nullif(s.ship_name, ''), nullif(s.ship_street, ''), nullif(s.ship_suburb, ''), nullif(s.ship_state, ''), nullif(s.ship_postcode, ''), nullif(s.ship_phone, ''),
+           nullif(s.note, ''), nullif(s.payment_method, ''), nullif(s.payment_ref, '')
+      from s
+    on conflict (farm_id, source, ref) do update set
+        customer_id = coalesce(past_order.customer_id, excluded.customer_id),
+        email = excluded.email, placed_at = excluded.placed_at,
+        paid_status = excluded.paid_status, fulfil_status = excluded.fulfil_status,
+        fulfilled_at = excluded.fulfilled_at, cancelled_at = excluded.cancelled_at,
+        subtotal_cents = excluded.subtotal_cents, shipping_cents = excluded.shipping_cents, tax_cents = excluded.tax_cents,
+        refunded_cents = excluded.refunded_cents, total_cents = excluded.total_cents,
+        ship_method = excluded.ship_method, lines = excluded.lines,
+        bill_name = excluded.bill_name, bill_street = excluded.bill_street, bill_suburb = excluded.bill_suburb,
+        bill_state = excluded.bill_state, bill_postcode = excluded.bill_postcode, bill_phone = excluded.bill_phone,
+        ship_name = excluded.ship_name, ship_street = excluded.ship_street, ship_suburb = excluded.ship_suburb,
+        ship_state = excluded.ship_state, ship_postcode = excluded.ship_postcode, ship_phone = excluded.ship_phone,
+        note = excluded.note, payment_method = excluded.payment_method, payment_ref = excluded.payment_ref
+    returning (xmax = 0) as is_new)
+  select count(*) filter (where is_new), count(*) filter (where not is_new) into added, again from up;
+
+  return jsonb_build_object(
+    'added', added, 'updated', again,
+    'on_file', (select count(*) from past_order where farm_id = fid and source = src),
+    'with_customer', (select count(*) from past_order where farm_id = fid and source = src and customer_id is not null),
+    'without_customer', (select count(*) from past_order where farm_id = fid and source = src and customer_id is null));
+end $$;
+
+
+--
+-- Name: FUNCTION import_past_orders(p_source text, p_rows jsonb); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.import_past_orders(p_source text, p_rows jsonb) IS 'Load orders recorded by an earlier shop into past_order. Safe to repeat: the same shop and order number is updated, not added twice. Each is tied to the customer with the same email, where there is one.';
+
+
+--
+-- Name: import_subscribers(text, jsonb); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.import_subscribers(p_status text, p_rows jsonb) RETURNS jsonb
+    LANGUAGE plpgsql
+    SET search_path TO 'public'
+    AS $_$
+declare
+  n_rows    int;
+  n_valid   int;
+  n_added   int;
+  n_changed int;
+begin
+  if p_status not in ('subscribed', 'unsubscribed', 'bounced') then
+    raise exception 'A list is of subscribed, unsubscribed or bounced addresses';
+  end if;
+  if jsonb_typeof(p_rows) is distinct from 'array' then
+    raise exception 'Nothing to import';
+  end if;
+  n_rows := jsonb_array_length(p_rows);
+
+  with incoming as (
+    select distinct on (lower(btrim(x ->> 'email')))
+           lower(btrim(x ->> 'email'))                                as email,
+           nullif(btrim(x ->> 'first_name'), '')                      as first_name,
+           nullif(btrim(x ->> 'last_name'), '')                       as last_name,
+           nullif(upper(btrim(x ->> 'state')), '')                    as state,
+           nullif(x ->> 'opted_in_on', '')::timestamptz               as opted_in_on,
+           coalesce(nullif(x ->> 'changed_on', '')::timestamptz, now()) as status_on,
+           nullif(btrim(x ->> 'note'), '')                            as note,
+           nullif(btrim(x ->> 'source'), '')                          as source
+      from jsonb_array_elements(p_rows) as t(x)
+     where btrim(coalesce(x ->> 'email', '')) ~ '^[^@\s]+@[^@\s]+\.[^@\s]+$'
+     order by lower(btrim(x ->> 'email')), coalesce(nullif(x ->> 'changed_on', '')::timestamptz, now()) desc),
+  added as (
+    insert into subscriber (email, first_name, last_name, state, status, status_on, status_note, opted_in_on, source)
+    select i.email, i.first_name, i.last_name, i.state, p_status, i.status_on, i.note, i.opted_in_on, i.source
+      from incoming i
+     where not exists (select 1 from subscriber s
+                        where s.farm_id = current_farm() and lower(s.email) = i.email)
+    returning 1),
+  changed as (
+    update subscriber s
+       set first_name  = coalesce(s.first_name, i.first_name),
+           last_name   = coalesce(s.last_name, i.last_name),
+           state       = coalesce(s.state, i.state),
+           opted_in_on = coalesce(s.opted_in_on, i.opted_in_on),
+           source      = coalesce(s.source, i.source),
+           status      = case when w.wins then p_status else s.status end,
+           status_on   = case when w.wins then i.status_on else s.status_on end,
+           status_note = case when w.wins then i.note else s.status_note end
+      from (select n.*, e.id as sid,
+                   (n.status_on > e.status_on
+                      or (n.status_on = e.status_on and p_status <> 'subscribed')) as wins
+              from incoming n
+              join subscriber e on e.farm_id = current_farm() and lower(e.email) = n.email) i
+     cross join lateral (select i.wins) w
+     where s.id = i.sid
+       and (   (w.wins and (s.status, s.status_on, s.status_note) is distinct from (p_status, i.status_on, i.note))
+            or (s.first_name is null and i.first_name is not null)
+            or (s.last_name  is null and i.last_name  is not null)
+            or (s.state      is null and i.state      is not null)
+            or (s.opted_in_on is null and i.opted_in_on is not null)
+            or (s.source     is null and i.source     is not null))
+    returning 1)
+  select (select count(*) from incoming), (select count(*) from added), (select count(*) from changed)
+    into n_valid, n_added, n_changed;
+
+  return jsonb_build_object('rows', n_rows, 'added', n_added, 'changed', n_changed,
+                            'unchanged', n_valid - n_added - n_changed,
+                            'skipped', n_rows - n_valid);
+end $_$;
+
+
+--
+-- Name: issue_invoice(uuid); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.issue_invoice(p_order uuid) RETURNS uuid
+    LANGUAGE plpgsql
+    SET search_path TO 'public'
+    AS $$
+declare
+  o    v_order%rowtype;
+  c    customer%rowtype;
+  days int;
+  iid  uuid;
+  addr text;
+  ship text;
+begin
+  select * into o from v_order where id = p_order;
+  if not found then
+    raise exception 'No such order on this farm';
+  end if;
+  select * into c from customer where id = o.customer_id;
+  select coalesce((select invoice_terms_days from farm_business where farm_id = o.farm_id), 14) into days;
+
+  addr := concat_ws(E'\n', c.name, nullif(c.company, ''), nullif(c.street, ''),
+            nullif(concat_ws('  ', concat_ws(' ', nullif(c.suburb, ''), nullif(c.state, '')), nullif(c.postcode, '')), ''));
+  ship := case when o.fulfilment = 'delivery' then
+            concat_ws(E'\n', o.to_name, nullif(o.to_street, ''),
+              nullif(concat_ws('  ', concat_ws(' ', nullif(o.to_suburb, ''), nullif(o.to_state, '')), nullif(o.to_postcode, '')), ''))
+          end;
+
+  insert into invoice (order_id, customer_id, due_on, bill_to, ship_to, ship_on, ship_via, tracking)
+  values (o.id, o.customer_id, farm_today() + days, addr, ship,
+          case when o.fulfilment = 'delivery' then o.deliver_on end,
+          case when o.fulfilment = 'delivery' then coalesce(nullif(o.carrier, ''), 'Blackbird') end,
+          o.tracking_url)
+  returning id into iid;
+
+  insert into invoice_line (invoice_id, description, qty, rate_cents, gst_rate, sort)
+  select iid, l.description, l.qty, l.unit_cents, l.gst_rate, l.sort * 10
+    from order_line l where l.order_id = o.id;
+
+  insert into invoice_line (invoice_id, description, qty, rate_cents, gst_rate, sort)
+  select iid, 'Discount — ' || l.description, 1, -l.discount_cents, l.gst_rate, l.sort * 10 + 1
+    from order_line l where l.order_id = o.id and l.discount_cents > 0;
+
+  if o.delivery_fee_cents > 0 then
+    insert into invoice_line (invoice_id, description, qty, rate_cents, gst_rate, shipping, sort)
+    values (iid, 'Shipping', 1, o.delivery_fee_cents, 10, true, 10000);
+  end if;
+  return iid;
+end $$;
+
+
+--
 -- Name: joining_season(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -895,6 +1481,389 @@ begin
     return old;
   end if;
 end $$;
+
+
+SET default_tablespace = '';
+
+SET default_table_access_method = heap;
+
+--
+-- Name: mail; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.mail (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    farm_id uuid NOT NULL,
+    kind text NOT NULL,
+    order_id uuid,
+    invoice_id uuid,
+    from_email text NOT NULL,
+    from_name text NOT NULL,
+    to_email text NOT NULL,
+    to_name text,
+    reply_to text,
+    subject text NOT NULL,
+    body_text text NOT NULL,
+    body_html text NOT NULL,
+    status text DEFAULT 'queued'::text NOT NULL,
+    attempts integer DEFAULT 0 NOT NULL,
+    error text,
+    asked_by uuid DEFAULT auth.uid(),
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    queued_at timestamp with time zone DEFAULT now() NOT NULL,
+    claimed_at timestamp with time zone,
+    sent_at timestamp with time zone,
+    CONSTRAINT mail_kind_check CHECK ((kind = ANY (ARRAY['order'::text, 'order_notice'::text, 'invoice'::text, 'test'::text]))),
+    CONSTRAINT mail_status_check CHECK ((status = ANY (ARRAY['queued'::text, 'sending'::text, 'sent'::text, 'failed'::text])))
+);
+
+
+--
+-- Name: TABLE mail; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.mail IS 'Every email the system was asked to send, the words it used, and whether it went. Written by functions, sent by supabase/functions/send-mail.';
+
+
+--
+-- Name: mail_claim(integer); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.mail_claim(p_limit integer DEFAULT 10) RETURNS SETOF public.mail
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+begin
+  update mail set status = 'failed',
+                  error  = 'Not sent within a day of being asked for, so not sent at all'
+   where status = 'queued' and queued_at < now() - interval '1 day';
+  update mail set status = 'failed',
+                  error  = 'The sender stopped part-way. This may or may not have gone: look in the Sent folder before sending it again.'
+   where status = 'sending' and claimed_at < now() - interval '10 minutes';
+
+  return query
+    update mail m
+       set status = 'sending', attempts = m.attempts + 1, claimed_at = now(), error = null
+     where m.id in (select q.id from mail q
+                     where q.status = 'queued'
+                     order by q.queued_at
+                     limit greatest(least(coalesce(p_limit, 10), 50), 1)
+                       for update skip locked)
+    returning m.*;
+end $$;
+
+
+--
+-- Name: mail_done(uuid, boolean, text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.mail_done(p_id uuid, p_ok boolean, p_error text DEFAULT NULL::text) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+declare
+  m mail;
+begin
+  update mail
+     set status  = case when p_ok then 'sent' else 'failed' end,
+         sent_at = case when p_ok then now() end,
+         error   = case when p_ok then null else left(coalesce(nullif(btrim(p_error), ''), 'Not sent'), 500) end
+   where id = p_id and status = 'sending'
+  returning * into m;
+  if found and p_ok and m.kind = 'invoice' and m.invoice_id is not null then
+    update invoice set sent_on = farm_today() where id = m.invoice_id and sent_on is null;
+  end if;
+end $$;
+
+
+--
+-- Name: mail_frame(uuid, text, boolean); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.mail_frame(p_farm uuid, p_inner text, p_full boolean) RETURNS text
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+  select '<div style="font-family:-apple-system,''Segoe UI'',Helvetica,Arial,sans-serif;font-size:15px;line-height:1.5;color:#222222;max-width:640px">'
+      || p_inner
+      || '<p style="margin:28px 0 0;padding-top:12px;border-top:1px solid #dddddd;font-size:13px;color:#666666">'
+      || replace(html_esc(mail_sign(p_farm, p_full)), E'\n', '<br>')
+      || '</p></div>'
+$$;
+
+
+--
+-- Name: mail_invoice(uuid, text, text, text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.mail_invoice(p_invoice uuid, p_to text DEFAULT NULL::text, p_subject text DEFAULT NULL::text, p_message text DEFAULT NULL::text) RETURNS uuid
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+declare
+  i      v_invoice%rowtype;
+  f      farm%rowtype;
+  b      farm_business%rowtype;
+  v_msg  text;
+  rows_t text;
+  rows_h text;
+  sums_t text;
+  sums_h text;
+  t      text;
+  hh     text;
+  td     constant text := 'padding:6px 5px;border-bottom:1px solid #eeeeee;vertical-align:top';
+  th     constant text := 'padding:6px 5px;border-bottom:2px solid #222222;font-size:11px;text-transform:uppercase;letter-spacing:.04em';
+  lab    constant text := 'font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:#666666';
+begin
+  if current_farm() is null or not can_write() then
+    raise exception 'Only someone who records for this farm can send its email';
+  end if;
+  select * into i from v_invoice where id = p_invoice and farm_id = current_farm();
+  if not found then
+    raise exception 'No such invoice on this farm';
+  end if;
+  if i.void then
+    raise exception 'Invoice % is void', i.invoice_no;
+  end if;
+  if coalesce(nullif(btrim(p_to), ''), nullif(i.customer_email, '')) is null then
+    raise exception '% has no email address', i.customer_name;
+  end if;
+  select * into f from farm where id = i.farm_id;
+  select * into b from farm_business where farm_id = i.farm_id;
+
+  v_msg := coalesce(nullif(btrim(p_message), ''),
+    'Hi ' || split_part(btrim(i.customer_name), ' ', 1) || ',' || E'\n\n'
+    || 'Thank you for your order. Your invoice is below'
+    || case when i.due_cents > 0
+            then ' — ' || money_text(i.due_cents) || ' is due'
+                 || coalesce(' by ' || to_char(i.due_on, 'DD/MM/YYYY'), '') || '.'
+            else '.' end);
+
+  select string_agg(l.description || E'\n    ' || qty_text(l.qty) || ' × ' || amount_text(l.rate_cents)
+                      || ' = ' || amount_text(round(l.qty * l.rate_cents))
+                      || case when l.gst_rate > 0 then '  (plus 10% GST)' else '  (GST free)' end,
+                    E'\n' order by l.sort),
+         -- Four columns, not the printed five: GST sits under the
+         -- description, so the amounts still fit on a phone.
+         string_agg('<tr><td style="' || td || '"><b>' || html_esc(l.description) || '</b>'
+                      || '<br><span style="font-size:12px;color:#666666">'
+                      || case when l.gst_rate > 0 then 'plus 10% GST' else 'GST free' end || '</span></td>'
+                      || '<td align="right" style="' || td || '">' || qty_text(l.qty) || '</td>'
+                      || '<td align="right" style="' || td || '">' || amount_text(l.rate_cents) || '</td>'
+                      || '<td align="right" style="' || td || '">' || amount_text(round(l.qty * l.rate_cents)) || '</td></tr>',
+                    '' order by l.sort)
+    into rows_t, rows_h
+    from invoice_line l
+   where l.invoice_id = i.id and not l.shipping;
+
+  select string_agg(rpad(s.label, 14) || s.val, E'\n' order by s.n),
+         string_agg('<tr><td align="right" style="padding:3px 8px;' || case when s.strong then 'font-weight:bold;border-top:2px solid #222222;padding-top:8px' else 'color:#444444' end || '">' || s.label || '</td>'
+                      || '<td align="right" style="padding:3px 8px;white-space:nowrap;' || case when s.strong then 'font-weight:bold;border-top:2px solid #222222;padding-top:8px' else '' end || '">' || s.val || '</td></tr>',
+                    '' order by s.n)
+    into sums_t, sums_h
+    from (values (1, 'Subtotal',  amount_text(i.subtotal_cents), false, true),
+                 (2, 'GST total', amount_text(i.gst_cents),      false, true),
+                 (3, 'Shipping',  amount_text(i.shipping_cents), false, i.shipping_cents <> 0),
+                 (4, 'Total',     amount_text(i.total_cents),    false, true),
+                 (5, 'Paid',      '-' || amount_text(least(i.paid_cents, i.total_cents)), false, i.paid_cents > 0),
+                 (6, 'Total due', 'A' || money_text(i.due_cents), true, true)
+         ) as s(n, label, val, strong, shown)
+   where s.shown;
+
+  t := v_msg || E'\n\n'
+    || '----------------------------------------' || E'\n'
+    || 'TAX INVOICE ' || i.invoice_no || E'\n'
+    || 'Date: ' || to_char(i.issued_on, 'DD/MM/YYYY') || E'\n'
+    || coalesce('Due: ' || to_char(i.due_on, 'DD/MM/YYYY') || E'\n', '')
+    || 'Order: ' || i.order_ref || E'\n\n'
+    || 'Invoice to:' || E'\n' || i.bill_to || E'\n\n'
+    || coalesce('Ship to:' || E'\n' || nullif(i.ship_to, '') || E'\n\n', '')
+    || coalesce(nullif(concat_ws(E'\n', 'Ship date: ' || to_char(i.ship_on, 'DD/MM/YYYY'),
+                                        'Ship via: ' || nullif(i.ship_via, ''),
+                                        'Tracking no.: ' || nullif(i.tracking, '')), '') || E'\n\n', '')
+    || coalesce(rows_t || E'\n\n', '')
+    || sums_t || E'\n\n'
+    || coalesce('Payment details' || E'\n' || nullif(b.payment_details, '') || E'\n\n', '')
+    || coalesce(nullif(i.note, '') || E'\n\n', '')
+    || '----------------------------------------' || E'\n'
+    || mail_sign(i.farm_id, true);
+
+  hh := mail_frame(i.farm_id,
+       para_html(v_msg)
+    || '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:24px 0 0;border-top:1px solid #dddddd">'
+    || '<tr><td style="padding:16px 0 10px;font-size:20px;font-weight:bold">Tax Invoice ' || i.invoice_no || '</td>'
+    || '<td align="right" style="padding:16px 0 10px;font-size:13px;color:#444444">Date ' || to_char(i.issued_on, 'DD/MM/YYYY')
+    || coalesce('<br>Due ' || to_char(i.due_on, 'DD/MM/YYYY'), '')
+    || '<br>Order ' || html_esc(i.order_ref) || '</td></tr></table>'
+    || '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:0 0 14px"><tr>'
+    || '<td width="50%" style="vertical-align:top;padding:0 8px 0 0"><span style="' || lab || '">Invoice to</span><br>'
+    || replace(html_esc(i.bill_to), E'\n', '<br>') || '</td>'
+    || '<td width="50%" style="vertical-align:top">'
+    || coalesce('<span style="' || lab || '">Ship to</span><br>' || replace(html_esc(nullif(i.ship_to, '')), E'\n', '<br>'), '')
+    || '</td></tr></table>'
+    || coalesce('<p style="margin:0 0 14px;font-size:13px;color:#444444">'
+                || html_esc(nullif(concat_ws(' · ', 'Ship date ' || to_char(i.ship_on, 'DD/MM/YYYY'),
+                                                     'Ship via ' || nullif(i.ship_via, ''),
+                                                     'Tracking no. ' || nullif(i.tracking, '')), ''))
+                || '</p>', '')
+    || '<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:0 0 10px">'
+    || '<tr><th align="left" style="' || th || '">Description</th><th align="right" style="' || th || '">Qty</th>'
+    || '<th align="right" style="' || th || '">Rate</th>'
+    || '<th align="right" style="' || th || '">Amount</th></tr>'
+    || coalesce(rows_h, '') || '</table>'
+    || '<table role="presentation" align="right" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:0 0 18px">'
+    || sums_h || '</table>'
+    || '<div style="clear:both;height:1px;line-height:1px">&nbsp;</div>'
+    || coalesce('<p style="margin:14px 0 14px"><b>Payment details</b><br>'
+                || replace(html_esc(nullif(b.payment_details, '')), E'\n', '<br>') || '</p>', '')
+    || coalesce(para_html(nullif(i.note, '')), ''),
+    true);
+
+  return mail_put(i.farm_id, 'invoice', i.order_id, i.id,
+                  coalesce(nullif(btrim(p_to), ''), i.customer_email), i.customer_name, null,
+                  coalesce(nullif(btrim(p_subject), ''), 'Invoice ' || i.invoice_no || ' from ' || f.name),
+                  t, hh);
+end $$;
+
+
+--
+-- Name: mail_order(uuid, text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.mail_order(p_order uuid, p_to text DEFAULT NULL::text) RETURNS uuid
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+begin
+  if current_farm() is null or not can_write() then
+    raise exception 'Only someone who records for this farm can send its email';
+  end if;
+  if not exists (select 1 from customer_order where id = p_order and farm_id = current_farm()) then
+    raise exception 'No such order on this farm';
+  end if;
+  return queue_order_mail(p_order, true, false, p_to);
+end $$;
+
+
+--
+-- Name: mail_put(uuid, text, uuid, uuid, text, text, text, text, text, text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.mail_put(p_farm uuid, p_kind text, p_order uuid, p_invoice uuid, p_to text, p_to_name text, p_reply_to text, p_subject text, p_text text, p_html text) RETURNS uuid
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $_$
+declare
+  ok     constant text := '^[^@\s<>,;:"()\[\]\\]+@[a-z0-9.-]+\.[a-z]{2,}$';
+  v_from text;
+  v_name text;
+  v_to   text := lower(btrim(coalesce(p_to, '')));
+  v_rep  text := nullif(lower(btrim(coalesce(p_reply_to, ''))), '');
+  mid    uuid;
+begin
+  select nullif(lower(btrim(b.email)), ''), f.name into v_from, v_name
+    from farm f left join farm_business b on b.farm_id = f.id
+   where f.id = p_farm;
+  if v_from is null then
+    raise exception 'Add the farm''s email address in Sales → Settings first';
+  end if;
+  if length(v_to) > 200 or v_to !~ ok then
+    raise exception '“%” does not look like an email address', coalesce(p_to, '');
+  end if;
+  if v_rep is not null and (length(v_rep) > 200 or v_rep !~ ok) then
+    v_rep := null;
+  end if;
+
+  insert into mail (farm_id, kind, order_id, invoice_id, from_email, from_name,
+                    to_email, to_name, reply_to, subject, body_text, body_html)
+  values (p_farm, p_kind, p_order, p_invoice, v_from, v_name, v_to,
+          nullif(btrim(regexp_replace(coalesce(p_to_name, ''), '[\r\n\t]+', ' ', 'g')), ''),
+          v_rep,
+          left(btrim(regexp_replace(p_subject, '[\r\n\t]+', ' ', 'g')), 200),
+          p_text, p_html)
+  returning id into mid;
+  return mid;
+end $_$;
+
+
+--
+-- Name: mail_retry(uuid); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.mail_retry(p_id uuid) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+begin
+  if current_farm() is null or not can_write() then
+    raise exception 'Only someone who records for this farm can send its email';
+  end if;
+  update mail set status = 'queued', queued_at = now(), error = null
+   where id = p_id and farm_id = current_farm() and status = 'failed';
+  if not found then
+    raise exception 'That email is not waiting to be tried again';
+  end if;
+end $$;
+
+
+--
+-- Name: mail_sign(uuid, boolean); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.mail_sign(p_farm uuid, p_full boolean) RETURNS text
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+  select concat_ws(E'\n', f.name,
+           case when p_full then nullif(f.address, '') end,
+           nullif(concat_ws(' · ', nullif(b.phone, ''), nullif(b.email, ''), nullif(b.website, '')), ''),
+           case when p_full then 'ABN ' || nullif(b.abn, '') end)
+    from farm f left join farm_business b on b.farm_id = f.id
+   where f.id = p_farm
+$$;
+
+
+--
+-- Name: mail_test(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.mail_test() RETURNS uuid
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+declare
+  fid uuid := current_farm();
+  v_email text;
+  v_name  text;
+  t text;
+begin
+  if fid is null or my_role()::text is distinct from 'owner' then
+    raise exception 'Only an owner can test the farm''s email';
+  end if;
+  select nullif(btrim(b.email), ''), f.name into v_email, v_name
+    from farm f left join farm_business b on b.farm_id = f.id
+   where f.id = fid;
+  if v_email is null then
+    raise exception 'Add the farm''s email address in Sales → Settings first';
+  end if;
+  t := 'If you are reading this in the ' || v_email || ' inbox, email from the sales system is working.'
+    || E'\n\n' || 'Order confirmations and invoices will come from this address, and copies will be in its Sent folder.';
+  return mail_put(fid, 'test', null, null, v_email, v_name, null,
+                  'Test email from ' || v_name || ' sales', t || E'\n\n' || mail_sign(fid, false),
+                  mail_frame(fid, para_html(t), false));
+end $$;
+
+
+--
+-- Name: money_text(numeric); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.money_text(p_cents numeric) RETURNS text
+    LANGUAGE sql STABLE STRICT
+    SET search_path TO 'public'
+    AS $_$
+  select case when p_cents < 0 then '-' else '' end || '$' || btrim(to_char(abs(p_cents) / 100.0, '999,999,990.00'))
+$_$;
 
 
 --
@@ -959,6 +1928,58 @@ $$;
 
 
 --
+-- Name: next_invoice_no(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.next_invoice_no() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+begin
+  if new.invoice_no is null then
+    perform pg_advisory_xact_lock(hashtext('invoice_no'), hashtext(new.farm_id::text));
+    select greatest(coalesce(max(i.invoice_no), 0) + 1,
+                    coalesce((select b.first_invoice_no from farm_business b
+                               where b.farm_id = new.farm_id), 1))
+      into new.invoice_no
+      from invoice i where i.farm_id = new.farm_id;
+  end if;
+  return new;
+end $$;
+
+
+--
+-- Name: next_order_no(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.next_order_no() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+begin
+  if new.order_no is null then
+    perform pg_advisory_xact_lock(hashtext('customer_order_no'), hashtext(new.farm_id::text));
+    select coalesce(max(order_no), 0) + 1 into new.order_no
+      from customer_order where farm_id = new.farm_id;
+  end if;
+  return new;
+end $$;
+
+
+--
+-- Name: order_ref(text, integer); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.order_ref(p_prefix text, p_no integer) RETURNS text
+    LANGUAGE sql IMMUTABLE
+    SET search_path TO 'public'
+    AS $$
+  select coalesce(nullif(p_prefix, ''), 'BF') || '-' ||
+         case when p_no < 10000 then lpad(p_no::text, 4, '0') else p_no::text end
+$$;
+
+
+--
 -- Name: paddock_graze_block(uuid, date); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -998,6 +2019,176 @@ $$;
 --
 
 COMMENT ON FUNCTION public.paddock_graze_block(p_paddock_id uuid, p_on date) IS 'Why stock should not go into this paddock on this date, or NULL if they can.';
+
+
+--
+-- Name: para_html(text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.para_html(p text) RETURNS text
+    LANGUAGE sql IMMUTABLE
+    SET search_path TO 'public'
+    AS $$
+  select coalesce(string_agg('<p style="margin:0 0 14px">'
+                    || replace(html_esc(btrim(x, E' \n\t')), E'\n', '<br>') || '</p>', '' order by n), '')
+    from regexp_split_to_table(replace(coalesce(p, ''), E'\r', ''), E'\n[ \t]*\n+') with ordinality as t(x, n)
+   where btrim(x, E' \n\t') <> ''
+$$;
+
+
+--
+-- Name: place_order(text, jsonb); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.place_order(p_farm text, p jsonb) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $_$
+declare
+  fid     uuid;
+  cid     uuid;
+  oid     uuid;
+  hid     uuid;
+  ono     int;
+  n       int;
+  n_ok    int;
+  kinds   text[];
+  dep     int;
+  need    int;     -- boxes this order would take from a harvest
+  mailed  boolean := false;
+  v_name  text := btrim(coalesce(p ->> 'name', ''));
+  v_email text := lower(btrim(coalesce(p ->> 'email', '')));
+  v_phone text := btrim(coalesce(p ->> 'phone', ''));
+  v_ful   text := coalesce(nullif(p ->> 'fulfilment', ''), 'pickup_butcher');
+  v_street text := nullif(btrim(coalesce(p ->> 'street', '')), '');
+  v_suburb text := nullif(btrim(coalesce(p ->> 'suburb', '')), '');
+  v_state  text := nullif(upper(btrim(coalesce(p ->> 'state', ''))), '');
+  v_pc     text := nullif(btrim(coalesce(p ->> 'postcode', '')), '');
+begin
+  select id into fid from farm where slug = p_farm;
+  if fid is null then
+    raise exception 'Unknown shop';
+  end if;
+
+  -- The trap. Looks like success; writes nothing.
+  if coalesce(p ->> 'website', '') <> '' then
+    return jsonb_build_object('ref', 'BF-0000', 'deposit_cents', 0);
+  end if;
+
+  if length(v_name) < 2 or length(v_name) > 120 then
+    raise exception 'Please tell us your name';
+  end if;
+  if length(v_email) > 200 or v_email !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' then
+    raise exception 'That email address does not look right';
+  end if;
+  if length(v_phone) < 6 or length(v_phone) > 40 then
+    raise exception 'Please give us a phone number';
+  end if;
+  if v_ful not in ('pickup_farm', 'pickup_butcher', 'delivery') then
+    raise exception 'Pick-up or delivery?';
+  end if;
+  if v_ful = 'delivery' and (v_street is null or v_suburb is null or v_state is null or v_pc is null) then
+    raise exception 'For delivery we need the full address';
+  end if;
+  if length(coalesce(p ->> 'note', '')) > 2000 or length(coalesce(v_street, '')) > 200
+     or length(coalesce(v_suburb, '')) > 100 or length(coalesce(v_pc, '')) > 10
+     or length(coalesce(p ->> 'company', '')) > 120 or length(coalesce(p ->> 'instructions', '')) > 500 then
+    raise exception 'One of those answers is too long';
+  end if;
+  if jsonb_typeof(p -> 'items') is distinct from 'array' then
+    raise exception 'Nothing was ordered';
+  end if;
+
+  select count(*), count(pr.id),
+         array_agg(distinct pr.kind) filter (where pr.from_harvest),
+         coalesce(sum(w.qty * pr.deposit_cents), 0),
+         coalesce(sum(w.qty * greatest(o.cartons, 1)) filter (where pr.from_harvest), 0)
+    into n, n_ok, kinds, dep, need
+    from (select (x ->> 'option_id')::uuid as option_id,
+                 least(greatest(coalesce((x ->> 'qty')::int, 1), 1), 20) as qty
+            from jsonb_array_elements(p -> 'items') as t(x)) w
+    left join product_option o on o.id = w.option_id and o.farm_id = fid and o.active
+    left join product pr       on pr.id = o.product_id and pr.active;
+  if n = 0 or n > 20 then
+    raise exception 'Nothing was ordered';
+  end if;
+  if n_ok <> n then
+    raise exception 'Something in that order is no longer available. Please refresh the page and try again.';
+  end if;
+
+  if (select count(*) from customer_order o join customer c on c.id = o.customer_id
+       where o.farm_id = fid and o.source = 'web' and lower(c.email) = v_email
+         and o.created_at > now() - interval '1 hour') >= 5
+     or (select count(*) from customer_order o
+          where o.farm_id = fid and o.source = 'web'
+            and o.created_at > now() - interval '1 hour') >= 40 then
+    raise exception 'We could not take that order just now. Please email us instead.';
+  end if;
+
+  select id into cid from customer
+   where farm_id = fid and lower(email) = v_email
+   order by created_at limit 1;
+  if cid is null then
+    insert into customer (farm_id, name, company, email, phone, street, suburb, state, postcode, source)
+    values (fid, v_name, nullif(btrim(coalesce(p ->> 'company', '')), ''), v_email, v_phone,
+            v_street, v_suburb, v_state, v_pc, 'web')
+    returning id into cid;
+  end if;
+
+  -- One kind of pack: it goes on that kind's open harvest. Beef and
+  -- lamb together, or nothing open: left for a person to place.
+  -- (77) ...with room for it. A harvest whose balance is not known
+  -- yet has room; a full one is passed over, as a closed one is.
+  if array_length(kinds, 1) = 1 then
+    -- Two orders in the same instant must not both take the last box.
+    perform pg_advisory_xact_lock(hashtext('harvest_room'), hashtext(fid::text));
+    select h.id into hid
+      from harvest h
+      join v_harvest_balance b on b.id = h.id
+     where h.farm_id = fid and h.kind = kinds[1] and h.status = 'open'
+       and (b.boxes is null or b.boxes_left >= need)
+     order by h.harvest_on limit 1;
+  end if;
+
+  insert into customer_order (farm_id, customer_id, harvest_id, source, status, fulfilment,
+                              ship_name, ship_phone, ship_street, ship_suburb, ship_state,
+                              ship_postcode, ship_instructions, customer_note)
+  values (fid, cid, hid, 'web', 'new', v_ful, v_name, v_phone, v_street, v_suburb, v_state, v_pc,
+          nullif(btrim(coalesce(p ->> 'instructions', '')), ''),
+          nullif(btrim(coalesce(p ->> 'note', '')), ''))
+  returning id, order_no into oid, ono;
+
+  insert into order_line (order_id, product_option_id, description, qty, size_kg, unit_cents,
+                          gst_rate, cartons, for_butcher, answers, sort)
+  select oid, o.id, o.name, w.qty, o.size_kg, o.price_cents, pr.gst_rate, o.cartons,
+         pr.from_harvest, answers_for(pr.questions, w.answers), w.ord
+    from (select (x ->> 'option_id')::uuid as option_id,
+                 least(greatest(coalesce((x ->> 'qty')::int, 1), 1), 20) as qty,
+                 x -> 'answers' as answers, ord
+            from jsonb_array_elements(p -> 'items') with ordinality as t(x, ord)) w
+    join product_option o on o.id = w.option_id
+    join product pr       on pr.id = o.product_id;
+
+  -- The emails come last and in a block of their own: whatever goes
+  -- wrong in writing them is undone alone, and the order stands.
+  begin
+    if (select b.email_web_orders and coalesce(b.email, '') <> ''
+          from farm_business b where b.farm_id = fid) then
+      perform queue_order_mail(oid, true, true);
+      mailed := true;
+    end if;
+  exception when others then
+    mailed := false;
+  end;
+
+  return jsonb_build_object(
+    'ref', order_ref((select order_prefix from farm_business where farm_id = fid), ono),
+    'deposit_cents', dep,
+    'harvest', (select jsonb_build_object('pickup_on', h.pickup_on, 'delivery_on', h.delivery_on,
+                                          'interstate_on', h.interstate_on, 'pickup_place', h.pickup_place)
+                  from harvest h where h.id = hid),
+    'emailed', mailed);
+end $_$;
 
 
 --
@@ -1116,6 +2307,174 @@ end $$;
 --
 
 COMMENT ON FUNCTION public.promote_lambs_turned_one() IS 'Nightly (pg_cron): a sheep still classed lamb on its first birthday becomes yearling, or harvest if male or wether. Returns rows written.';
+
+
+--
+-- Name: qty_text(numeric); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.qty_text(p numeric) RETURNS text
+    LANGUAGE sql STABLE STRICT
+    SET search_path TO 'public'
+    AS $$
+  select rtrim(rtrim(to_char(p, 'FM999990.00'), '0'), '.')
+$$;
+
+
+--
+-- Name: queue_order_mail(uuid, boolean, boolean, text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.queue_order_mail(p_order uuid, p_customer boolean, p_notice boolean, p_to text DEFAULT NULL::text) RETURNS uuid
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+declare
+  o       v_order%rowtype;
+  f       farm%rowtype;
+  h       harvest%rowtype;
+  v_first text;
+  v_who   text;
+  it_t    text;      -- the lines, as text
+  it_h    text;      -- and as a list
+  v_cut   boolean;
+  steps   text[];
+  v_when  text;
+  v_place text;
+  addr    text;
+  v_ful   text;
+  t       text;
+  hh      text;
+  mid     uuid;
+  nid     uuid;
+  p0      constant text := '<p style="margin:0 0 14px">';
+  li      constant text := '<li style="margin:0 0 4px">';
+begin
+  select * into o from v_order where id = p_order;
+  if not found then
+    raise exception 'No such order';
+  end if;
+  select * into f from farm where id = o.farm_id;
+  if o.harvest_id is not null then
+    select * into h from harvest where id = o.harvest_id;
+  end if;
+
+  v_who   := case when o.source = 'web' then o.to_name else o.customer_name end;
+  v_first := split_part(btrim(v_who), ' ', 1);
+
+  select string_agg(l.qty || ' × ' || l.description || coalesce(' — ' || a.txt, ''),
+                    E'\n' order by l.sort, l.created_at),
+         string_agg(li || l.qty || ' &times; ' || html_esc(l.description)
+                       || coalesce(' &mdash; ' || html_esc(a.txt), '') || '</li>',
+                    '' order by l.sort, l.created_at),
+         coalesce(bool_or(l.for_butcher), false)
+    into it_t, it_h, v_cut
+    from order_line l
+    left join lateral (
+      select string_agg(e.k || ': ' || e.v, ', ') as txt
+        from jsonb_each_text(case when jsonb_typeof(l.answers) = 'object' then l.answers
+                                  else '{}'::jsonb end) as e(k, v)) a on true
+   where l.order_id = o.id;
+
+  steps := array[
+    case when o.deposit_cents > 0 and o.paid_cents < o.deposit_cents
+         then 'We’ll email an invoice for the deposit (' || money_text(o.deposit_cents)
+              || ') with payment details. There is nothing to pay online.'
+         else 'We’ll email an invoice with payment details. There is nothing to pay online.' end];
+  if v_cut then
+    steps := steps || 'Once your order is butchered and packed we confirm the weights and invoice the balance.'::text;
+  end if;
+
+  if o.fulfilment = 'delivery' then
+    v_when := case
+        when o.deliver_on is not null then 'Delivery: ' || day_text(o.deliver_on) || '.'
+        when h.delivery_on is not null or h.interstate_on is not null then
+          btrim(coalesce('Delivery: ' || day_text(h.delivery_on) || '.', '')
+             || coalesce(' Interstate deliveries: ' || day_text(h.interstate_on) || '.', ''))
+        else 'We’ll be in touch to confirm your delivery date.' end
+      || case when o.delivery_fee_cents = 0
+              then ' The delivery fee depends on where you are and is confirmed on your invoice.'
+              else '' end;
+    addr := concat_ws(E'\n', o.to_name, nullif(o.to_street, ''),
+              nullif(concat_ws(' ', nullif(o.to_suburb, ''), nullif(o.to_state, ''), nullif(o.to_postcode, '')), ''),
+              'Instructions: ' || nullif(o.ship_instructions, ''));
+  elsif o.fulfilment = 'pickup_farm' then
+    v_when := coalesce('Local pick-up: ' || day_text(h.pickup_on) || '. ', '')
+           || 'We’ll be in touch to arrange where and when to pick up from us.';
+  else
+    v_place := coalesce(nullif(h.pickup_place, ''), nullif(h.butcher_name, ''), 'the butcher');
+    v_when := case when h.pickup_on is not null
+                   then 'Pick-up: ' || day_text(h.pickup_on) || ', from ' || v_place || '.'
+                   else 'We’ll be in touch to confirm when your order is ready to pick up from ' || v_place || '.' end;
+  end if;
+  steps := steps || v_when;
+
+  if p_customer then
+    if coalesce(nullif(btrim(p_to), ''), nullif(o.customer_email, '')) is null then
+      raise exception '% has no email address', o.customer_name;
+    end if;
+    t := 'Hi ' || v_first || ',' || E'\n\n'
+      || 'Thank you — we’ve got your order. Your reference is ' || o.ref || '.' || E'\n\n'
+      || coalesce(it_t || E'\n\n', '')
+      || 'What happens next' || E'\n'
+      || (select string_agg(x.n || '. ' || x.s, E'\n' order by x.n)
+            from unnest(steps) with ordinality as x(s, n)) || E'\n\n'
+      || coalesce('Delivering to:' || E'\n' || addr || E'\n\n', '')
+      || coalesce('Your note: ' || nullif(o.customer_note, '') || E'\n\n', '')
+      || 'Questions? Reply to this email and mention ' || o.ref || '.' || E'\n\n'
+      || mail_sign(o.farm_id, false);
+    hh := mail_frame(o.farm_id,
+         p0 || 'Hi ' || html_esc(v_first) || ',</p>'
+      || p0 || 'Thank you &mdash; we&rsquo;ve got your order. Your reference is <b>' || html_esc(o.ref) || '</b>.</p>'
+      || coalesce('<ul style="margin:0 0 18px;padding-left:20px">' || it_h || '</ul>', '')
+      || '<p style="margin:0 0 6px"><b>What happens next</b></p>'
+      || '<ol style="margin:0 0 18px;padding-left:20px">'
+      || (select string_agg(li || html_esc(x.s) || '</li>', '' order by x.n)
+            from unnest(steps) with ordinality as x(s, n)) || '</ol>'
+      || coalesce(p0 || '<b>Delivering to</b><br>' || replace(html_esc(addr), E'\n', '<br>') || '</p>', '')
+      || coalesce(p0 || '<b>Your note</b><br>'
+                     || replace(html_esc(nullif(o.customer_note, '')), E'\n', '<br>') || '</p>', '')
+      || p0 || 'Questions? Reply to this email and mention ' || html_esc(o.ref) || '.</p>',
+      false);
+    mid := mail_put(o.farm_id, 'order', o.id, null,
+                    coalesce(nullif(btrim(p_to), ''), o.customer_email), v_who, null,
+                    'Your ' || f.name || ' order ' || o.ref, t, hh);
+  end if;
+
+  if p_notice then
+    v_ful := case o.fulfilment when 'delivery' then 'Delivery'
+                               when 'pickup_farm' then 'Pick-up — from us'
+                               else 'Pick-up — butcher' end;
+    t := 'A new order came in from the website.' || E'\n\n'
+      || o.ref || ' · ' || v_who || E'\n'
+      || concat_ws(' · ', nullif(o.customer_email, ''), nullif(o.to_phone, '')) || E'\n\n'
+      || coalesce(it_t || E'\n\n', '')
+      || v_ful || ' · ' || coalesce('harvest ' || h.code, 'not on a harvest yet') || E'\n'
+      || coalesce(addr || E'\n', '')
+      || coalesce(E'\n' || 'Their note: ' || nullif(o.customer_note, '') || E'\n', '')
+      || coalesce(E'\n' || 'Open it: https://' || nullif(f.hostname, '') || '/sales#order/' || o.id || E'\n', '')
+      || E'\n' || 'Replying to this email writes to ' || v_first || '.';
+    hh := mail_frame(o.farm_id,
+         p0 || 'A new order came in from the website.</p>'
+      || p0 || '<b>' || html_esc(o.ref) || ' · ' || html_esc(v_who) || '</b><br>'
+            || html_esc(concat_ws(' · ', nullif(o.customer_email, ''), nullif(o.to_phone, ''))) || '</p>'
+      || coalesce('<ul style="margin:0 0 18px;padding-left:20px">' || it_h || '</ul>', '')
+      || p0 || '<b>' || html_esc(v_ful) || '</b> · '
+            || html_esc(coalesce('harvest ' || h.code, 'not on a harvest yet'))
+            || coalesce('<br>' || replace(html_esc(addr), E'\n', '<br>'), '') || '</p>'
+      || coalesce(p0 || '<b>Their note</b><br>'
+                     || replace(html_esc(nullif(o.customer_note, '')), E'\n', '<br>') || '</p>', '')
+      || coalesce(p0 || '<a href="https://' || html_esc(nullif(f.hostname, '')) || '/sales#order/' || o.id
+                     || '">Open the order</a></p>', '')
+      || p0 || 'Replying to this email writes to ' || html_esc(v_first) || '.</p>',
+      false);
+    nid := mail_put(o.farm_id, 'order_notice', o.id, null,
+                    (select b.email from farm_business b where b.farm_id = o.farm_id), f.name,
+                    o.customer_email,
+                    'New website order ' || o.ref || ' — ' || v_who, t, hh);
+  end if;
+  return coalesce(mid, nid);     -- the customer's, if both
+end $$;
 
 
 --
@@ -1653,6 +3012,101 @@ $$;
 
 
 --
+-- Name: save_order(jsonb); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.save_order(p jsonb) RETURNS uuid
+    LANGUAGE plpgsql
+    SET search_path TO 'public'
+    AS $$
+declare
+  r    customer_order;
+  l    order_line;
+  ln   jsonb;
+  keep uuid[] := '{}';
+  n    int := 0;
+begin
+  if jsonb_typeof(p -> 'lines') is distinct from 'array' or jsonb_array_length(p -> 'lines') = 0 then
+    raise exception 'An order needs at least one line';
+  end if;
+  r := jsonb_populate_record(null::customer_order, blank_to_null(p - 'lines'));
+  if r.customer_id is null then
+    raise exception 'An order needs a customer';
+  end if;
+
+  if r.id is null then
+    insert into customer_order (
+      customer_id, harvest_id, placed_on, source, status, fulfilment,
+      ship_name, ship_phone, ship_alt_phone, ship_street, ship_suburb, ship_state, ship_postcode,
+      ship_type, ship_instructions, deliver_on, delivery_fee_cents,
+      carrier, carrier_ref, carrier_no, tracking_url, customer_note, note)
+    values (
+      r.customer_id, r.harvest_id, coalesce(r.placed_on, farm_today()), coalesce(r.source, 'manual'),
+      coalesce(r.status, 'new'), coalesce(r.fulfilment, 'pickup_butcher'),
+      r.ship_name, r.ship_phone, r.ship_alt_phone, r.ship_street, r.ship_suburb, r.ship_state, r.ship_postcode,
+      coalesce(r.ship_type, 'Residential'), r.ship_instructions, r.deliver_on, coalesce(r.delivery_fee_cents, 0),
+      r.carrier, r.carrier_ref, r.carrier_no, r.tracking_url, r.customer_note, r.note)
+    returning id into r.id;
+  else
+    update customer_order set
+      customer_id = r.customer_id, harvest_id = r.harvest_id,
+      placed_on = coalesce(r.placed_on, placed_on), source = coalesce(r.source, source),
+      status = coalesce(r.status, status), fulfilment = coalesce(r.fulfilment, fulfilment),
+      ship_name = r.ship_name, ship_phone = r.ship_phone, ship_alt_phone = r.ship_alt_phone,
+      ship_street = r.ship_street, ship_suburb = r.ship_suburb, ship_state = r.ship_state,
+      ship_postcode = r.ship_postcode, ship_type = coalesce(r.ship_type, ship_type),
+      ship_instructions = r.ship_instructions, deliver_on = r.deliver_on,
+      delivery_fee_cents = coalesce(r.delivery_fee_cents, 0),
+      carrier = r.carrier, carrier_ref = r.carrier_ref, carrier_no = r.carrier_no,
+      tracking_url = r.tracking_url, customer_note = r.customer_note, note = r.note
+    where id = r.id;
+    if not found then
+      raise exception 'No such order on this farm';
+    end if;
+  end if;
+
+  for ln in select * from jsonb_array_elements(p -> 'lines') loop
+    n := n + 1;
+    l := jsonb_populate_record(null::order_line, blank_to_null(ln));
+    if coalesce(l.description, '') = '' then
+      raise exception 'Line % has no description', n;
+    end if;
+    if l.id is null then
+      insert into order_line (
+        order_id, product_option_id, description, qty, size_kg, actual_kg, unit_cents,
+        discount_cents, gst_rate, cartons, for_butcher, cut_sheet, answers, butcher_note, packed, sort)
+      values (
+        r.id, l.product_option_id, l.description, coalesce(l.qty, 1), l.size_kg, l.actual_kg,
+        coalesce(l.unit_cents, 0), coalesce(l.discount_cents, 0), coalesce(l.gst_rate, 0),
+        coalesce(l.cartons, 1), coalesce(l.for_butcher, true),
+        case when jsonb_typeof(l.cut_sheet) = 'object' then l.cut_sheet end,
+        case when jsonb_typeof(l.answers) = 'object' then l.answers end,
+        l.butcher_note, coalesce(l.packed, false), n)
+      returning id into l.id;
+    else
+      update order_line set
+        product_option_id = l.product_option_id, description = l.description,
+        qty = coalesce(l.qty, 1), size_kg = l.size_kg, actual_kg = l.actual_kg,
+        unit_cents = coalesce(l.unit_cents, 0), discount_cents = coalesce(l.discount_cents, 0),
+        gst_rate = coalesce(l.gst_rate, 0), cartons = coalesce(l.cartons, 1),
+        for_butcher = coalesce(l.for_butcher, true),
+        cut_sheet = case when jsonb_typeof(l.cut_sheet) = 'object' then l.cut_sheet end,
+        answers = case when jsonb_typeof(l.answers) = 'object' then l.answers end,
+        butcher_note = l.butcher_note, packed = coalesce(l.packed, false), sort = n
+      where id = l.id and order_id = r.id;
+      if not found then
+        raise exception 'Line % is not on this order', n;
+      end if;
+    end if;
+    keep := keep || l.id;
+  end loop;
+
+  delete from order_line where order_id = r.id and id <> all (keep);
+  return r.id;
+end $$;
+
+
+--
 -- Name: season_of(date); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -1717,6 +3171,64 @@ begin
 
   return n;
 end $$;
+
+
+--
+-- Name: shop_front(text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.shop_front(p_farm text) RETURNS jsonb
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+  select jsonb_build_object(
+    'farm', jsonb_build_object('name', f.name, 'email', b.email, 'phone', b.phone),
+    'products', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'slug', p.slug, 'name', p.name, 'kind', p.kind, 'summary', p.summary,
+               'description', p.description, 'image_url', p.image_url,
+               'deposit_cents', p.deposit_cents, 'local_only', p.local_only,
+               'from_harvest', p.from_harvest,
+               'questions', coalesce(p.questions, '[]'::jsonb),
+               'options', coalesce((
+                 select jsonb_agg(jsonb_build_object(
+                          'id', o.id, 'name', o.name, 'label', o.label,
+                          'size_kg', o.size_kg, 'price_cents', o.price_cents,
+                          'cartons', greatest(o.cartons, 1))
+                        order by o.sort, o.price_cents)
+                   from product_option o
+                  where o.product_id = p.id and o.active), '[]'::jsonb))
+             order by p.sort, p.name)
+        from product p
+       where p.farm_id = f.id and p.active), '[]'::jsonb),
+    'harvests', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'code', h.code, 'kind', h.kind, 'status', h.status,
+               'harvest_on', h.harvest_on, 'pickup_on', h.pickup_on,
+               'delivery_on', h.delivery_on, 'interstate_on', h.interstate_on,
+               'interstate_note', h.interstate_note,
+               'pickup_place', h.pickup_place, 'pickup_hours', h.pickup_hours,
+               -- The balance (77), in boxes. Never below nought here: the
+               -- public is told there is none left, not by how much we are over.
+               'head', h.head, 'per_head', b.per_head, 'box_kg', b.box_kg,
+               'boxes', b.boxes, 'left_boxes', greatest(b.boxes_left, 0),
+               'left_kg', case when coalesce(h.capacity_kg, h.carcass_kg * h.retail_ratio) is null then null
+                               else greatest(coalesce(h.capacity_kg, round(h.carcass_kg * h.retail_ratio))
+                                 - coalesce((select sum(l.qty * l.size_kg)
+                                               from order_line l
+                                               join customer_order o on o.id = l.order_id
+                                              where o.harvest_id = h.id and o.status <> 'cancelled'), 0), 0)
+                          end)
+             order by h.harvest_on)
+        from harvest h
+        join v_harvest_balance b on b.id = h.id
+       where h.farm_id = f.id
+         and h.status in ('planned', 'open', 'closed')
+         and coalesce(h.pickup_on, h.harvest_on) >= farm_today() - 7), '[]'::jsonb))
+    from farm f
+    left join farm_business b on b.farm_id = f.id
+   where f.slug = p_farm
+$$;
 
 
 --
@@ -1841,10 +3353,6 @@ $_$;
 
 COMMENT ON FUNCTION public.year_letter(p_on date, p_species public.species_t) IS 'The stock-code year letter for a date and species. Cattle: what tagged cattle born that year already carry, else the NLIS letter cycle (no I or O; 2005 = A). Sheep: the tag colour, BK W O G P Y R BU from 2024, always.';
 
-
-SET default_tablespace = '';
-
-SET default_table_access_method = heap;
 
 --
 -- Name: ai_semen; Type: TABLE; Schema: public; Owner: -
@@ -2217,6 +3725,108 @@ COMMENT ON COLUMN public.cryo_txn.female_ref IS 'The female as written on the sh
 
 
 --
+-- Name: customer; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.customer (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    farm_id uuid DEFAULT public.current_farm() NOT NULL,
+    name text NOT NULL,
+    company text,
+    email text,
+    phone text,
+    alt_phone text,
+    street text,
+    suburb text,
+    state text,
+    postcode text,
+    country text DEFAULT 'Australia'::text NOT NULL,
+    abn text,
+    note text,
+    source text DEFAULT 'manual'::text NOT NULL,
+    recorded_by uuid DEFAULT auth.uid(),
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT customer_source_check CHECK ((source = ANY (ARRAY['manual'::text, 'web'::text, 'import'::text])))
+);
+
+
+--
+-- Name: customer_order; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.customer_order (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    farm_id uuid DEFAULT public.current_farm() NOT NULL,
+    order_no integer NOT NULL,
+    customer_id uuid NOT NULL,
+    harvest_id uuid,
+    placed_on date DEFAULT public.farm_today() NOT NULL,
+    source text DEFAULT 'manual'::text NOT NULL,
+    status text DEFAULT 'new'::text NOT NULL,
+    fulfilment text DEFAULT 'pickup_butcher'::text NOT NULL,
+    ship_name text,
+    ship_phone text,
+    ship_alt_phone text,
+    ship_street text,
+    ship_suburb text,
+    ship_state text,
+    ship_postcode text,
+    ship_type text DEFAULT 'Residential'::text NOT NULL,
+    ship_instructions text,
+    deliver_on date,
+    delivery_fee_cents integer DEFAULT 0 NOT NULL,
+    carrier text,
+    carrier_ref text,
+    carrier_no text,
+    tracking_url text,
+    customer_note text,
+    note text,
+    recorded_by uuid DEFAULT auth.uid(),
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT customer_order_delivery_fee_cents_check CHECK ((delivery_fee_cents >= 0)),
+    CONSTRAINT customer_order_fulfilment_check CHECK ((fulfilment = ANY (ARRAY['pickup_farm'::text, 'pickup_butcher'::text, 'delivery'::text]))),
+    CONSTRAINT customer_order_ship_type_check CHECK ((ship_type = ANY (ARRAY['Residential'::text, 'Business'::text]))),
+    CONSTRAINT customer_order_source_check CHECK ((source = ANY (ARRAY['manual'::text, 'web'::text, 'import'::text]))),
+    CONSTRAINT customer_order_status_check CHECK ((status = ANY (ARRAY['new'::text, 'confirmed'::text, 'packed'::text, 'complete'::text, 'cancelled'::text])))
+);
+
+
+--
+-- Name: COLUMN customer_order.status; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.customer_order.status IS 'new: arrived, not yet looked at. confirmed: accepted. packed: weighed and boxed. complete: collected or delivered. Whether it is paid is not a status — see v_order.due_cents.';
+
+
+--
+-- Name: COLUMN customer_order.fulfilment; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.customer_order.fulfilment IS 'pickup_farm: collected from us. pickup_butcher: collected from the butcher''s shop. delivery: sent by carrier.';
+
+
+--
+-- Name: delivery_zone; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.delivery_zone (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    farm_id uuid DEFAULT public.current_farm() NOT NULL,
+    carrier text DEFAULT 'Blackbird Logistics'::text NOT NULL,
+    region text NOT NULL,
+    postcode text NOT NULL,
+    suburb text NOT NULL,
+    zone text NOT NULL,
+    mon boolean DEFAULT false NOT NULL,
+    tue boolean DEFAULT false NOT NULL,
+    wed boolean DEFAULT false NOT NULL,
+    thu boolean DEFAULT false NOT NULL,
+    fri boolean DEFAULT false NOT NULL,
+    sat boolean DEFAULT false NOT NULL
+);
+
+
+--
 -- Name: embryo; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2326,6 +3936,75 @@ COMMENT ON COLUMN public.farm.lat IS 'Where the map opens for a farm with no pad
 --
 
 COMMENT ON COLUMN public.farm.sg_flock_id IS 'The six digits Sheep Genetics (MERINOSELECT, LAMBPLAN) knows this flock by, the front of every animal''s Sheep Genetics ID. Null if the farm does not record.';
+
+
+--
+-- Name: farm_business; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.farm_business (
+    farm_id uuid DEFAULT public.current_farm() NOT NULL,
+    abn text,
+    phone text,
+    email text,
+    website text,
+    payment_details text,
+    invoice_terms_days integer DEFAULT 14 NOT NULL,
+    order_prefix text DEFAULT 'BF'::text NOT NULL,
+    first_invoice_no integer DEFAULT 1 NOT NULL,
+    email_web_orders boolean DEFAULT false NOT NULL,
+    collect_name text,
+    collect_street text,
+    collect_suburb text,
+    collect_state text,
+    collect_postcode text,
+    collect_window text,
+    collect_note text,
+    CONSTRAINT farm_business_collect_postcode_check CHECK ((collect_postcode ~ '^[0-9]{4}$'::text)),
+    CONSTRAINT farm_business_collect_window_check CHECK ((collect_window ~ '^[0-9]{2}:[0-9]{2}-[0-9]{2}:[0-9]{2}$'::text))
+);
+
+
+--
+-- Name: TABLE farm_business; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.farm_business IS 'What the farm trades as on paper: ABN, contact, bank details. Entered in Sales -> Settings, never in the repo.';
+
+
+--
+-- Name: COLUMN farm_business.email_web_orders; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.farm_business.email_web_orders IS 'Email the customer a confirmation, and the farm a notice, when an order arrives from the website. Off until the mailbox is proven.';
+
+
+--
+-- Name: COLUMN farm_business.collect_name; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.farm_business.collect_name IS 'Where the carrier collects the cartons from: the butcher''s shop. Goes on the collection row of the manifest (Sales -> Delivery).';
+
+
+--
+-- Name: COLUMN farm_business.collect_street; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.farm_business.collect_street IS 'Street address of the collection, as the carrier is to have it. Suburb, state and postcode are their own columns, as on the manifest.';
+
+
+--
+-- Name: COLUMN farm_business.collect_window; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.farm_business.collect_window IS 'When the carrier may collect, as the manifest writes a time window: 11:00-18:00. Blank means that.';
+
+
+--
+-- Name: COLUMN farm_business.collect_note; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.farm_business.collect_note IS 'Instructions for the driver on the collection. Blank means "Pick up from" and the name.';
 
 
 --
@@ -2477,6 +4156,80 @@ COMMENT ON COLUMN public.feed_source.intake_kg_head_day IS 'Estimated intake per
 
 
 --
+-- Name: harvest; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.harvest (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    farm_id uuid DEFAULT public.current_farm() NOT NULL,
+    code text NOT NULL,
+    kind text NOT NULL,
+    title text,
+    harvest_on date NOT NULL,
+    butcher_on date,
+    pickup_on date,
+    delivery_on date,
+    interstate_on date,
+    interstate_note text,
+    butcher_name text,
+    pickup_place text,
+    pickup_hours text,
+    status text DEFAULT 'planned'::text NOT NULL,
+    butcher_released_at timestamp with time zone,
+    head integer,
+    live_kg numeric(8,1),
+    carcass_kg numeric(8,1),
+    retail_ratio numeric(4,3) DEFAULT 0.66 NOT NULL,
+    capacity_kg numeric(8,1),
+    kill_fee_cents integer,
+    butcher_rate_cents integer,
+    carton_fee_cents integer,
+    other_cost_cents integer,
+    remaining_sheet jsonb,
+    butcher_note text,
+    note text,
+    recorded_by uuid DEFAULT auth.uid(),
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    boxes_for_sale integer,
+    collect_on date,
+    collect_row boolean DEFAULT true NOT NULL,
+    CONSTRAINT harvest_boxes_for_sale_check CHECK ((boxes_for_sale >= 0)),
+    CONSTRAINT harvest_head_check CHECK ((head > 0)),
+    CONSTRAINT harvest_kind_check CHECK ((kind = ANY (ARRAY['beef'::text, 'lamb'::text]))),
+    CONSTRAINT harvest_retail_ratio_check CHECK (((retail_ratio > (0)::numeric) AND (retail_ratio <= (1)::numeric))),
+    CONSTRAINT harvest_status_check CHECK ((status = ANY (ARRAY['planned'::text, 'open'::text, 'closed'::text, 'done'::text])))
+);
+
+
+--
+-- Name: COLUMN harvest.status; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.harvest.status IS 'planned: dates pencilled, shown on the site as "tbc". open: taking orders. closed: full. done: delivered and paid.';
+
+
+--
+-- Name: COLUMN harvest.boxes_for_sale; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.harvest.boxes_for_sale IS 'How many boxes this harvest has to sell, if typed. Blank means worked out: head x 2 for lamb, for-sale kg / the smallest box for beef. See v_harvest_balance.';
+
+
+--
+-- Name: COLUMN harvest.collect_on; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.harvest.collect_on IS 'The day the carrier collects the cartons from the butcher. Blank means the pick-up day.';
+
+
+--
+-- Name: COLUMN harvest.collect_row; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.harvest.collect_row IS 'Whether the collection is the first row of the carrier''s manifest for this harvest.';
+
+
+--
 -- Name: heartbeat; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2494,6 +4247,49 @@ CREATE TABLE public.heritage (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     name text NOT NULL,
     farm_id uuid DEFAULT public.current_farm() NOT NULL
+);
+
+
+--
+-- Name: invoice; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.invoice (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    farm_id uuid DEFAULT public.current_farm() NOT NULL,
+    invoice_no integer NOT NULL,
+    order_id uuid NOT NULL,
+    customer_id uuid NOT NULL,
+    issued_on date DEFAULT public.farm_today() NOT NULL,
+    due_on date,
+    bill_to text NOT NULL,
+    ship_to text,
+    ship_on date,
+    ship_via text,
+    tracking text,
+    note text,
+    sent_on date,
+    void boolean DEFAULT false NOT NULL,
+    recorded_by uuid DEFAULT auth.uid(),
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: invoice_line; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.invoice_line (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    farm_id uuid NOT NULL,
+    invoice_id uuid NOT NULL,
+    description text NOT NULL,
+    qty numeric(9,2) DEFAULT 1 NOT NULL,
+    rate_cents integer DEFAULT 0 NOT NULL,
+    gst_rate numeric(4,2) DEFAULT 0 NOT NULL,
+    shipping boolean DEFAULT false NOT NULL,
+    sort integer DEFAULT 0 NOT NULL,
+    CONSTRAINT invoice_line_gst_rate_check CHECK ((gst_rate = ANY (ARRAY[(0)::numeric, (10)::numeric])))
 );
 
 
@@ -2559,6 +4355,64 @@ COMMENT ON COLUMN public.joining.paddock_id IS 'Bull out only: the mob he ran wi
 --
 
 COMMENT ON COLUMN public.joining.confidence_pct IS 'AI only. Operator''s judgement of the insemination, 0-100, recorded before the result is known.';
+
+
+--
+-- Name: order_line; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.order_line (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    farm_id uuid NOT NULL,
+    order_id uuid NOT NULL,
+    product_option_id uuid,
+    description text NOT NULL,
+    qty integer DEFAULT 1 NOT NULL,
+    size_kg numeric(7,2),
+    actual_kg numeric(7,2),
+    unit_cents integer DEFAULT 0 NOT NULL,
+    discount_cents integer DEFAULT 0 NOT NULL,
+    gst_rate numeric(4,2) DEFAULT 0 NOT NULL,
+    cartons integer DEFAULT 1 NOT NULL,
+    for_butcher boolean DEFAULT true NOT NULL,
+    cut_sheet jsonb,
+    butcher_note text,
+    packed boolean DEFAULT false NOT NULL,
+    sort integer DEFAULT 0 NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    answers jsonb,
+    CONSTRAINT order_line_cartons_check CHECK ((cartons >= 0)),
+    CONSTRAINT order_line_discount_cents_check CHECK ((discount_cents >= 0)),
+    CONSTRAINT order_line_gst_rate_check CHECK ((gst_rate = ANY (ARRAY[(0)::numeric, (10)::numeric]))),
+    CONSTRAINT order_line_qty_check CHECK ((qty > 0))
+);
+
+
+--
+-- Name: COLUMN order_line.answers; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.order_line.answers IS '{"label": "choice"} for the questions the product asked when this was ordered.';
+
+
+--
+-- Name: order_payment; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.order_payment (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    farm_id uuid NOT NULL,
+    order_id uuid NOT NULL,
+    paid_on date DEFAULT public.farm_today() NOT NULL,
+    amount_cents integer NOT NULL,
+    method text DEFAULT 'bank'::text NOT NULL,
+    reference text,
+    note text,
+    recorded_by uuid DEFAULT auth.uid(),
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT order_payment_amount_cents_check CHECK ((amount_cents <> 0)),
+    CONSTRAINT order_payment_method_check CHECK ((method = ANY (ARRAY['bank'::text, 'card'::text, 'cash'::text, 'other'::text])))
+);
 
 
 --
@@ -2634,6 +4488,56 @@ CREATE TABLE public.paddock_stay (
 
 
 --
+-- Name: past_order; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.past_order (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    farm_id uuid DEFAULT public.current_farm() NOT NULL,
+    source text DEFAULT 'squarespace'::text NOT NULL,
+    ref text NOT NULL,
+    customer_id uuid,
+    email text,
+    placed_at timestamp with time zone NOT NULL,
+    paid_status text,
+    fulfil_status text,
+    fulfilled_at timestamp with time zone,
+    cancelled_at timestamp with time zone,
+    subtotal_cents integer DEFAULT 0 NOT NULL,
+    shipping_cents integer DEFAULT 0 NOT NULL,
+    tax_cents integer DEFAULT 0 NOT NULL,
+    refunded_cents integer DEFAULT 0 NOT NULL,
+    total_cents integer DEFAULT 0 NOT NULL,
+    ship_method text,
+    lines jsonb DEFAULT '[]'::jsonb NOT NULL,
+    bill_name text,
+    bill_street text,
+    bill_suburb text,
+    bill_state text,
+    bill_postcode text,
+    bill_phone text,
+    ship_name text,
+    ship_street text,
+    ship_suburb text,
+    ship_state text,
+    ship_postcode text,
+    ship_phone text,
+    note text,
+    payment_method text,
+    payment_ref text,
+    imported_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT past_order_lines_ck CHECK ((jsonb_typeof(lines) = 'array'::text))
+);
+
+
+--
+-- Name: TABLE past_order; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.past_order IS 'Orders taken by a shop that came before this one, kept to look back on. Not customer_order: the totals are what that shop took (a deposit), and nothing is added up from them.';
+
+
+--
 -- Name: planned_joining; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2687,6 +4591,79 @@ COMMENT ON COLUMN public.planned_joining.gestation_days IS 'Nominated for this p
 --
 
 COMMENT ON COLUMN public.planned_joining.attempt IS 'Which join this is the plan for: 1 the first choice, 2 the back-up, 3 usually the bull. Same numbering as joining.attempt.';
+
+
+--
+-- Name: product; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.product (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    farm_id uuid DEFAULT public.current_farm() NOT NULL,
+    slug text NOT NULL,
+    name text NOT NULL,
+    kind text DEFAULT 'other'::text NOT NULL,
+    summary text,
+    description text,
+    image_url text,
+    deposit_cents integer DEFAULT 0 NOT NULL,
+    gst_rate numeric(4,2) DEFAULT 0 NOT NULL,
+    from_harvest boolean DEFAULT true NOT NULL,
+    local_only boolean DEFAULT false NOT NULL,
+    cut_sheet jsonb,
+    active boolean DEFAULT true NOT NULL,
+    sort integer DEFAULT 0 NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    questions jsonb,
+    CONSTRAINT product_deposit_cents_check CHECK ((deposit_cents >= 0)),
+    CONSTRAINT product_gst_rate_check CHECK ((gst_rate = ANY (ARRAY[(0)::numeric, (10)::numeric]))),
+    CONSTRAINT product_kind_check CHECK ((kind = ANY (ARRAY['beef'::text, 'lamb'::text, 'other'::text]))),
+    CONSTRAINT product_slug_ck CHECK ((slug ~ '^[a-z0-9-]{2,60}$'::text))
+);
+
+
+--
+-- Name: COLUMN product.deposit_cents; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.product.deposit_cents IS 'Asked for per pack when the order is placed. The balance is invoiced once it is packed.';
+
+
+--
+-- Name: COLUMN product.cut_sheet; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.product.cut_sheet IS '{"columns": [...], "rows": [[...], ...], "notes": [[label, text], ...]} — what the butcher is asked to do for one pack.';
+
+
+--
+-- Name: COLUMN product.questions; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.product.questions IS '[{"label", "choices": [...]}] — asked once per pack on the order form. Choices only; the first is the default. [] means none, on purpose.';
+
+
+--
+-- Name: product_option; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.product_option (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    farm_id uuid NOT NULL,
+    product_id uuid NOT NULL,
+    sku text,
+    name text NOT NULL,
+    label text,
+    size_kg numeric(7,2),
+    price_cents integer NOT NULL,
+    cartons integer DEFAULT 1 NOT NULL,
+    sheet_multiple numeric(5,2) DEFAULT 1 NOT NULL,
+    cut_sheet jsonb,
+    active boolean DEFAULT true NOT NULL,
+    sort integer DEFAULT 0 NOT NULL,
+    CONSTRAINT product_option_cartons_check CHECK ((cartons >= 0)),
+    CONSTRAINT product_option_price_cents_check CHECK ((price_cents >= 0))
+);
 
 
 --
@@ -2874,6 +4851,36 @@ COMMENT ON TABLE public.spray_product IS 'One product in one pass. A tank mix is
 --
 
 COMMENT ON COLUMN public.spray_product.graze_withhold_days IS 'Label days before stock may graze. NULL means unknown, which is NOT the same as zero.';
+
+
+--
+-- Name: subscriber; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.subscriber (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    farm_id uuid DEFAULT public.current_farm() NOT NULL,
+    email text NOT NULL,
+    first_name text,
+    last_name text,
+    state text,
+    status text DEFAULT 'subscribed'::text NOT NULL,
+    status_on timestamp with time zone DEFAULT now() NOT NULL,
+    status_note text,
+    opted_in_on timestamp with time zone,
+    source text,
+    recorded_by uuid DEFAULT auth.uid(),
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT subscriber_email_ck CHECK ((email ~ '^[^@\s]+@[^@\s]+\.[^@\s]+$'::text)),
+    CONSTRAINT subscriber_status_check CHECK ((status = ANY (ARRAY['subscribed'::text, 'unsubscribed'::text, 'bounced'::text])))
+);
+
+
+--
+-- Name: TABLE subscriber; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.subscriber IS 'The mailing list, with everyone who has left it. Only status = subscribed may be written to.';
 
 
 --
@@ -3402,6 +5409,136 @@ COMMENT ON VIEW public.v_cryo_unmapped IS 'Females named on the register but not
 
 
 --
+-- Name: v_order; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_order WITH (security_invoker='on') AS
+ SELECT o.id,
+    o.farm_id,
+    o.order_no,
+    public.order_ref(fb.order_prefix, o.order_no) AS ref,
+    o.customer_id,
+    c.name AS customer_name,
+    c.company AS customer_company,
+    c.email AS customer_email,
+    c.phone AS customer_phone,
+    o.harvest_id,
+    h.code AS harvest_code,
+    h.kind AS harvest_kind,
+    o.placed_on,
+    o.source,
+    o.status,
+    o.fulfilment,
+    COALESCE(NULLIF(o.ship_name, ''::text), c.name) AS to_name,
+    COALESCE(NULLIF(o.ship_phone, ''::text), c.phone) AS to_phone,
+    COALESCE(NULLIF(o.ship_alt_phone, ''::text), c.alt_phone) AS to_alt_phone,
+        CASE
+            WHEN (COALESCE(o.ship_street, ''::text) <> ''::text) THEN o.ship_street
+            ELSE c.street
+        END AS to_street,
+        CASE
+            WHEN (COALESCE(o.ship_street, ''::text) <> ''::text) THEN o.ship_suburb
+            ELSE c.suburb
+        END AS to_suburb,
+        CASE
+            WHEN (COALESCE(o.ship_street, ''::text) <> ''::text) THEN o.ship_state
+            ELSE c.state
+        END AS to_state,
+        CASE
+            WHEN (COALESCE(o.ship_street, ''::text) <> ''::text) THEN o.ship_postcode
+            ELSE c.postcode
+        END AS to_postcode,
+    o.ship_name,
+    o.ship_phone,
+    o.ship_alt_phone,
+    o.ship_street,
+    o.ship_suburb,
+    o.ship_state,
+    o.ship_postcode,
+    o.ship_type,
+    o.ship_instructions,
+    o.deliver_on,
+    o.delivery_fee_cents,
+    o.carrier,
+    o.carrier_ref,
+    o.carrier_no,
+    o.tracking_url,
+    o.customer_note,
+    o.note,
+    o.created_at,
+    COALESCE(t.items, ''::text) AS items,
+    (COALESCE(t.packs, (0)::bigint))::integer AS packs,
+    COALESCE(t.kg, (0)::numeric) AS kg,
+    t.actual_kg,
+    (COALESCE(t.cartons, (0)::bigint))::integer AS cartons,
+    (COALESCE(t.goods_cents, (0)::bigint))::integer AS goods_cents,
+    ((COALESCE(t.gst_cents, (0)::numeric) + round(((o.delivery_fee_cents)::numeric * 0.10))))::integer AS gst_cents,
+    (((((COALESCE(t.goods_cents, (0)::bigint) + o.delivery_fee_cents))::numeric + COALESCE(t.gst_cents, (0)::numeric)) + round(((o.delivery_fee_cents)::numeric * 0.10))))::integer AS total_cents,
+    (COALESCE(p.paid_cents, (0)::bigint))::integer AS paid_cents,
+    ((((((COALESCE(t.goods_cents, (0)::bigint) + o.delivery_fee_cents))::numeric + COALESCE(t.gst_cents, (0)::numeric)) + round(((o.delivery_fee_cents)::numeric * 0.10))) - (COALESCE(p.paid_cents, (0)::bigint))::numeric))::integer AS due_cents,
+    (LEAST(COALESCE(t.deposit_cents, (0)::bigint), COALESCE(t.goods_cents, (0)::bigint)))::integer AS deposit_cents,
+    (COALESCE(t.unpacked, (0)::bigint))::integer AS unpacked,
+    i.invoices
+   FROM ((((((public.customer_order o
+     JOIN public.customer c ON ((c.id = o.customer_id)))
+     LEFT JOIN public.harvest h ON ((h.id = o.harvest_id)))
+     LEFT JOIN public.farm_business fb ON ((fb.farm_id = o.farm_id)))
+     LEFT JOIN LATERAL ( SELECT string_agg(((l.qty || ' × '::text) || l.description), ', '::text ORDER BY l.sort, l.created_at) AS items,
+            sum(l.qty) FILTER (WHERE l.for_butcher) AS packs,
+            sum(((l.qty)::numeric * l.size_kg)) AS kg,
+            sum(l.actual_kg) AS actual_kg,
+            sum((l.qty * l.cartons)) AS cartons,
+            sum(((l.qty * l.unit_cents) - l.discount_cents)) AS goods_cents,
+            sum(round((((((l.qty * l.unit_cents) - l.discount_cents))::numeric * l.gst_rate) / 100.0))) AS gst_cents,
+            sum((l.qty * COALESCE(pr.deposit_cents, 0))) AS deposit_cents,
+            count(*) FILTER (WHERE (l.for_butcher AND (NOT l.packed))) AS unpacked
+           FROM ((public.order_line l
+             LEFT JOIN public.product_option po ON ((po.id = l.product_option_id)))
+             LEFT JOIN public.product pr ON ((pr.id = po.product_id)))
+          WHERE (l.order_id = o.id)) t ON (true))
+     LEFT JOIN LATERAL ( SELECT sum(p_1.amount_cents) AS paid_cents
+           FROM public.order_payment p_1
+          WHERE (p_1.order_id = o.id)) p ON (true))
+     LEFT JOIN LATERAL ( SELECT string_agg((i_1.invoice_no)::text, ', '::text ORDER BY i_1.invoice_no) AS invoices
+           FROM public.invoice i_1
+          WHERE ((i_1.order_id = o.id) AND (NOT i_1.void))) i ON (true));
+
+
+--
+-- Name: v_customer; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_customer WITH (security_invoker='on') AS
+ SELECT c.id,
+    c.farm_id,
+    c.name,
+    c.company,
+    c.email,
+    c.phone,
+    c.alt_phone,
+    c.street,
+    c.suburb,
+    c.state,
+    c.postcode,
+    c.country,
+    c.abn,
+    c.note,
+    c.source,
+    c.created_at,
+    (COALESCE(s.orders, (0)::bigint))::integer AS orders,
+    s.last_order_on,
+    (COALESCE(s.total_cents, (0)::bigint))::integer AS total_cents,
+    (COALESCE(s.due_cents, (0)::bigint))::integer AS due_cents
+   FROM (public.customer c
+     LEFT JOIN LATERAL ( SELECT count(*) AS orders,
+            max(o.placed_on) AS last_order_on,
+            sum(o.total_cents) AS total_cents,
+            sum(o.due_cents) AS due_cents
+           FROM public.v_order o
+          WHERE ((o.customer_id = c.id) AND (o.status <> 'cancelled'::text))) s ON (true));
+
+
+--
 -- Name: v_dam_fertility; Type: VIEW; Schema: public; Owner: -
 --
 
@@ -3420,6 +5557,27 @@ CREATE VIEW public.v_dam_fertility WITH (security_invoker='on') AS
    FROM (public.animal d
      JOIN public.joining j ON ((j.dam_id = d.id)))
   GROUP BY d.id, d.stock_code, d.name;
+
+
+--
+-- Name: v_delivery_postcode; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_delivery_postcode WITH (security_invoker='on') AS
+ SELECT farm_id,
+    carrier,
+    postcode,
+    min(region) AS region,
+    string_agg(DISTINCT zone, ' / '::text) AS zone,
+    string_agg(DISTINCT suburb, ', '::text) AS suburbs,
+    bool_or(mon) AS mon,
+    bool_or(tue) AS tue,
+    bool_or(wed) AS wed,
+    bool_or(thu) AS thu,
+    bool_or(fri) AS fri,
+    bool_or(sat) AS sat
+   FROM public.delivery_zone
+  GROUP BY farm_id, carrier, postcode;
 
 
 --
@@ -3569,6 +5727,147 @@ CREATE VIEW public.v_feed_unmapped WITH (security_invoker='on') AS
 
 
 --
+-- Name: v_harvest; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_harvest WITH (security_invoker='on') AS
+ SELECT h.id,
+    h.farm_id,
+    h.code,
+    h.kind,
+    h.title,
+    h.harvest_on,
+    h.butcher_on,
+    h.pickup_on,
+    h.delivery_on,
+    h.interstate_on,
+    h.interstate_note,
+    h.butcher_name,
+    h.pickup_place,
+    h.pickup_hours,
+    h.status,
+    h.butcher_released_at,
+    h.head,
+    h.live_kg,
+    h.carcass_kg,
+    h.retail_ratio,
+    h.capacity_kg,
+    h.kill_fee_cents,
+    h.butcher_rate_cents,
+    h.carton_fee_cents,
+    h.other_cost_cents,
+    h.remaining_sheet,
+    h.butcher_note,
+    h.note,
+    h.created_at,
+    COALESCE(h.capacity_kg, round((h.carcass_kg * h.retail_ratio))) AS for_sale_kg,
+    (COALESCE(s.orders, (0)::bigint))::integer AS orders,
+    (COALESCE(s.packs, (0)::bigint))::integer AS packs,
+    COALESCE(s.kg, (0)::numeric) AS sold_kg,
+    (COALESCE(s.cartons, (0)::bigint))::integer AS cartons,
+    (COALESCE(s.deliveries, (0)::bigint))::integer AS deliveries,
+    (COALESCE(s.total_cents, (0)::bigint))::integer AS total_cents,
+    (COALESCE(s.paid_cents, (0)::bigint))::integer AS paid_cents,
+    (COALESCE(s.delivery_fee_cents, (0)::bigint))::integer AS delivery_fee_cents,
+    (((((COALESCE(h.kill_fee_cents, 0))::numeric + round(((COALESCE(h.butcher_rate_cents, 0))::numeric * COALESCE(h.carcass_kg, (0)::numeric)))) + ((COALESCE(h.carton_fee_cents, 0) * COALESCE(s.cartons, (0)::bigint)))::numeric) + (COALESCE(h.other_cost_cents, 0))::numeric))::integer AS cost_cents
+   FROM (public.harvest h
+     LEFT JOIN LATERAL ( SELECT count(*) AS orders,
+            sum(o.packs) AS packs,
+            sum(o.kg) AS kg,
+            sum(o.cartons) AS cartons,
+            count(*) FILTER (WHERE (o.fulfilment = 'delivery'::text)) AS deliveries,
+            sum(o.total_cents) AS total_cents,
+            sum(o.paid_cents) AS paid_cents,
+            sum(o.delivery_fee_cents) AS delivery_fee_cents
+           FROM public.v_order o
+          WHERE ((o.harvest_id = h.id) AND (o.status <> 'cancelled'::text))) s ON (true));
+
+
+--
+-- Name: v_harvest_balance; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_harvest_balance WITH (security_invoker='on') AS
+ SELECT h.id,
+    h.farm_id,
+    h.code,
+    h.kind,
+    h.status,
+    h.head,
+        CASE
+            WHEN (h.kind = 'lamb'::text) THEN 2
+            ELSE NULL::integer
+        END AS per_head,
+    bk.box_kg,
+    x.boxes,
+    (COALESCE(s.boxes, (0)::bigint))::integer AS boxes_sold,
+    ((x.boxes - COALESCE(s.boxes, (0)::bigint)))::integer AS boxes_left,
+    h.boxes_for_sale
+   FROM (((public.harvest h
+     LEFT JOIN LATERAL ( SELECT min((o.size_kg / (GREATEST(o.cartons, 1))::numeric)) AS box_kg
+           FROM (public.product_option o
+             JOIN public.product p ON ((p.id = o.product_id)))
+          WHERE ((p.farm_id = h.farm_id) AND (p.kind = h.kind) AND p.from_harvest AND p.active AND o.active AND (o.size_kg > (0)::numeric))) bk ON (true))
+     CROSS JOIN LATERAL ( SELECT COALESCE(h.boxes_for_sale,
+                CASE
+                    WHEN (h.kind = 'lamb'::text) THEN (h.head * 2)
+                    ELSE NULL::integer
+                END, (floor((COALESCE(h.capacity_kg, (h.carcass_kg * h.retail_ratio)) / bk.box_kg)))::integer) AS boxes) x)
+     LEFT JOIN LATERAL ( SELECT sum((l.qty * GREATEST(l.cartons, 1))) AS boxes
+           FROM (public.order_line l
+             JOIN public.customer_order o ON ((o.id = l.order_id)))
+          WHERE ((o.harvest_id = h.id) AND (o.status <> 'cancelled'::text) AND l.for_butcher)) s ON (true));
+
+
+--
+-- Name: v_invoice; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_invoice WITH (security_invoker='on') AS
+ SELECT i.id,
+    i.farm_id,
+    i.invoice_no,
+    i.order_id,
+    i.customer_id,
+    i.issued_on,
+    i.due_on,
+    i.bill_to,
+    i.ship_to,
+    i.ship_on,
+    i.ship_via,
+    i.tracking,
+    i.note,
+    i.sent_on,
+    i.void,
+    i.created_at,
+    c.name AS customer_name,
+    c.email AS customer_email,
+    public.order_ref(fb.order_prefix, o.order_no) AS order_ref,
+    (COALESCE(t.subtotal_cents, (0)::numeric))::integer AS subtotal_cents,
+    (COALESCE(t.shipping_cents, (0)::numeric))::integer AS shipping_cents,
+    (COALESCE(t.gst_cents, (0)::numeric))::integer AS gst_cents,
+    (((COALESCE(t.subtotal_cents, (0)::numeric) + COALESCE(t.shipping_cents, (0)::numeric)) + COALESCE(t.gst_cents, (0)::numeric)))::integer AS total_cents,
+    (COALESCE(t.net_free_cents, (0)::numeric))::integer AS net_free_cents,
+    (COALESCE(t.net_taxed_cents, (0)::numeric))::integer AS net_taxed_cents,
+    (COALESCE(p.paid_cents, (0)::bigint))::integer AS paid_cents,
+    (GREATEST((((COALESCE(t.subtotal_cents, (0)::numeric) + COALESCE(t.shipping_cents, (0)::numeric)) + COALESCE(t.gst_cents, (0)::numeric)) - (COALESCE(p.paid_cents, (0)::bigint))::numeric), (0)::numeric))::integer AS due_cents
+   FROM (((((public.invoice i
+     JOIN public.customer c ON ((c.id = i.customer_id)))
+     JOIN public.customer_order o ON ((o.id = i.order_id)))
+     LEFT JOIN public.farm_business fb ON ((fb.farm_id = i.farm_id)))
+     LEFT JOIN LATERAL ( SELECT sum(round((l.qty * (l.rate_cents)::numeric))) FILTER (WHERE (NOT l.shipping)) AS subtotal_cents,
+            sum(round((l.qty * (l.rate_cents)::numeric))) FILTER (WHERE l.shipping) AS shipping_cents,
+            sum(round(((round((l.qty * (l.rate_cents)::numeric)) * l.gst_rate) / 100.0))) AS gst_cents,
+            sum(round((l.qty * (l.rate_cents)::numeric))) FILTER (WHERE (l.gst_rate = (0)::numeric)) AS net_free_cents,
+            sum(round((l.qty * (l.rate_cents)::numeric))) FILTER (WHERE (l.gst_rate > (0)::numeric)) AS net_taxed_cents
+           FROM public.invoice_line l
+          WHERE (l.invoice_id = i.id)) t ON (true))
+     LEFT JOIN LATERAL ( SELECT sum(p_1.amount_cents) AS paid_cents
+           FROM public.order_payment p_1
+          WHERE (p_1.order_id = i.order_id)) p ON (true));
+
+
+--
 -- Name: v_joining_performance; Type: VIEW; Schema: public; Owner: -
 --
 
@@ -3634,6 +5933,33 @@ CREATE VIEW public.v_joining_result WITH (security_invoker='on') AS
      LEFT JOIN public.paddock p ON ((p.id = j.paddock_id)))
      LEFT JOIN public.calving c ON ((c.joining_id = j.id)))
      LEFT JOIN public.animal calf ON ((calf.id = c.calf_id)));
+
+
+--
+-- Name: v_mail; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_mail WITH (security_invoker='on') AS
+ SELECT m.id,
+    m.farm_id,
+    m.kind,
+    m.order_id,
+    m.invoice_id,
+    m.to_email,
+    m.to_name,
+    m.subject,
+    m.status,
+    m.error,
+    m.attempts,
+    m.created_at,
+    m.sent_at,
+    m.body_text,
+    public.order_ref(fb.order_prefix, o.order_no) AS order_ref,
+    i.invoice_no
+   FROM (((public.mail m
+     LEFT JOIN public.customer_order o ON ((o.id = m.order_id)))
+     LEFT JOIN public.invoice i ON ((i.id = m.invoice_id)))
+     LEFT JOIN public.farm_business fb ON ((fb.farm_id = m.farm_id)));
 
 
 --
@@ -4150,6 +6476,36 @@ CREATE VIEW public.v_stock_year_class WITH (security_invoker='on') AS
 
 
 --
+-- Name: v_subscriber; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_subscriber WITH (security_invoker='on') AS
+ SELECT s.id,
+    s.farm_id,
+    s.email,
+    s.first_name,
+    s.last_name,
+    s.state,
+    s.status,
+    s.status_on,
+    s.status_note,
+    s.opted_in_on,
+    s.source,
+    s.created_at,
+    c.id AS customer_id,
+    c.name AS customer_name,
+    COALESCE(c.orders, 0) AS orders
+   FROM (public.subscriber s
+     LEFT JOIN LATERAL ( SELECT vc.id,
+            vc.name,
+            vc.orders
+           FROM public.v_customer vc
+          WHERE ((vc.farm_id = s.farm_id) AND (lower(vc.email) = lower(s.email)))
+          ORDER BY vc.orders DESC, vc.created_at
+         LIMIT 1) c ON (true));
+
+
+--
 -- Name: v_treatment_lpa; Type: VIEW; Schema: public; Owner: -
 --
 
@@ -4298,6 +6654,30 @@ ALTER TABLE ONLY public.cryo_txn
 
 
 --
+-- Name: customer_order customer_order_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer_order
+    ADD CONSTRAINT customer_order_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: customer customer_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer
+    ADD CONSTRAINT customer_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: delivery_zone delivery_zone_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.delivery_zone
+    ADD CONSTRAINT delivery_zone_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: embryo embryo_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4311,6 +6691,14 @@ ALTER TABLE ONLY public.embryo
 
 ALTER TABLE ONLY public.expected_calving
     ADD CONSTRAINT expected_calving_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: farm_business farm_business_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.farm_business
+    ADD CONSTRAINT farm_business_pkey PRIMARY KEY (farm_id);
 
 
 --
@@ -4394,6 +6782,14 @@ ALTER TABLE ONLY public.feed_source
 
 
 --
+-- Name: harvest harvest_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.harvest
+    ADD CONSTRAINT harvest_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: heartbeat heartbeat_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4410,6 +6806,22 @@ ALTER TABLE ONLY public.heritage
 
 
 --
+-- Name: invoice_line invoice_line_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.invoice_line
+    ADD CONSTRAINT invoice_line_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: invoice invoice_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.invoice
+    ADD CONSTRAINT invoice_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: joining joining_dam_id_season_attempt_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4423,6 +6835,30 @@ ALTER TABLE ONLY public.joining
 
 ALTER TABLE ONLY public.joining
     ADD CONSTRAINT joining_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: mail mail_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mail
+    ADD CONSTRAINT mail_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: order_line order_line_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.order_line
+    ADD CONSTRAINT order_line_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: order_payment order_payment_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.order_payment
+    ADD CONSTRAINT order_payment_pkey PRIMARY KEY (id);
 
 
 --
@@ -4466,11 +6902,35 @@ ALTER TABLE ONLY public.paddock_stay
 
 
 --
+-- Name: past_order past_order_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.past_order
+    ADD CONSTRAINT past_order_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: planned_joining planned_joining_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.planned_joining
     ADD CONSTRAINT planned_joining_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: product_option product_option_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.product_option
+    ADD CONSTRAINT product_option_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: product product_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.product
+    ADD CONSTRAINT product_pkey PRIMARY KEY (id);
 
 
 --
@@ -4527,6 +6987,14 @@ ALTER TABLE ONLY public.spray_paddock
 
 ALTER TABLE ONLY public.spray_product
     ADD CONSTRAINT spray_product_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: subscriber subscriber_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.subscriber
+    ADD CONSTRAINT subscriber_pkey PRIMARY KEY (id);
 
 
 --
@@ -4752,6 +7220,69 @@ CREATE INDEX cryo_txn_unmapped_idx ON public.cryo_txn USING btree (female_ref) W
 
 
 --
+-- Name: customer_farm_email_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX customer_farm_email_idx ON public.customer USING btree (farm_id, lower(email));
+
+
+--
+-- Name: customer_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX customer_farm_idx ON public.customer USING btree (farm_id);
+
+
+--
+-- Name: customer_order_customer_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX customer_order_customer_idx ON public.customer_order USING btree (customer_id);
+
+
+--
+-- Name: customer_order_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX customer_order_farm_idx ON public.customer_order USING btree (farm_id);
+
+
+--
+-- Name: customer_order_harvest_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX customer_order_harvest_idx ON public.customer_order USING btree (harvest_id);
+
+
+--
+-- Name: customer_order_no_uq; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX customer_order_no_uq ON public.customer_order USING btree (farm_id, order_no);
+
+
+--
+-- Name: delivery_zone_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX delivery_zone_farm_idx ON public.delivery_zone USING btree (farm_id);
+
+
+--
+-- Name: delivery_zone_postcode_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX delivery_zone_postcode_idx ON public.delivery_zone USING btree (farm_id, postcode);
+
+
+--
+-- Name: delivery_zone_uq; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX delivery_zone_uq ON public.delivery_zone USING btree (farm_id, carrier, postcode, lower(suburb));
+
+
+--
 -- Name: embryo_donor_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4857,6 +7388,20 @@ CREATE INDEX feed_source_open_idx ON public.feed_source USING btree (feedstuff) 
 
 
 --
+-- Name: harvest_farm_code_uq; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX harvest_farm_code_uq ON public.harvest USING btree (farm_id, code);
+
+
+--
+-- Name: harvest_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX harvest_farm_idx ON public.harvest USING btree (farm_id);
+
+
+--
 -- Name: heritage_farm_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4868,6 +7413,41 @@ CREATE INDEX heritage_farm_idx ON public.heritage USING btree (farm_id);
 --
 
 CREATE UNIQUE INDEX heritage_farm_name_uq ON public.heritage USING btree (farm_id, name);
+
+
+--
+-- Name: invoice_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX invoice_farm_idx ON public.invoice USING btree (farm_id);
+
+
+--
+-- Name: invoice_line_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX invoice_line_farm_idx ON public.invoice_line USING btree (farm_id);
+
+
+--
+-- Name: invoice_line_invoice_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX invoice_line_invoice_idx ON public.invoice_line USING btree (invoice_id);
+
+
+--
+-- Name: invoice_no_uq; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX invoice_no_uq ON public.invoice USING btree (farm_id, invoice_no);
+
+
+--
+-- Name: invoice_order_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX invoice_order_idx ON public.invoice USING btree (order_id);
 
 
 --
@@ -4896,6 +7476,62 @@ CREATE INDEX joining_paddock_idx ON public.joining USING btree (paddock_id);
 --
 
 CREATE INDEX joining_semen_idx ON public.joining USING btree (ai_semen_id);
+
+
+--
+-- Name: mail_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX mail_farm_idx ON public.mail USING btree (farm_id, created_at DESC);
+
+
+--
+-- Name: mail_invoice_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX mail_invoice_idx ON public.mail USING btree (invoice_id);
+
+
+--
+-- Name: mail_order_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX mail_order_idx ON public.mail USING btree (order_id);
+
+
+--
+-- Name: mail_queue_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX mail_queue_idx ON public.mail USING btree (queued_at) WHERE (status = ANY (ARRAY['queued'::text, 'sending'::text]));
+
+
+--
+-- Name: order_line_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX order_line_farm_idx ON public.order_line USING btree (farm_id);
+
+
+--
+-- Name: order_line_order_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX order_line_order_idx ON public.order_line USING btree (order_id);
+
+
+--
+-- Name: order_payment_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX order_payment_farm_idx ON public.order_payment USING btree (farm_id);
+
+
+--
+-- Name: order_payment_order_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX order_payment_order_idx ON public.order_payment USING btree (order_id);
 
 
 --
@@ -4976,6 +7612,27 @@ CREATE INDEX paddock_stay_paddock_idx ON public.paddock_stay USING btree (paddoc
 
 
 --
+-- Name: past_order_customer_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX past_order_customer_idx ON public.past_order USING btree (customer_id);
+
+
+--
+-- Name: past_order_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX past_order_farm_idx ON public.past_order USING btree (farm_id);
+
+
+--
+-- Name: past_order_ref_uq; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX past_order_ref_uq ON public.past_order USING btree (farm_id, source, ref);
+
+
+--
 -- Name: planned_joining_dam_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -5001,6 +7658,34 @@ CREATE UNIQUE INDEX planned_joining_open_attempt_uq ON public.planned_joining US
 --
 
 CREATE INDEX planned_joining_open_idx ON public.planned_joining USING btree (dam_id, season) WHERE ((joining_id IS NULL) AND (cancelled_on IS NULL));
+
+
+--
+-- Name: product_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX product_farm_idx ON public.product USING btree (farm_id);
+
+
+--
+-- Name: product_farm_slug_uq; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX product_farm_slug_uq ON public.product USING btree (farm_id, slug);
+
+
+--
+-- Name: product_option_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX product_option_farm_idx ON public.product_option USING btree (farm_id);
+
+
+--
+-- Name: product_option_product_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX product_option_product_idx ON public.product_option USING btree (product_id);
 
 
 --
@@ -5106,6 +7791,20 @@ CREATE INDEX spray_product_event_idx ON public.spray_product USING btree (spray_
 --
 
 CREATE INDEX spray_product_farm_idx ON public.spray_product USING btree (farm_id);
+
+
+--
+-- Name: subscriber_email_uq; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX subscriber_email_uq ON public.subscriber USING btree (farm_id, lower(email));
+
+
+--
+-- Name: subscriber_farm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX subscriber_farm_idx ON public.subscriber USING btree (farm_id);
 
 
 --
@@ -5394,6 +8093,34 @@ CREATE TRIGGER cryo_txn_farm BEFORE INSERT OR UPDATE ON public.cryo_txn FOR EACH
 
 
 --
+-- Name: customer customer_changed; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER customer_changed AFTER DELETE OR UPDATE ON public.customer FOR EACH ROW EXECUTE FUNCTION public.log_record_change();
+
+
+--
+-- Name: customer_order customer_order_changed; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER customer_order_changed AFTER DELETE OR UPDATE ON public.customer_order FOR EACH ROW EXECUTE FUNCTION public.log_record_change();
+
+
+--
+-- Name: customer_order customer_order_farm; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER customer_order_farm BEFORE INSERT OR UPDATE ON public.customer_order FOR EACH ROW EXECUTE FUNCTION public.farm_id_from_parent('customer', 'customer_id', 'harvest', 'harvest_id');
+
+
+--
+-- Name: customer_order customer_order_no; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER customer_order_no BEFORE INSERT ON public.customer_order FOR EACH ROW EXECUTE FUNCTION public.next_order_no();
+
+
+--
 -- Name: embryo embryo_changed; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -5492,6 +8219,48 @@ CREATE TRIGGER feed_source_quantity_set AFTER UPDATE OF quantity ON public.feed_
 
 
 --
+-- Name: harvest harvest_changed; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER harvest_changed AFTER DELETE OR UPDATE ON public.harvest FOR EACH ROW EXECUTE FUNCTION public.log_record_change();
+
+
+--
+-- Name: invoice invoice_changed; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER invoice_changed AFTER DELETE OR UPDATE ON public.invoice FOR EACH ROW EXECUTE FUNCTION public.log_record_change();
+
+
+--
+-- Name: invoice invoice_farm; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER invoice_farm BEFORE INSERT OR UPDATE ON public.invoice FOR EACH ROW EXECUTE FUNCTION public.farm_id_from_parent('customer_order', 'order_id', 'customer', 'customer_id');
+
+
+--
+-- Name: invoice_line invoice_line_changed; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER invoice_line_changed AFTER DELETE OR UPDATE ON public.invoice_line FOR EACH ROW EXECUTE FUNCTION public.log_record_change();
+
+
+--
+-- Name: invoice_line invoice_line_farm; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER invoice_line_farm BEFORE INSERT OR UPDATE ON public.invoice_line FOR EACH ROW EXECUTE FUNCTION public.farm_id_from_parent('invoice', 'invoice_id');
+
+
+--
+-- Name: invoice invoice_no; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER invoice_no BEFORE INSERT ON public.invoice FOR EACH ROW EXECUTE FUNCTION public.next_invoice_no();
+
+
+--
 -- Name: joining joining_changed; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -5538,6 +8307,34 @@ CREATE TRIGGER joining_held_drops_backups AFTER UPDATE OF outcome ON public.join
 --
 
 CREATE TRIGGER joining_season BEFORE INSERT OR UPDATE OF due_on, season ON public.joining FOR EACH ROW EXECUTE FUNCTION public.joining_season();
+
+
+--
+-- Name: order_line order_line_changed; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER order_line_changed AFTER DELETE OR UPDATE ON public.order_line FOR EACH ROW EXECUTE FUNCTION public.log_record_change();
+
+
+--
+-- Name: order_line order_line_farm; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER order_line_farm BEFORE INSERT OR UPDATE ON public.order_line FOR EACH ROW EXECUTE FUNCTION public.farm_id_from_parent('customer_order', 'order_id', 'product_option', 'product_option_id');
+
+
+--
+-- Name: order_payment order_payment_changed; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER order_payment_changed AFTER DELETE OR UPDATE ON public.order_payment FOR EACH ROW EXECUTE FUNCTION public.log_record_change();
+
+
+--
+-- Name: order_payment order_payment_farm; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER order_payment_farm BEFORE INSERT OR UPDATE ON public.order_payment FOR EACH ROW EXECUTE FUNCTION public.farm_id_from_parent('customer_order', 'order_id');
 
 
 --
@@ -5597,6 +8394,13 @@ CREATE TRIGGER planned_joining_season BEFORE INSERT OR UPDATE OF planned_on, ges
 
 
 --
+-- Name: product_option product_option_farm; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER product_option_farm BEFORE INSERT OR UPDATE ON public.product_option FOR EACH ROW EXECUTE FUNCTION public.farm_id_from_parent('product', 'product_id');
+
+
+--
 -- Name: shearing_animal shearing_animal_farm; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -5636,6 +8440,13 @@ CREATE TRIGGER spray_product_changed AFTER DELETE OR UPDATE ON public.spray_prod
 --
 
 CREATE TRIGGER spray_product_farm BEFORE INSERT OR UPDATE ON public.spray_product FOR EACH ROW EXECUTE FUNCTION public.farm_id_from_parent('spray_event', 'spray_event_id');
+
+
+--
+-- Name: subscriber subscriber_changed; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER subscriber_changed AFTER DELETE OR UPDATE ON public.subscriber FOR EACH ROW EXECUTE FUNCTION public.log_record_change();
 
 
 --
@@ -5931,6 +8742,62 @@ ALTER TABLE ONLY public.cryo_txn
 
 
 --
+-- Name: customer customer_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer
+    ADD CONSTRAINT customer_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
+
+
+--
+-- Name: customer_order customer_order_customer_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer_order
+    ADD CONSTRAINT customer_order_customer_id_fkey FOREIGN KEY (customer_id) REFERENCES public.customer(id);
+
+
+--
+-- Name: customer_order customer_order_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer_order
+    ADD CONSTRAINT customer_order_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
+
+
+--
+-- Name: customer_order customer_order_harvest_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer_order
+    ADD CONSTRAINT customer_order_harvest_id_fkey FOREIGN KEY (harvest_id) REFERENCES public.harvest(id);
+
+
+--
+-- Name: customer_order customer_order_recorded_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer_order
+    ADD CONSTRAINT customer_order_recorded_by_fkey FOREIGN KEY (recorded_by) REFERENCES public.farm_user(id);
+
+
+--
+-- Name: customer customer_recorded_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer
+    ADD CONSTRAINT customer_recorded_by_fkey FOREIGN KEY (recorded_by) REFERENCES public.farm_user(id);
+
+
+--
+-- Name: delivery_zone delivery_zone_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.delivery_zone
+    ADD CONSTRAINT delivery_zone_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
+
+
+--
 -- Name: embryo embryo_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -6008,6 +8875,14 @@ ALTER TABLE ONLY public.expected_calving
 
 ALTER TABLE ONLY public.expected_calving
     ADD CONSTRAINT expected_calving_sire_id_fkey FOREIGN KEY (sire_id) REFERENCES public.animal(id);
+
+
+--
+-- Name: farm_business farm_business_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.farm_business
+    ADD CONSTRAINT farm_business_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id) ON DELETE CASCADE;
 
 
 --
@@ -6155,11 +9030,75 @@ ALTER TABLE ONLY public.feed_source
 
 
 --
+-- Name: harvest harvest_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.harvest
+    ADD CONSTRAINT harvest_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
+
+
+--
+-- Name: harvest harvest_recorded_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.harvest
+    ADD CONSTRAINT harvest_recorded_by_fkey FOREIGN KEY (recorded_by) REFERENCES public.farm_user(id);
+
+
+--
 -- Name: heritage heritage_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.heritage
     ADD CONSTRAINT heritage_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
+
+
+--
+-- Name: invoice invoice_customer_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.invoice
+    ADD CONSTRAINT invoice_customer_id_fkey FOREIGN KEY (customer_id) REFERENCES public.customer(id);
+
+
+--
+-- Name: invoice invoice_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.invoice
+    ADD CONSTRAINT invoice_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
+
+
+--
+-- Name: invoice_line invoice_line_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.invoice_line
+    ADD CONSTRAINT invoice_line_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
+
+
+--
+-- Name: invoice_line invoice_line_invoice_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.invoice_line
+    ADD CONSTRAINT invoice_line_invoice_id_fkey FOREIGN KEY (invoice_id) REFERENCES public.invoice(id) ON DELETE CASCADE;
+
+
+--
+-- Name: invoice invoice_order_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.invoice
+    ADD CONSTRAINT invoice_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.customer_order(id);
+
+
+--
+-- Name: invoice invoice_recorded_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.invoice
+    ADD CONSTRAINT invoice_recorded_by_fkey FOREIGN KEY (recorded_by) REFERENCES public.farm_user(id);
 
 
 --
@@ -6208,6 +9147,86 @@ ALTER TABLE ONLY public.joining
 
 ALTER TABLE ONLY public.joining
     ADD CONSTRAINT joining_sire_id_fkey FOREIGN KEY (sire_id) REFERENCES public.animal(id);
+
+
+--
+-- Name: mail mail_asked_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mail
+    ADD CONSTRAINT mail_asked_by_fkey FOREIGN KEY (asked_by) REFERENCES public.farm_user(id);
+
+
+--
+-- Name: mail mail_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mail
+    ADD CONSTRAINT mail_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
+
+
+--
+-- Name: mail mail_invoice_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mail
+    ADD CONSTRAINT mail_invoice_id_fkey FOREIGN KEY (invoice_id) REFERENCES public.invoice(id) ON DELETE SET NULL;
+
+
+--
+-- Name: mail mail_order_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mail
+    ADD CONSTRAINT mail_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.customer_order(id) ON DELETE SET NULL;
+
+
+--
+-- Name: order_line order_line_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.order_line
+    ADD CONSTRAINT order_line_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
+
+
+--
+-- Name: order_line order_line_order_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.order_line
+    ADD CONSTRAINT order_line_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.customer_order(id) ON DELETE CASCADE;
+
+
+--
+-- Name: order_line order_line_product_option_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.order_line
+    ADD CONSTRAINT order_line_product_option_id_fkey FOREIGN KEY (product_option_id) REFERENCES public.product_option(id);
+
+
+--
+-- Name: order_payment order_payment_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.order_payment
+    ADD CONSTRAINT order_payment_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
+
+
+--
+-- Name: order_payment order_payment_order_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.order_payment
+    ADD CONSTRAINT order_payment_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.customer_order(id);
+
+
+--
+-- Name: order_payment order_payment_recorded_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.order_payment
+    ADD CONSTRAINT order_payment_recorded_by_fkey FOREIGN KEY (recorded_by) REFERENCES public.farm_user(id);
 
 
 --
@@ -6323,6 +9342,22 @@ ALTER TABLE ONLY public.paddock_stay
 
 
 --
+-- Name: past_order past_order_customer_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.past_order
+    ADD CONSTRAINT past_order_customer_id_fkey FOREIGN KEY (customer_id) REFERENCES public.customer(id) ON DELETE SET NULL;
+
+
+--
+-- Name: past_order past_order_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.past_order
+    ADD CONSTRAINT past_order_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
+
+
+--
 -- Name: planned_joining planned_joining_ai_semen_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -6376,6 +9411,30 @@ ALTER TABLE ONLY public.planned_joining
 
 ALTER TABLE ONLY public.planned_joining
     ADD CONSTRAINT planned_joining_sire_id_fkey FOREIGN KEY (sire_id) REFERENCES public.animal(id);
+
+
+--
+-- Name: product product_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.product
+    ADD CONSTRAINT product_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
+
+
+--
+-- Name: product_option product_option_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.product_option
+    ADD CONSTRAINT product_option_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
+
+
+--
+-- Name: product_option product_option_product_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.product_option
+    ADD CONSTRAINT product_option_product_id_fkey FOREIGN KEY (product_id) REFERENCES public.product(id) ON DELETE CASCADE;
 
 
 --
@@ -6496,6 +9555,22 @@ ALTER TABLE ONLY public.spray_product
 
 ALTER TABLE ONLY public.spray_product
     ADD CONSTRAINT spray_product_spray_event_id_fkey FOREIGN KEY (spray_event_id) REFERENCES public.spray_event(id) ON DELETE CASCADE;
+
+
+--
+-- Name: subscriber subscriber_farm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.subscriber
+    ADD CONSTRAINT subscriber_farm_id_fkey FOREIGN KEY (farm_id) REFERENCES public.farm(id);
+
+
+--
+-- Name: subscriber subscriber_recorded_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.subscriber
+    ADD CONSTRAINT subscriber_recorded_by_fkey FOREIGN KEY (recorded_by) REFERENCES public.farm_user(id);
 
 
 --
@@ -6885,6 +9960,108 @@ CREATE POLICY cryo_txn_update ON public.cryo_txn FOR UPDATE TO authenticated USI
 
 
 --
+-- Name: customer; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.customer ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: customer customer_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY customer_delete ON public.customer FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
+
+
+--
+-- Name: customer customer_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY customer_insert ON public.customer FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
+
+
+--
+-- Name: customer_order; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.customer_order ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: customer_order customer_order_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY customer_order_delete ON public.customer_order FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
+
+
+--
+-- Name: customer_order customer_order_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY customer_order_insert ON public.customer_order FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
+
+
+--
+-- Name: customer_order customer_order_read; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY customer_order_read ON public.customer_order FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
+
+
+--
+-- Name: customer_order customer_order_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY customer_order_update ON public.customer_order FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
+
+
+--
+-- Name: customer customer_read; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY customer_read ON public.customer FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
+
+
+--
+-- Name: customer customer_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY customer_update ON public.customer FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
+
+
+--
+-- Name: delivery_zone; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.delivery_zone ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: delivery_zone delivery_zone_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY delivery_zone_delete ON public.delivery_zone FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
+
+
+--
+-- Name: delivery_zone delivery_zone_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY delivery_zone_insert ON public.delivery_zone FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
+
+
+--
+-- Name: delivery_zone delivery_zone_read; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY delivery_zone_read ON public.delivery_zone FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
+
+
+--
+-- Name: delivery_zone delivery_zone_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY delivery_zone_update ON public.delivery_zone FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
+
+
+--
 -- Name: embryo; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -6959,6 +10136,26 @@ CREATE POLICY expected_calving_update ON public.expected_calving FOR UPDATE TO a
 ALTER TABLE public.farm ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: farm_business; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.farm_business ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: farm_business farm_business_read; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY farm_business_read ON public.farm_business FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
+
+
+--
+-- Name: farm_business farm_business_write; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY farm_business_write ON public.farm_business TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
+
+
+--
 -- Name: farm_member; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -6975,7 +10172,7 @@ CREATE POLICY farm_member_manage ON public.farm_member TO authenticated USING ((
 -- Name: farm_member farm_member_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY farm_member_read ON public.farm_member FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) OR (user_id = auth.uid())));
+CREATE POLICY farm_member_read ON public.farm_member FOR SELECT TO authenticated USING (((user_id = auth.uid()) OR ((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read))));
 
 
 --
@@ -7004,9 +10201,9 @@ ALTER TABLE public.farm_user ENABLE ROW LEVEL SECURITY;
 -- Name: farm_user farm_user_read; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY farm_user_read ON public.farm_user FOR SELECT TO authenticated USING (((id = auth.uid()) OR (EXISTS ( SELECT 1
+CREATE POLICY farm_user_read ON public.farm_user FOR SELECT TO authenticated USING (((id = auth.uid()) OR (( SELECT public.can_read() AS can_read) AND (EXISTS ( SELECT 1
    FROM public.farm_member m
-  WHERE ((m.user_id = farm_user.id) AND (m.farm_id = ( SELECT public.current_farm() AS current_farm)))))));
+  WHERE ((m.user_id = farm_user.id) AND (m.farm_id = ( SELECT public.current_farm() AS current_farm))))))));
 
 
 --
@@ -7191,6 +10388,40 @@ CREATE POLICY feed_source_update ON public.feed_source FOR UPDATE TO authenticat
 
 
 --
+-- Name: harvest; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.harvest ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: harvest harvest_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY harvest_delete ON public.harvest FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
+
+
+--
+-- Name: harvest harvest_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY harvest_insert ON public.harvest FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
+
+
+--
+-- Name: harvest harvest_read; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY harvest_read ON public.harvest FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
+
+
+--
+-- Name: harvest harvest_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY harvest_update ON public.harvest FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
+
+
+--
 -- Name: heartbeat; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -7238,6 +10469,74 @@ CREATE POLICY heritage_update ON public.heritage FOR UPDATE TO authenticated USI
 
 
 --
+-- Name: invoice; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.invoice ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: invoice invoice_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY invoice_delete ON public.invoice FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
+
+
+--
+-- Name: invoice invoice_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY invoice_insert ON public.invoice FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
+
+
+--
+-- Name: invoice_line; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.invoice_line ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: invoice_line invoice_line_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY invoice_line_delete ON public.invoice_line FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
+
+
+--
+-- Name: invoice_line invoice_line_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY invoice_line_insert ON public.invoice_line FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
+
+
+--
+-- Name: invoice_line invoice_line_read; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY invoice_line_read ON public.invoice_line FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
+
+
+--
+-- Name: invoice_line invoice_line_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY invoice_line_update ON public.invoice_line FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
+
+
+--
+-- Name: invoice invoice_read; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY invoice_read ON public.invoice FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
+
+
+--
+-- Name: invoice invoice_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY invoice_update ON public.invoice FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
+
+
+--
 -- Name: joining; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -7269,6 +10568,87 @@ CREATE POLICY joining_read ON public.joining FOR SELECT TO authenticated USING (
 --
 
 CREATE POLICY joining_update ON public.joining FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
+
+
+--
+-- Name: mail; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.mail ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: mail mail_read; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY mail_read ON public.mail FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
+
+
+--
+-- Name: order_line; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.order_line ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: order_line order_line_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY order_line_delete ON public.order_line FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
+
+
+--
+-- Name: order_line order_line_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY order_line_insert ON public.order_line FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
+
+
+--
+-- Name: order_line order_line_read; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY order_line_read ON public.order_line FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
+
+
+--
+-- Name: order_line order_line_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY order_line_update ON public.order_line FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
+
+
+--
+-- Name: order_payment; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.order_payment ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: order_payment order_payment_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY order_payment_delete ON public.order_payment FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
+
+
+--
+-- Name: order_payment order_payment_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY order_payment_insert ON public.order_payment FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
+
+
+--
+-- Name: order_payment order_payment_read; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY order_payment_read ON public.order_payment FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
+
+
+--
+-- Name: order_payment order_payment_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY order_payment_update ON public.order_payment FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
@@ -7398,6 +10778,40 @@ CREATE POLICY paddock_update ON public.paddock FOR UPDATE TO authenticated USING
 
 
 --
+-- Name: past_order; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.past_order ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: past_order past_order_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY past_order_delete ON public.past_order FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
+
+
+--
+-- Name: past_order past_order_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY past_order_insert ON public.past_order FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
+
+
+--
+-- Name: past_order past_order_read; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY past_order_read ON public.past_order FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
+
+
+--
+-- Name: past_order past_order_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY past_order_update ON public.past_order FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
+
+
+--
 -- Name: planned_joining; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -7429,6 +10843,74 @@ CREATE POLICY planned_joining_read ON public.planned_joining FOR SELECT TO authe
 --
 
 CREATE POLICY planned_joining_update ON public.planned_joining FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
+
+
+--
+-- Name: product; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.product ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: product product_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY product_delete ON public.product FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
+
+
+--
+-- Name: product product_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY product_insert ON public.product FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
+
+
+--
+-- Name: product_option; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.product_option ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: product_option product_option_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY product_option_delete ON public.product_option FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
+
+
+--
+-- Name: product_option product_option_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY product_option_insert ON public.product_option FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
+
+
+--
+-- Name: product_option product_option_read; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY product_option_read ON public.product_option FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
+
+
+--
+-- Name: product_option product_option_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY product_option_update ON public.product_option FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
+
+
+--
+-- Name: product product_read; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY product_read ON public.product FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
+
+
+--
+-- Name: product product_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY product_update ON public.product FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
 
 
 --
@@ -7649,6 +11131,40 @@ CREATE POLICY spray_product_update ON public.spray_product FOR UPDATE TO authent
 
 
 --
+-- Name: subscriber; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.subscriber ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: subscriber subscriber_delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY subscriber_delete ON public.subscriber FOR DELETE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND (( SELECT public.my_role() AS my_role) = 'owner'::public.farm_role_t)));
+
+
+--
+-- Name: subscriber subscriber_insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY subscriber_insert ON public.subscriber FOR INSERT TO authenticated WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
+
+
+--
+-- Name: subscriber subscriber_read; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY subscriber_read ON public.subscriber FOR SELECT TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_read() AS can_read)));
+
+
+--
+-- Name: subscriber subscriber_update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY subscriber_update ON public.subscriber FOR UPDATE TO authenticated USING (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write))) WITH CHECK (((farm_id = ( SELECT public.current_farm() AS current_farm)) AND ( SELECT public.can_write() AS can_write)));
+
+
+--
 -- Name: treatment; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -7767,5 +11283,5 @@ CREATE POLICY weight_event_update ON public.weight_event FOR UPDATE TO authentic
 -- PostgreSQL database dump complete
 --
 
-\unrestrict pr4DPwnQ4p7kO7GGK94Eg5c3BTGQ7bRALtzgcihYQMAEPw04XR1QCJ75wN3hixM
+\unrestrict qfeZ1ucUTo6n0maJg0Cpi1xT6AOzxEFSqvtjl24hV3ReLzKRHpi8v351oGKSfHA
 
