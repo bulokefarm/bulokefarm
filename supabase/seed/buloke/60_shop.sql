@@ -18,6 +18,16 @@ insert into farm_business (abn, phone, email, website, invoice_terms_days, order
 values ('21 620 822 033', '0407 841 617', 'bulokefarm@gmail.com', 'www.bulokefarm.com.au', 15, 'BF', 1350)
 on conflict (farm_id) do nothing;
 
+-- Where the carrier collects the cartons from (migration 78): the
+-- butcher's shop, written as the carrier's own collection job of
+-- 4 June 2026 has it. Only if nothing has been typed in Settings yet.
+update farm_business
+   set collect_name = 'Cherry Tree Organics', collect_street = '1/22-24 Old, Princes Hwy',
+       collect_suburb = 'Beaconsfield', collect_state = 'VIC', collect_postcode = '3807',
+       collect_window = '11:00-18:00'
+ where farm_id = current_farm()
+   and coalesce(collect_name, collect_street, collect_suburb, collect_state, collect_postcode, collect_window, collect_note) is null;
+
 -- ------------------------------------------------------------
 -- Beef
 -- ------------------------------------------------------------

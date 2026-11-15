@@ -1248,25 +1248,37 @@ const MANIFEST = ["Detrack Job Type", "Sender Name", "Group", "Order Identifier"
 const cartonText = o => `${kg(o.kg)}kg (${o.cartons} Carton${o.cartons > 1 ? `, ${kg(o.kg / o.cartons)}kg each` : ""})`;
 const deliveries = () => S.orders.filter(o => o.fulfilment === "delivery" && o.status !== "cancelled" && (harvestOf(S.harvest) ? o.harvest_id === S.harvest : true))
                               .sort((a, b) => a.order_no - b.order_no);
+// Where the carrier collects the cartons from before it delivers any: the
+// butcher's shop, typed once in Settings (migration 78). The row is the
+// carrier's own collection job of 4 June 2026 put into the manifest's
+// columns: the shop's address, an 11:00-18:00 window, our phone and email
+// as the contact, "Pick up from Cherry Tree Organics", every carton.
+const collectFrom = () => { const b = S.biz || {};
+  return { name: b.collect_name || "", street: b.collect_street || "", suburb: b.collect_suburb || "", state: b.collect_state || "", postcode: b.collect_postcode || "",
+           window: b.collect_window || "11:00-18:00", note: b.collect_note || (b.collect_name ? "Pick up from " + b.collect_name : "") }; };
+const collectGaps = c => [!c.name && "name", !c.street && "street address", !c.suburb && "suburb", !c.state && "state", !c.postcode && "postcode"].filter(Boolean);
+// What was ticked and picked on the Delivery page, kept while the table under it is redrawn.
+const COLLECT = { on: null, dates: {} };
+const collectOn = () => COLLECT.on ?? !collectGaps(collectFrom()).length;
+const collectDate = () => COLLECT.dates[S.harvest || ""] ?? harvestOf(S.harvest)?.pickup_on ?? "";
+const pcCell = pc => /^[1-9]\d{3}$/.test(pc || "") ? Number(pc) : (pc || "");
 function manifestRows(){
   const prefix = S.biz?.order_prefix || "BF", h = harvestOf(S.harvest);
   const rows = deliveries().map(o => ["Delivery", ME.farm_name, ME.farm_name, prefix, o.carrier_ref || pad4(o.order_no), o.cartons, "", o.to_name, o.to_phone || "",
     o.customer_email || "", "08:00-18:00", { d: o.deliver_on || h?.delivery_on || "" }, o.ship_type, o.to_street || "", o.to_state || "", o.to_suburb || "",
-    /^[1-9]\d{3}$/.test(o.to_postcode || "") ? Number(o.to_postcode) : (o.to_postcode || ""), ZONES.get(o.to_postcode)?.zone || "",
-    o.ship_instructions || cartonText(o), o.cartons]);
-  const col = $("#collect");
-  if(col?.checked && rows.length){
-    const total = rows.reduce((a, r) => a + r[5], 0), places = [...new Set(deliveries().map(o => o.to_suburb).filter(Boolean))].join(", ");
-    rows.unshift(["Collection", ME.farm_name, ME.farm_name, prefix, "C" + (h?.code || "").replace(/^H/, ""), total, "", h?.butcher_name || "", S.biz?.phone || "",
-      S.biz?.email || "", "08:00-18:00", { d: $("#collect_on").value || "" }, "Business", h?.pickup_place || "", "", "", "", "",
-      `Pick-up ${total} Carton${total === 1 ? "" : "s"} for delivery to ${places}`, total]);
+    pcCell(o.to_postcode), ZONES.get(o.to_postcode)?.zone || "", o.ship_instructions || cartonText(o), o.cartons]);
+  if(collectOn() && rows.length){
+    const total = rows.reduce((a, r) => a + r[5], 0), c = collectFrom();
+    rows.unshift(["Collection", ME.farm_name, ME.farm_name, prefix, "C" + (h?.code || "").replace(/^H/, ""), total, "", c.name, S.biz?.phone || "",
+      S.biz?.email || "", c.window, { d: collectDate() }, "Business", c.street, c.state, c.suburb, pcCell(c.postcode), ZONES.get(c.postcode)?.zone || "", c.note, total]);
   }
   return rows;
 }
 async function viewDelivery(){
   if(!harvestOf(S.harvest)) S.harvest = (S.harvests.find(h => S.orders.some(o => o.harvest_id === h.id && o.fulfilment === "delivery")) || S.harvests[0] || {}).id || null;
-  const h = harvestOf(S.harvest), rows = deliveries();
-  await zones(rows.map(o => o.to_postcode));
+  const h = harvestOf(S.harvest), rows = deliveries(), c = collectFrom(), gaps = collectGaps(c);
+  await zones([...rows.map(o => o.to_postcode), c.postcode]);
+  const cartons = rows.reduce((a, o) => a + o.cartons, 0);
   const probs = o => { const z = ZONES.get(o.to_postcode), d = o.deliver_on || h?.delivery_on, out = [];
     if(!o.to_street || !o.to_suburb || !o.to_postcode) out.push("address incomplete"); if(!o.to_phone) out.push("no phone");
     if(o.to_postcode && !z) out.push("postcode not on the schedule"); if(!d) out.push("no date"); else if(!runsOn(z, d)) out.push(fmtDay(d).slice(0, 3) + " is not a run day");
@@ -1288,13 +1300,19 @@ async function viewDelivery(){
         <td><input data-id="${o.id}" data-f="ship_instructions" value="${esc(o.ship_instructions || "")}" placeholder="${esc(cartonText(o))}" ${CAN_WRITE ? "" : "disabled"}></td>
         <td><input data-id="${o.id}" data-f="carrier_no" value="${esc(o.carrier_no || "")}" placeholder="DET…" ${CAN_WRITE ? "" : "disabled"} style="width:140px"></td>
         <td><input data-id="${o.id}" data-f="tracking_url" value="${esc(o.tracking_url || "")}" ${CAN_WRITE ? "" : "disabled"}></td></tr>`; }).join("") +
-      `</tbody><tfoot><tr><td colspan="5">${rows.length} deliver${rows.length === 1 ? "y" : "ies"}</td><td class="num">${rows.reduce((a, o) => a + o.cartons, 0)}</td><td colspan="3"></td></tr></tfoot></table></div>
+      `</tbody><tfoot><tr><td colspan="5">${rows.length} deliver${rows.length === 1 ? "y" : "ies"}</td><td class="num">${cartons}</td><td colspan="3"></td></tr></tfoot></table></div>
+      <h3>The collection</h3>
+      ${gaps.length ? `<p class="gap"><b>The collection has no ${esc(gaps.join(", "))}.</b> The carrier picks the cartons up from the butcher before delivering them, and needs the address.
+          Fill it in under <a href="#settings">Settings → Where the carrier collects from</a>.</p>`
+        : `<p class="lede" style="max-width:820px">The carrier picks up all ${cartons} carton${cartons === 1 ? "" : "s"} from <b>${esc(c.name)}</b>, ${esc(c.street)}, ${esc([c.suburb, c.state, c.postcode].join(" "))}${
+            ZONES.get(c.postcode) ? ` (${esc(ZONES.get(c.postcode).zone)})` : ""}, between ${esc(c.window.replace("-", " and "))}, with our phone and email as the contact and the instruction “${esc(c.note)}”.
+            It is the first row of the manifest. To change the place, go to <a href="#settings">Settings</a>.</p>`}
       <div class="controls noprint" style="margin-top:8px">
-        <label class="chk" style="text-transform:none;letter-spacing:0;font-size:13.5px;color:var(--ink)"><input type="checkbox" id="collect">Add the collection from ${esc(h?.butcher_name || "the butcher")} as a row</label>
-        <label>Collected on<input type="date" id="collect_on" value="${esc(h?.pickup_on || "")}" style="width:160px"></label><span class="grow"></span>
+        <label class="chk" style="text-transform:none;letter-spacing:0;font-size:13.5px;color:var(--ink)"><input type="checkbox" id="collect" ${collectOn() ? "checked" : ""}>Add the collection from ${esc(c.name || "the butcher")} as the first row</label>
+        <label>Collected on<input type="date" id="collect_on" value="${esc(collectDate())}" style="width:160px"></label><span class="grow"></span>
         <button data-act="xlsx">Download manifest (.xlsx)</button><button class="ghost" data-act="csv">…as CSV</button></div>
       <p class="lede">The manifest has Blackbird's twenty columns in their order. Suburb goes under “Delivery Suburb” and state under “Delivery State”, as the headings say.
-        The collection row is untried — check the first one with Blackbird before relying on it.</p>`
+        The collection row carries what Blackbird's own collection job of 4 June 2026 had. Importing one with the deliveries is still untried — check the first with them.</p>`
      : `<p class="none">No deliveries on this harvest. An order is a delivery when “How” is set to Delivery.</p>`);
 }
 
@@ -1420,7 +1438,11 @@ function viewProducts(){
 // ── settings ────────────────────────────────────────────────────
 const BIZ_SPEC = [["abn", "ABN"], ["phone", "Phone"], ["email", "Email"], ["website", "Website"], ["invoice_terms_days", "Invoice due after, days", "int"],
   ["order_prefix", "Order prefix"], ["first_invoice_no", "Invoice numbers start at", "int"],
-  ["payment_details", "Payment details — printed on every invoice, exactly as typed", "area", 5]];
+  ["payment_details", "Payment details — printed on every invoice, exactly as typed", "area", 5],
+  // Not the letterhead: where the carrier picks the cartons up (78). It is the same place every harvest, so it is typed once.
+  ["h3", "Where the carrier collects from", "head"], ["collect_name", "Name — the butcher's shop"], ["collect_street", "Street address"], ["collect_suburb", "Suburb"],
+  ["collect_state", "State"], ["collect_postcode", "Postcode", "text", 'inputmode="numeric" maxlength="4"'], ["collect_window", "Time window", "text", 'placeholder="11:00-18:00"'],
+  ["collect_note", "Instructions for the driver", "text", 'placeholder="Left blank: Pick up from, and the name"']];
 function viewSettings(){
   $("#out").innerHTML = `<h2>The invoice letterhead</h2><p class="lede">The name and address come from the farm; the rest is here. Only an owner can change it.</p>
     <form id="bizf"><div class="grid" style="max-width:820px">${formHtml(BIZ_SPEC, S.biz || { invoice_terms_days: 14, order_prefix: "BF", first_invoice_no: 1 })}</div>
@@ -1503,10 +1525,20 @@ $("#out").addEventListener("click", safe(async e => {
   if(a.act === "product") editProduct(a.id);
   if(a.act === "savebiz"){
     const v = formRead(BIZ_SPEC, $("#bizf"));
+    if(v.collect_state) v.collect_state = v.collect_state.toUpperCase();
+    if(v.collect_window) v.collect_window = v.collect_window.replace(/\s+/g, "").replace(/[–—]/, "-");
+    if(v.collect_postcode && !/^\d{4}$/.test(v.collect_postcode)){ alert("The collection's postcode is four digits."); return; }
+    if(v.collect_window && !/^\d{2}:\d{2}-\d{2}:\d{2}$/.test(v.collect_window)){ alert("The collection's time window is written like 11:00-18:00."); return; }
     await q(db.from("farm_business").upsert({ ...v, farm_id: ME.farm_id }));
-    await reload("biz"); $("#bizmsg").textContent = "Saved.";
+    await reload("biz"); viewSettings(); $("#bizmsg").textContent = "Saved.";     // redrawn: the form shows what was kept, tidied
   }
   if(a.act === "xlsx" || a.act === "csv"){
+    if(collectOn()){
+      // A collection the carrier cannot find, or on no day, is worse than none.
+      const gaps = collectGaps(collectFrom());
+      if(gaps.length){ alert(`The collection has no ${gaps.join(", ")}. Fill it in under Settings → Where the carrier collects from, or untick the collection.`); return; }
+      if(!collectDate()){ alert("Pick the day the carrier collects (“Collected on”), or untick the collection."); return; }
+    }
     const rows = manifestRows(), h = harvestOf(S.harvest), stamp = today().replace(/-/g, "");
     if(a.act === "xlsx") download(xlsx("Template", [MANIFEST, ...rows]), `Booking Manifest - ${ME.farm_name}_${stamp}.xlsx`);
     else download(new Blob([[MANIFEST, ...rows].map(r => r.map(v => { const s = v && typeof v === "object" ? (v.d || "") : String(v ?? "");
@@ -1522,6 +1554,8 @@ $("#out").addEventListener("change", safe(async e => {
     await q(db.from("farm_business").upsert({ farm_id: ME.farm_id, email_web_orders: t.checked }));
     await reload("biz"); return;
   }
+  if(t.id === "collect"){ COLLECT.on = t.checked; return; }
+  if(t.id === "collect_on"){ COLLECT.dates[S.harvest || ""] = t.value; return; }
   if(t.dataset.id && t.dataset.f){
     const v = t.value.trim() || null;
     await q(db.from("customer_order").update({ [t.dataset.f]: v }).eq("id", t.dataset.id));
