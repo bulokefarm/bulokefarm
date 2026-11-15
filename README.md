@@ -562,6 +562,7 @@ rebuild, so anything depending on imported records has to be a seed.
 | 72 | The shop front, callable with no login: `shop_front()`, `delivery_lookup()`, `place_order()` |
 | 73 | The mailing list: `subscriber` with subscribed, unsubscribed and bounced; `import_subscribers()`, where the later change wins and an opt-out is never undone by an older yes; `v_subscriber` |
 | 74 | What a product asks on the order form: `product.questions`, `order_line.answers`, `answers_for()`. Choices only. Beef asks about soup bones. `shop_front()`, `place_order()`, `save_order()` and `butcher_sheet()` replaced whole to carry them |
+| 75 | A box is a carton: `butcher_sheet()` numbers one box per carton, so a whole lamb is two boxes and a 24 kg beef pack is two 12 kg boxes, each with its sheet |
 
 ### Seeds
 

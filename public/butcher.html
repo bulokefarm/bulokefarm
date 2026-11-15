@@ -126,6 +126,7 @@ const fmtDay = d => d ? new Date(d + "T00:00:00").toLocaleDateString("en-AU", {w
 const kg = v => v == null || v === "" ? "" : String(+(+v).toFixed(2));
 const FUL = { pickup_butcher: "Pick-up from the shop", pickup_farm: "Pick-up — farm collects", delivery: "Delivery" };
 const answers = b => Object.entries(b.answers || {});
+const ofPack = b => b.cartons > 1 ? `box ${b.carton} of ${b.cartons} for this pack` : "";
 
 let ME = null, LIST = [], DOC = null, SHOW = "all", CAN_PACK = false;
 
@@ -136,8 +137,9 @@ const head = (title, sub) => { const f = DOC.farm, h = DOC.harvest; return `<hea
 
 function pageSummary(){
   const h = DOC.harvest, boxes = DOC.boxes;
-  const bySize = new Map(); boxes.forEach(b => bySize.set(b.pack, (bySize.get(b.pack) || 0) + 1));
-  const totalKg = boxes.reduce((a, b) => a + (+b.size_kg || 0), 0), cartons = boxes.reduce((a, b) => a + (b.cartons || 0), 0);
+  // A box is a carton (migration 75): a pack that fills two is two boxes. Count both.
+  const bySize = new Map(); boxes.forEach(b => { const v = bySize.get(b.pack) || { packs: 0, boxes: 0 }; v.boxes++; if(b.carton === 1) v.packs++; bySize.set(b.pack, v); });
+  const totalKg = boxes.reduce((a, b) => a + (+b.size_kg || 0), 0), packs = boxes.filter(b => b.carton === 1).length;
   return `<section class="page" data-part="summary">${head("Summary", h.kind === "lamb" ? "Lamb" : "Beef")}
     <div class="dates">
       <div><span>Harvest</span><b>${fmtDay(h.harvest_on)}</b></div>
@@ -150,12 +152,12 @@ function pageSummary(){
     </div>
     ${h.butcher_note ? `<p class="gap" style="margin-top:12px">${esc(h.butcher_note)}</p>` : ""}
     <h2>Packs</h2>
-    <table><thead><tr><th>Pack</th><th class="num">How many</th></tr></thead><tbody>
-      ${[...bySize].map(([p, n]) => `<tr><td>${esc(p)}</td><td class="num">${n}</td></tr>`).join("")}</tbody>
-      <tfoot><tr><td>${boxes.length} pack${boxes.length === 1 ? "" : "s"} · ${kg(totalKg)} kg · ${cartons} carton${cartons === 1 ? "" : "s"}</td><td></td></tr></tfoot></table>
+    <table><thead><tr><th>Pack</th><th class="num">How many</th><th class="num">Boxes</th></tr></thead><tbody>
+      ${[...bySize].map(([p, v]) => `<tr><td>${esc(p)}</td><td class="num">${v.packs}</td><td class="num">${v.boxes}</td></tr>`).join("")}</tbody>
+      <tfoot><tr><td>${kg(totalKg)} kg</td><td class="num">${packs}</td><td class="num">${boxes.length}</td></tr></tfoot></table>
     <h2>Boxes</h2>
     <table><thead><tr><th>Box</th><th>Customer</th><th>Pack</th><th>How it leaves</th><th>Of</th></tr></thead><tbody>
-      ${boxes.map(b => `<tr><td class="box">${b.box_no}</td><td>${esc(b.customer)}</td><td>${esc(b.pack)}${answers(b).map(([k, v]) => `<br><small>${esc(k)}: ${esc(v)}</small>`).join("")}</td>
+      ${boxes.map(b => `<tr><td class="box">${b.box_no}</td><td>${esc(b.customer)}</td><td>${esc(b.pack)}${ofPack(b) ? `<br><small>${ofPack(b)}</small>` : ""}${answers(b).map(([k, v]) => `<br><small>${esc(k)}: ${esc(v)}</small>`).join("")}</td>
         <td><span class="tag ${b.fulfilment}">${esc(FUL[b.fulfilment])}</span></td><td class="m">${b.idx} of ${b.of}</td></tr>`).join("")}
       ${DOC.remaining_sheet ? `<tr><td class="box">+</td><td>Remaining</td><td colspan="3">Everything left over — see the last sheet</td></tr>` : ""}</tbody></table>
   </section>`;
@@ -172,12 +174,12 @@ function pageCustomers(){
         <td class="m">${esc(b.to_phone || "")}</td>
         <td><span class="tag ${b.fulfilment}">${esc(FUL[b.fulfilment])}</span>${s ? `<br><small>${esc([s.street, s.suburb, s.state, s.postcode].filter(Boolean).join(", "))}
           ${s.deliver_on ? "<br>" + fmtDay(s.deliver_on) : ""}${s.carrier_ref ? " · label " + esc(s.carrier_ref) : ""}${s.instructions ? "<br>" + esc(s.instructions) : ""}</small>` : ""}</td>
-        <td>${esc(b.pack)}${b.cartons > 1 ? `<br><small>${b.cartons} cartons</small>` : ""}${answers(b).map(([k, v]) => `<br><small><b>${esc(k)}: ${esc(v)}</b></small>`).join("")}</td><td class="m">${b.idx} of ${b.of}</td>
+        <td>${esc(b.pack)}${ofPack(b) ? `<br><small>${ofPack(b)}</small>` : ""}${answers(b).map(([k, v]) => `<br><small><b>${esc(k)}: ${esc(v)}</b></small>`).join("")}</td><td class="m">${b.idx} of ${b.of}</td>
         ${first ? `<td class="num"><input class="kgin" type="number" step="any" min="0" inputmode="decimal" data-line="${b.line_id}" value="${esc(b.actual_kg ?? "")}" ${CAN_PACK ? "" : "disabled"}
               aria-label="Packed weight for box ${b.box_no}"></td>
             <td class="tick"><input type="checkbox" data-line="${b.line_id}" ${b.packed ? "checked" : ""} ${CAN_PACK ? "" : "disabled"} aria-label="Box ${b.box_no} packed"></td>`
           : `<td class="num" colspan="2"><small>with box ${firstOfLine.get(b.line_id)}</small></td>`}</tr>`; }).join("")}</tbody></table>
-    ${boxes.some(b => b.line_qty > 1) ? `<p style="font-size:12.5px;color:var(--ink2)">Where one order has several packs of the same kind, weigh them together and write the total against the first box.</p>` : ""}
+    ${boxes.some(b => firstOfLine.get(b.line_id) !== b.box_no) ? `<p style="font-size:12.5px;color:var(--ink2)">Where one pack fills several boxes, or an order has several packs of the same kind, weigh them together and write the total against the first box.</p>` : ""}
   </section>`;
 }
 
@@ -199,7 +201,9 @@ function pageBox(b){
   return `<section class="page" data-part="sheets">${head("Box " + b.box_no, b.order_ref)}
     <div class="cust"><b>${esc(b.customer)}</b><span class="pack">${esc(b.pack)}</span>
       ${mult !== 1 ? `<span class="mult">× ${kg(mult)} — every line on this sheet, ${kg(mult)} times over</span>` : ""}
-      <span class="tag ${b.fulfilment}">${esc(FUL[b.fulfilment])}</span><span class="tag">Box ${b.idx} of ${b.of}</span>${b.cartons > 1 ? `<span class="tag">${b.cartons} cartons</span>` : ""}</div>
+      ${b.split_boxes ? `<span class="mult">Split between ${b.cartons} boxes — this is box ${b.carton} of ${b.cartons}</span>` : ""}
+      ${ofPack(b) && !b.split_boxes ? `<span class="tag">${ofPack(b)} — ${kg(b.size_kg)} kg in this box</span>` : ""}
+      <span class="tag ${b.fulfilment}">${esc(FUL[b.fulfilment])}</span><span class="tag">Box ${b.idx} of ${b.of} on this order</span></div>
     ${answers(b).length ? `<div>${answers(b).map(([k, v]) => `<span class="ans">${esc(k)}: ${esc(v)}</span>`).join("")}</div>` : ""}
     ${b.butcher_note ? `<p class="gap">${esc(b.butcher_note)}</p>` : ""}
     ${b.cut_sheet ? sheetTable(b.cut_sheet, mult) : `<p class="none">No cut sheet for this pack.</p>`}
